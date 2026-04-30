@@ -140,8 +140,12 @@ export default function ProfilePage() {
         <div className="dash-nav-item"><div className="dash-nav-icon">⚖️</div> Compare Plans <span className="soon-tag">soon</span></div>
 
         <div className="dash-section-label">My Data</div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">📄</div> Claims & Profile <span className="soon-tag">soon</span></div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">📎</div> Uploaded Files <span className="soon-tag">soon</span></div>
+        <a href="/claims-profile" style={{textDecoration: 'none', color: 'inherit'}}>
+  <div className="dash-nav-item"><div className="dash-nav-icon">📄</div> Claims & Profile</div>
+</a>
+        <a href="/uploaded-files" style={{textDecoration: 'none', color: 'inherit'}}>
+  <div className="dash-nav-item"><div className="dash-nav-icon">📎</div> Uploaded Files</div>
+</a>
 
         <div className="dash-section-label">Account</div>
         <a href="/settings" style={{textDecoration: 'none', color: 'inherit'}}>
