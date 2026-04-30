@@ -2,12 +2,13 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import { supabase } from '../supabase';
 import ClaimsUpload from '../components/ClaimsUpload';
+import Sidebar from '../components/Sidebar';
 
 type Claim = {
   id: string;
+  user_id: string;
   file_name: string;
   file_path: string;
   file_size: number;
@@ -110,7 +111,7 @@ export default function ProfilePage() {
 
   if (loading) {
     return (
-      <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh'}}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
         <p>Loading your dashboard...</p>
       </div>
     );
@@ -119,7 +120,6 @@ export default function ProfilePage() {
   const firstName = user?.user_metadata?.first_name || 'there';
   const lastName = user?.user_metadata?.last_name || '';
   const role = user?.user_metadata?.role || 'Individual';
-  const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
 
   const today = new Date();
   const dateStr = today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
@@ -128,43 +128,13 @@ export default function ProfilePage() {
 
   return (
     <div className="dash-layout">
-      <aside className="dash-sidebar">
-        <a href="/" className="logo-mark">
-          <Image src="/logo.png" alt="Clarity Health logo" width={32} height={32} style={{filter: 'brightness(1.4)'}} />
-          <span className="logo-text">Clarity <em>Health</em></span>
-        </a>
-
-        <div className="dash-section-label">Main</div>
-        <div className="dash-nav-item active"><div className="dash-nav-icon">🏠</div> Dashboard</div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">📋</div> My Plans <span className="soon-tag">soon</span></div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">⚖️</div> Compare Plans <span className="soon-tag">soon</span></div>
-
-        <div className="dash-section-label">My Data</div>
-        <a href="/claims-profile" style={{textDecoration: 'none', color: 'inherit'}}>
-  <div className="dash-nav-item"><div className="dash-nav-icon">📄</div> Claims & Profile</div>
-</a>
-        <a href="/uploaded-files" style={{textDecoration: 'none', color: 'inherit'}}>
-  <div className="dash-nav-item"><div className="dash-nav-icon">📎</div> Uploaded Files</div>
-</a>
-
-        <div className="dash-section-label">Account</div>
-        <a href="/settings" style={{textDecoration: 'none', color: 'inherit'}}>
-          <div className="dash-nav-item"><div className="dash-nav-icon">⚙️</div> Settings</div>
-        </a>
-        <div className="dash-nav-item"><div className="dash-nav-icon">💳</div> Billing <span className="soon-tag">soon</span></div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">❓</div> Help</div>
-
-        <div className="dash-sidebar-footer">
-          <div className="dash-user">
-            <div className="dash-avatar">{initials}</div>
-            <div style={{flex: 1, minWidth: 0}}>
-              <div className="dash-user-name">{firstName} {lastName}</div>
-              <div className="dash-user-role">{role}</div>
-            </div>
-          </div>
-          <button onClick={handleLogout} className="dash-logout-btn">Log Out</button>
-        </div>
-      </aside>
+      <Sidebar
+        active="dashboard"
+        firstName={firstName}
+        lastName={lastName}
+        role={role}
+        onLogout={handleLogout}
+      />
 
       <main className="dash-main">
         <div className="dash-header">
@@ -181,7 +151,7 @@ export default function ProfilePage() {
         {claimsCount === 0 ? (
           <div className="welcome-banner">
             <div className="welcome-banner-icon">✨</div>
-            <div style={{flex: 1}}>
+            <div style={{ flex: 1 }}>
               <div className="welcome-banner-title">You&apos;re all set up!</div>
               <div className="welcome-banner-desc">
                 Upload your claims below to start getting personalized plan recommendations based on your real health data.
@@ -189,9 +159,9 @@ export default function ProfilePage() {
             </div>
           </div>
         ) : (
-          <div className="welcome-banner" style={{background: '#ebf3ea', borderColor: '#7a9b76'}}>
+          <div className="welcome-banner" style={{ background: '#ebf3ea', borderColor: '#7a9b76' }}>
             <div className="welcome-banner-icon">📊</div>
-            <div style={{flex: 1}}>
+            <div style={{ flex: 1 }}>
               <div className="welcome-banner-title">{claimsCount} claim{claimsCount !== 1 ? 's' : ''} uploaded</div>
               <div className="welcome-banner-desc">
                 Your data is securely stored. AI plan recommendations will appear here in the next phase of the build.
@@ -219,7 +189,7 @@ export default function ProfilePage() {
         </div>
 
         <div className="dash-two-col">
-          <div style={{display: 'flex', flexDirection: 'column', gap: '1.25rem'}}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div className="dash-card" id="upload-section">
               <div className="dash-card-header">
                 <div className="dash-card-title">Upload Claims</div>
@@ -268,7 +238,7 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <div style={{display: 'flex', flexDirection: 'column', gap: '1.25rem'}}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div className="dash-card">
               <div className="dash-card-header">
                 <div className="dash-card-title">Account</div>

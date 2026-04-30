@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import { supabase } from '../supabase';
+import Sidebar from '../components/Sidebar';
 
 const CONDITIONS = [
   'Diabetes',
@@ -150,49 +150,16 @@ export default function ClaimsProfilePage() {
   const firstName = user?.user_metadata?.first_name || 'there';
   const lastName = user?.user_metadata?.last_name || '';
   const role = user?.user_metadata?.role || 'Individual';
-  const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
 
   return (
     <div className="dash-layout">
-      <aside className="dash-sidebar">
-        <a href="/" className="logo-mark">
-          <Image src="/logo.png" alt="Clarity Health logo" width={32} height={32} style={{filter: 'brightness(1.4)'}} />
-          <span className="logo-text">Clarity <em>Health</em></span>
-        </a>
-
-        <div className="dash-section-label">Main</div>
-        <a href="/profile" style={{textDecoration: 'none', color: 'inherit'}}>
-          <div className="dash-nav-item"><div className="dash-nav-icon">🏠</div> Dashboard</div>
-        </a>
-        <div className="dash-nav-item"><div className="dash-nav-icon">📋</div> My Plans <span className="soon-tag">soon</span></div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">⚖️</div> Compare Plans <span className="soon-tag">soon</span></div>
-
-        <div className="dash-section-label">My Data</div>
-        <a href="/claims-profile" style={{textDecoration: 'none', color: 'inherit'}}>
-          <div className="dash-nav-item active"><div className="dash-nav-icon">📄</div> Claims & Profile</div>
-        </a>
-        <a href="/uploaded-files" style={{textDecoration: 'none', color: 'inherit'}}>
-          <div className="dash-nav-item"><div className="dash-nav-icon">📎</div> Uploaded Files</div>
-        </a>
-
-        <div className="dash-section-label">Account</div>
-        <a href="/settings" style={{textDecoration: 'none', color: 'inherit'}}>
-          <div className="dash-nav-item"><div className="dash-nav-icon">⚙️</div> Settings</div>
-        </a>
-        <div className="dash-nav-item"><div className="dash-nav-icon">💳</div> Billing <span className="soon-tag">soon</span></div>
-        <div className="dash-nav-item"><div className="dash-nav-icon">❓</div> Help</div>
-
-        <div className="dash-sidebar-footer">
-          <div className="dash-user">
-            <div className="dash-avatar">{initials}</div>
-            <div style={{flex: 1, minWidth: 0}}>
-              <div className="dash-user-name">{firstName} {lastName}</div>
-              <div className="dash-user-role">{role}</div>
-            </div>
-          </div>
-          <button onClick={handleLogout} className="dash-logout-btn">Log Out</button>
-        </div>
-      </aside>
+      <Sidebar
+        active="claims-profile"
+        firstName={firstName}
+        lastName={lastName}
+        role={role}
+        onLogout={handleLogout}
+      />
 
       <main className="dash-main">
         <div className="dash-header">
