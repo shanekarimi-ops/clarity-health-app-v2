@@ -11,6 +11,7 @@ export default function FindPlansPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [result, setResult] = useState<any>(null);
 
   // Form fields
   const [zipCode, setZipCode] = useState('');
@@ -28,7 +29,6 @@ export default function FindPlansPage() {
       }
       setUser(user);
 
-      // Pre-fill from health_profiles if available
       const { data: profile } = await supabase
         .from('health_profiles')
         .select('zip_code, household_size, age')
@@ -39,7 +39,6 @@ export default function FindPlansPage() {
         if (profile.zip_code) setZipCode(profile.zip_code);
         if (profile.household_size) {
           setHouseholdSize(profile.household_size.toString());
-          // Initialize ages array to match household size
           const sizeNum = profile.household_size;
           setAges(Array(sizeNum).fill('').map((_, i) =>
             i === 0 && profile.age ? profile.age.toString() : ''
@@ -54,7 +53,6 @@ export default function FindPlansPage() {
     loadData();
   }, [router]);
 
-  // Keep ages array in sync with household size
   function handleHouseholdChange(value: string) {
     setHouseholdSize(value);
     const sizeNum = parseInt(value) || 1;
@@ -77,8 +75,8 @@ export default function FindPlansPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrorMsg('');
+    setResult(null);
 
-    // Basic validation
     if (!zipCode || zipCode.length < 5) {
       setErrorMsg('Please enter a valid 5-digit ZIP code.');
       return;
@@ -94,7 +92,7 @@ export default function FindPlansPage() {
 
     setSubmitting(true);
 
-    const formData = {
+    const payload = {
       zipCode: zipCode.trim(),
       householdSize: parseInt(householdSize),
       annualIncome: parseInt(annualIncome),
@@ -102,11 +100,26 @@ export default function FindPlansPage() {
       usesTobacco,
     };
 
-    // Step 3 will replace this with a real API call to /api/recommend
-    console.log('Find Plans form submitted:', formData);
-    alert('Form submitted! Check the browser console (F12) to see the data. The AI engine wires up next.');
+    try {
+      const res = await fetch('/api/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-    setSubmitting(false);
+      const data = await res.json();
+
+      if (!res.ok) {
+        setErrorMsg(data.error || 'Something went wrong');
+        setResult(data); // still show details for debugging
+      } else {
+        setResult(data);
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Network error');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleLogout() {
@@ -245,11 +258,39 @@ export default function FindPlansPage() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
             <button type="submit" className="btn-sm btn-accent" disabled={submitting}>
-              {submitting ? 'Searching...' : 'Get My Recommendations →'}
+              {submitting ? 'Searching plans...' : 'Get My Recommendations →'}
             </button>
             {errorMsg && <span style={{ color: '#d95858', fontSize: '0.875rem' }}>{errorMsg}</span>}
           </div>
         </form>
+
+        {/* Results / debug panel */}
+        {result && (
+          <div className="dash-card" style={{ marginBottom: '2rem' }}>
+            <div className="dash-card-header">
+              <div className="dash-card-title">Raw API Response (debug view)</div>
+            </div>
+            <p style={{ color: '#6b7785', fontSize: '0.85rem', margin: '0 0 0.75rem 0' }}>
+              {result.success
+                ? `Found ${result.planCount} plans for ${result.county?.name}, ${result.county?.state}. Showing first ${result.plans?.length || 0}.`
+                : 'Error response from API. Details below for debugging.'}
+            </p>
+            <pre
+              style={{
+                backgroundColor: '#1e3a5f',
+                color: '#e6f0fa',
+                padding: '1rem',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                overflowX: 'auto',
+                maxHeight: '500px',
+                overflowY: 'auto',
+              }}
+            >
+              {JSON.stringify(result, null, 2)}
+            </pre>
+          </div>
+        )}
       </main>
     </div>
   );
