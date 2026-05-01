@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const MARKETPLACE_BASE = 'https://marketplace.api.healthcare.gov/api/v1';
 
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const marketplaceKey = process.env.MARKETPLACE_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!marketplaceKey) {
     return NextResponse.json({ error: 'Missing MARKETPLACE_API_KEY' }, { status: 500 });
@@ -21,13 +27,60 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { zipCode, householdSize, annualIncome, ages, usesTobacco } = body;
+  const { zipCode, householdSize, annualIncome, ages, usesTobacco, userId } = body;
 
   if (!zipCode || !householdSize || !annualIncome || !Array.isArray(ages) || ages.length === 0) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
   try {
+    // ===== Step 0: Fetch parsed claims for this user (if userId provided) =====
+    // This is OPTIONAL — if no userId or no claims, we fall back to demographic-only ranking.
+    let parsedClaims: any[] = [];
+    let claimsSummaryText = '';
+
+    if (userId && supabaseUrl && serviceKey) {
+      try {
+        const supabaseAdmin = createClient(supabaseUrl, serviceKey);
+        const { data: claimsData, error: claimsError } = await supabaseAdmin
+          .from('claims_parsed')
+          .select('conditions, procedures, medications, specialty_visits_count, prescription_count, total_billed, total_out_of_pocket, summary_text, parse_status')
+          .eq('user_id', userId)
+          .eq('parse_status', 'success');
+
+        if (!claimsError && claimsData) {
+          parsedClaims = claimsData;
+        }
+      } catch (e) {
+        // Don't fail the whole request if claims fetch breaks — just rank without them.
+        console.error('Claims fetch failed, continuing without claims context:', e);
+      }
+    }
+
+    // Build the claims summary block for Claude's prompt
+    if (parsedClaims.length > 0) {
+      const allConditions = Array.from(new Set(parsedClaims.flatMap((c) => c.conditions || []))).filter(Boolean);
+      const allProcedures = Array.from(new Set(parsedClaims.flatMap((c) => c.procedures || []))).filter(Boolean);
+      const allMedications = Array.from(new Set(parsedClaims.flatMap((c) => c.medications || []))).filter(Boolean);
+      const totalSpecialtyVisits = parsedClaims.reduce((sum, c) => sum + (c.specialty_visits_count || 0), 0);
+      const totalPrescriptions = parsedClaims.reduce((sum, c) => sum + (c.prescription_count || 0), 0);
+      const totalBilled = parsedClaims.reduce((sum, c) => sum + (Number(c.total_billed) || 0), 0);
+      const totalOOP = parsedClaims.reduce((sum, c) => sum + (Number(c.total_out_of_pocket) || 0), 0);
+      const summaries = parsedClaims.map((c) => c.summary_text).filter(Boolean);
+
+      claimsSummaryText = `
+Claims history (${parsedClaims.length} document${parsedClaims.length === 1 ? '' : 's'} on file):
+- Conditions/diagnoses: ${allConditions.length > 0 ? allConditions.join(', ') : 'none extracted'}
+- Procedures/services: ${allProcedures.length > 0 ? allProcedures.join(', ') : 'none extracted'}
+- Medications: ${allMedications.length > 0 ? allMedications.join(', ') : 'none extracted'}
+- Specialist visits: ${totalSpecialtyVisits}
+- Prescriptions: ${totalPrescriptions}
+- Total billed across claims: $${totalBilled.toFixed(2)}
+- Total out-of-pocket: $${totalOOP.toFixed(2)}
+${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- ${s}`).join('\n') : ''}
+`.trim();
+    }
+
     // ===== Step 1: ZIP -> county FIPS code =====
     const countyRes = await fetch(
       `${MARKETPLACE_BASE}/counties/by/zip/${zipCode}?apikey=${marketplaceKey}`
@@ -90,6 +143,7 @@ export async function POST(req: NextRequest) {
         planCount: 0,
         plans: [],
         message: 'No plans found for this household.',
+        claimsUsed: parsedClaims.length,
       });
     }
 
@@ -115,6 +169,15 @@ export async function POST(req: NextRequest) {
     // ===== Step 3: Send to Claude for ranking =====
     const anthropic = new Anthropic({ apiKey: anthropicKey });
 
+    const claimsAwareGuidance = parsedClaims.length > 0
+      ? `IMPORTANT — This household has uploaded medical claims. Use that history to weight the ranking:
+- Heavy specialist usage or chronic conditions → favor plans with low deductibles, broad networks, lower specialist copays.
+- Multiple prescriptions → favor plans with strong prescription drug coverage.
+- High past out-of-pocket spending → favor plans with lower MOOP and predictable costs.
+- Low/routine usage → favor plans with low premiums even if deductible is higher.
+For each plan, briefly note in claimsInsight which aspect of the claims data influenced its ranking.`
+      : `This household has not uploaded any claims yet, so rank based on demographics and price alone. Set claimsInsight to null for each plan.`;
+
     const prompt = `You are a health insurance advisor helping someone choose a Marketplace plan. Rank these ${simplified.length} plans for this household and explain your reasoning in plain English (no jargon).
 
 Household profile:
@@ -123,6 +186,8 @@ Household profile:
 - Annual income: $${annualIncome.toLocaleString()}
 - Ages: ${ages.join(', ')}
 - Tobacco use: ${usesTobacco ? 'Yes' : 'No'}
+
+${claimsSummaryText ? claimsSummaryText + '\n' : ''}${claimsAwareGuidance}
 
 Plans available:
 ${JSON.stringify(simplified, null, 2)}
@@ -136,10 +201,11 @@ Return ONLY a valid JSON object (no markdown, no code fences, no preamble) with 
       "matchScore": 95,
       "summary": "One sentence on why this plan is a strong fit (max 20 words).",
       "pros": ["Short bullet 1", "Short bullet 2", "Short bullet 3"],
-      "cons": ["Short bullet 1", "Short bullet 2"]
+      "cons": ["Short bullet 1", "Short bullet 2"],
+      "claimsInsight": "Short note (max 25 words) on how claims data influenced this rank, or null if no claims."
     }
   ],
-  "overallAdvice": "One paragraph (max 60 words) of overall guidance for this household."
+  "overallAdvice": "One paragraph (max 60 words) of overall guidance for this household. If claims were used, briefly mention how they shaped the recommendation."
 }
 
 Rules:
@@ -196,6 +262,11 @@ Rules:
       planCount: rankedWithDetails.length,
       plans: rankedWithDetails,
       overallAdvice: claudeData.overallAdvice || '',
+      claimsUsed: parsedClaims.length,
+      claimsContext: parsedClaims.length > 0 ? {
+        documentCount: parsedClaims.length,
+        summary: claimsSummaryText,
+      } : null,
     });
   } catch (err: any) {
     return NextResponse.json(

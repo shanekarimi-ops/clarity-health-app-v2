@@ -98,6 +98,7 @@ export default function FindPlansPage() {
       annualIncome: parseInt(annualIncome),
       ages: ages.map((a) => parseInt(a)),
       usesTobacco,
+      userId: user.id,
     };
 
     try {
