@@ -1,8 +1,28 @@
 'use client';
 
 import Image from 'next/image';
+import { useEffect, useState } from 'react';
+import { supabase } from './supabase';
 
 export default function HomePage() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setIsLoggedIn(!!session);
+      setAuthChecked(true);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsLoggedIn(!!session);
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
   return (
     <main>
       <nav className="hp-nav">
@@ -17,8 +37,14 @@ export default function HomePage() {
           <a href="#">For Brokers</a>
         </div>
         <div className="hp-nav-ctas">
-          <a href="/login" className="btn-sm btn-ghost-sm">Log In</a>
-          <a href="/signup" className="btn-sm btn-accent">Get Started Free</a>
+          {authChecked && isLoggedIn ? (
+            <a href="/profile" className="btn-sm btn-accent">Go to Dashboard →</a>
+          ) : (
+            <>
+              <a href="/login" className="btn-sm btn-ghost-sm">Log In</a>
+              <a href="/signup" className="btn-sm btn-accent">Get Started Free</a>
+            </>
+          )}
         </div>
       </nav>
 
@@ -28,7 +54,9 @@ export default function HomePage() {
           <h1>Smarter insights. <em>Better health plans.</em></h1>
           <p>Upload your claims, connect your employer benefits or the government marketplace — and get a ranked, personalized recommendation in under 2 minutes.</p>
           <div className="hp-hero-ctas">
-            <a href="/signup" className="btn-lg btn-accent-lg">Get My Recommendations →</a>
+            <a href={isLoggedIn ? "/profile" : "/signup"} className="btn-lg btn-accent-lg">
+              {isLoggedIn ? "Go to Dashboard →" : "Get My Recommendations →"}
+            </a>
             <button className="btn-lg btn-outline-lg">See how it works</button>
           </div>
           <div className="hp-trust">
@@ -157,7 +185,9 @@ export default function HomePage() {
       <section className="hp-cta">
         <h2>Start for free. No credit card needed.</h2>
         <p>See your top plan matches in under 2 minutes. Your data stays yours.</p>
-        <a href="/signup" className="btn-lg btn-white">Get My Recommendations →</a>
+        <a href={isLoggedIn ? "/profile" : "/signup"} className="btn-lg btn-white">
+          {isLoggedIn ? "Go to Dashboard →" : "Get My Recommendations →"}
+        </a>
       </section>
 
       <footer className="hp-footer">
