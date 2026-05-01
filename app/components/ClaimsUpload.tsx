@@ -38,6 +38,7 @@ export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
 
     setUploading(true);
     let successCount = 0;
+    const claimIdsToParse: string[] = [];
 
     for (let i = 0; i < fileArray.length; i++) {
       const file = fileArray[i];
@@ -61,19 +62,27 @@ export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
         return;
       }
 
-      const { error: dbError } = await supabase.from('claims').insert({
-        user_id: userId,
-        file_name: file.name,
-        file_path: filePath,
-        file_size: file.size,
-        file_type: file.type,
-      });
+      const { data: insertedClaim, error: dbError } = await supabase
+        .from('claims')
+        .insert({
+          user_id: userId,
+          file_name: file.name,
+          file_path: filePath,
+          file_size: file.size,
+          file_type: file.type,
+        })
+        .select()
+        .single();
 
       if (dbError) {
         setErrorMsg(`Saved "${file.name}" but failed to record it: ${dbError.message}`);
         setUploading(false);
         setUploadProgress('');
         return;
+      }
+
+      if (insertedClaim?.id) {
+        claimIdsToParse.push(insertedClaim.id);
       }
 
       successCount++;
@@ -83,6 +92,18 @@ export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
     setUploadProgress('');
     setSuccessMsg(`✓ ${successCount} file${successCount !== 1 ? 's' : ''} uploaded successfully`);
     if (onUploadComplete) onUploadComplete();
+
+    // Fire-and-forget: trigger Claude parsing for each uploaded claim.
+    // We don't await these — UI stays snappy. Failures are logged but don't surface to user.
+    claimIdsToParse.forEach((claimId) => {
+      fetch('/api/parse-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claim_id: claimId, user_id: userId }),
+      }).catch((err) => {
+        console.error('Background parse failed for claim', claimId, err);
+      });
+    });
 
     setTimeout(() => setSuccessMsg(''), 4000);
   }, [userId, onUploadComplete]);
