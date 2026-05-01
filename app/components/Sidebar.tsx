@@ -2,7 +2,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 type SidebarProps = {
-  active: 'dashboard' | 'claims-profile' | 'uploaded-files' | 'settings' | 'help' | 'billing';
+  active: 'dashboard' | 'claims-profile' | 'uploaded-files' | 'settings' | 'help' | 'billing' | 'my-plans';
   firstName: string;
   lastName: string;
   role: string;
@@ -30,9 +30,11 @@ export default function Sidebar({ active, firstName, lastName, role, onLogout }:
           <div className="dash-nav-icon">🏠</div> Dashboard
         </div>
       </Link>
-      <div className="dash-nav-item">
-        <div className="dash-nav-icon">📋</div> My Plans <span className="soon-tag">soon</span>
-      </div>
+      <Link href="/my-plans" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'my-plans' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">📋</div> My Plans
+        </div>
+      </Link>
       <div className="dash-nav-item">
         <div className="dash-nav-icon">⚖️</div> Compare Plans <span className="soon-tag">soon</span>
       </div>
