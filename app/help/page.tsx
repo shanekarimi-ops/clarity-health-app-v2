@@ -185,6 +185,34 @@ export default function HelpPage() {
             </div>
           </div>
         </div>
+
+        {/* Legal */}
+        <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
+          <div className="dash-card-header">
+            <div className="dash-card-title">Legal</div>
+          </div>
+          <p style={{ color: '#6b7785', fontSize: '0.9rem', margin: '0 0 1.25rem 0' }}>
+            Review our policies and terms.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div>
+              <Link href="/privacy" style={{ color: '#7a9b76', textDecoration: 'underline' }}>
+                Privacy Policy
+              </Link>
+              <span style={{ color: '#6b7785', fontSize: '0.85rem', marginLeft: '8px' }}>
+                — How we collect, use, and protect your data
+              </span>
+            </div>
+            <div>
+              <Link href="/terms" style={{ color: '#7a9b76', textDecoration: 'underline' }}>
+                Terms of Service
+              </Link>
+              <span style={{ color: '#6b7785', fontSize: '0.85rem', marginLeft: '8px' }}>
+                — Your agreement with Clarity Health
+              </span>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
   );

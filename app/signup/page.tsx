@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import Link from 'next/link';
 import { supabase } from '../supabase';
 
 export default function SignUpPage() {
@@ -12,11 +13,18 @@ export default function SignUpPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('Individual');
+  const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   async function handleSignUp(e: React.FormEvent) {
     e.preventDefault();
+
+    if (!agreed) {
+      setErrorMsg('Please agree to the Terms of Service and Privacy Policy to continue.');
+      return;
+    }
+
     setLoading(true);
     setErrorMsg('');
 
@@ -59,7 +67,9 @@ export default function SignUpPage() {
             <div className="auth-bullet"><div className="auth-bullet-dot"></div><div className="auth-bullet-text">Free for individuals. Team plans available.</div></div>
           </div>
         </div>
-        <div className="auth-left-footer">© 2026 Clarity Health · Privacy · Terms</div>
+        <div className="auth-left-footer">
+          © 2026 Clarity Health · <Link href="/privacy" style={{ color: 'inherit' }}>Privacy</Link> · <Link href="/terms" style={{ color: 'inherit' }}>Terms</Link>
+        </div>
       </div>
 
       <div className="auth-right">
@@ -104,17 +114,62 @@ export default function SignUpPage() {
             <input className="form-input" type="password" placeholder="8+ characters" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
           </div>
 
+          {/* Agreement checkbox */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '10px',
+              marginTop: '1.25rem',
+              padding: '12px 14px',
+              background: '#faf7f2',
+              border: '1px solid #eef1f4',
+              borderRadius: '8px',
+            }}
+          >
+            <input
+              type="checkbox"
+              id="agree"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              style={{
+                marginTop: '3px',
+                cursor: 'pointer',
+                width: '16px',
+                height: '16px',
+                accentColor: '#7a9b76',
+                flexShrink: 0,
+              }}
+            />
+            <label
+              htmlFor="agree"
+              style={{
+                fontSize: '0.82rem',
+                color: '#3a4d68',
+                lineHeight: '1.5',
+                cursor: 'pointer',
+              }}
+            >
+              I agree to the{' '}
+              <Link href="/terms" target="_blank" style={{ color: '#7a9b76', textDecoration: 'underline' }}>
+                Terms of Service
+              </Link>{' '}
+              and{' '}
+              <Link href="/privacy" target="_blank" style={{ color: '#7a9b76', textDecoration: 'underline' }}>
+                Privacy Policy
+              </Link>
+              .
+            </label>
+          </div>
+
           {errorMsg && <div style={{color: '#d95858', fontSize: '0.85rem', marginTop: '0.75rem'}}>{errorMsg}</div>}
 
-          <button type="submit" className="btn-full btn-accent" style={{marginTop: '0.75rem'}} disabled={loading}>
+          <button type="submit" className="btn-full btn-accent" style={{marginTop: '0.75rem'}} disabled={loading || !agreed}>
             {loading ? 'Creating account...' : 'Create my account →'}
           </button>
 
           <div className="auth-footer-note" style={{marginTop: '1.5rem'}}>
             Already have an account? <a href="/login">Log in</a>
-          </div>
-          <div className="auth-footer-note" style={{marginTop: '0.5rem', fontSize: '0.72rem'}}>
-            By signing up you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>
           </div>
         </form>
       </div>

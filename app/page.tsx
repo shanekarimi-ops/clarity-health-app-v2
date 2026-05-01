@@ -163,10 +163,9 @@ export default function HomePage() {
       <footer className="hp-footer">
         <div className="hp-footer-logo">Clarity <em>Health</em></div>
         <div className="hp-footer-links">
-          <a href="#">Privacy Policy</a>
-          <a href="#">Terms of Service</a>
-          <a href="#">HIPAA Notice</a>
-          <a href="#">Contact</a>
+          <a href="/privacy">Privacy Policy</a>
+          <a href="/terms">Terms of Service</a>
+          <a href="mailto:support@clarityhealth.app">Contact</a>
         </div>
         <div className="hp-footer-copy">© 2026 Clarity Health, Inc.</div>
       </footer>
