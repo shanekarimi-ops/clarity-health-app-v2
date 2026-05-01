@@ -22,6 +22,7 @@ type RankedPlan = {
   summary: string;
   pros: string[];
   cons: string[];
+  claimsInsight?: string | null;
 };
 
 type Recommendation = {
@@ -87,6 +88,11 @@ export default function MyPlansPage() {
   const lastName = user?.user_metadata?.last_name || '';
   const role = user?.user_metadata?.role || 'Individual';
 
+  // Derive whether any of the ranked plans have claims insights (means claims were used)
+  const hasClaimsInsights = !!recommendation?.plans?.some(
+    (p) => p.claimsInsight && p.claimsInsight.trim().length > 0
+  );
+
   return (
     <div className="dash-layout">
       <Sidebar
@@ -139,6 +145,30 @@ export default function MyPlansPage() {
                   <button className="btn-sm btn-ghost-sm">Run again →</button>
                 </Link>
               </div>
+
+              {/* Claims-aware ranking banner — shown only when claims insights are present */}
+              {hasClaimsInsights && (
+                <div style={{
+                  background: '#ebf3ea',
+                  border: '1px solid #c7d9c5',
+                  borderRadius: '8px',
+                  padding: '0.85rem 1.1rem',
+                  fontSize: '0.875rem',
+                  lineHeight: 1.5,
+                  color: '#3a4d68',
+                  marginBottom: '1rem',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.6rem',
+                }}>
+                  <span style={{ fontSize: '1.1rem', lineHeight: 1, flexShrink: 0, marginTop: '2px' }}>📄</span>
+                  <div>
+                    <strong style={{ color: '#5a7857' }}>Claims-aware ranking active.</strong>{' '}
+                    We weighted these recommendations using insights from your uploaded claims. Expand any plan below to see how your claims influenced its rank.
+                  </div>
+                </div>
+              )}
+
               {recommendation.overall_advice && (
                 <div style={{
                   background: '#faf7f2',
@@ -160,6 +190,7 @@ export default function MyPlansPage() {
             {/* Plan cards */}
             {recommendation.plans.map((plan) => {
               const isExpanded = expandedPlanId === plan.id;
+              const planHasClaimsInsight = plan.claimsInsight && plan.claimsInsight.trim().length > 0;
               return (
                 <div key={plan.id} className="dash-card" style={{ marginBottom: '1rem' }}>
                   <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -269,29 +300,56 @@ export default function MyPlansPage() {
                   </button>
 
                   {isExpanded && (
-                    <div style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                      gap: '1rem',
-                      marginTop: '1rem',
-                    }}>
-                      <div>
-                        <div style={{ fontSize: '0.75rem', color: '#7a9b76', fontWeight: 700, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                          ✓ Pros
+                    <>
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                        gap: '1rem',
+                        marginTop: '1rem',
+                      }}>
+                        <div>
+                          <div style={{ fontSize: '0.75rem', color: '#7a9b76', fontWeight: 700, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            ✓ Pros
+                          </div>
+                          <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.85rem', color: '#3a4d68', lineHeight: 1.6 }}>
+                            {plan.pros?.map((p, i) => <li key={i}>{p}</li>)}
+                          </ul>
                         </div>
-                        <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.85rem', color: '#3a4d68', lineHeight: 1.6 }}>
-                          {plan.pros?.map((p, i) => <li key={i}>{p}</li>)}
-                        </ul>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '0.75rem', color: '#d95858', fontWeight: 700, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                          ⚠ Cons
+                        <div>
+                          <div style={{ fontSize: '0.75rem', color: '#d95858', fontWeight: 700, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            ⚠ Cons
+                          </div>
+                          <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.85rem', color: '#3a4d68', lineHeight: 1.6 }}>
+                            {plan.cons?.map((c, i) => <li key={i}>{c}</li>)}
+                          </ul>
                         </div>
-                        <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.85rem', color: '#3a4d68', lineHeight: 1.6 }}>
-                          {plan.cons?.map((c, i) => <li key={i}>{c}</li>)}
-                        </ul>
                       </div>
-                    </div>
+
+                      {/* Per-plan claims insight */}
+                      {planHasClaimsInsight && (
+                        <div style={{
+                          marginTop: '1rem',
+                          padding: '0.85rem 1rem',
+                          background: '#f5f8f4',
+                          border: '1px solid #d4e2d2',
+                          borderRadius: '6px',
+                          fontSize: '0.85rem',
+                          lineHeight: 1.5,
+                          color: '#3a4d68',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '0.5rem',
+                        }}>
+                          <span style={{ fontSize: '1rem', flexShrink: 0, marginTop: '1px' }}>📄</span>
+                          <div>
+                            <strong style={{ color: '#5a7857', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: '0.2rem' }}>
+                              How your claims shaped this rank
+                            </strong>
+                            {plan.claimsInsight}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               );
