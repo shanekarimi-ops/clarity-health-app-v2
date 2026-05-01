@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '../supabase';
 import ClaimsUpload from '../components/ClaimsUpload';
 import Sidebar from '../components/Sidebar';
@@ -16,12 +17,30 @@ type Claim = {
   uploaded_at: string;
 };
 
+type RankedPlan = {
+  id: string;
+  name: string;
+  rank: number;
+  matchScore: number;
+  premium: number;
+  premiumWithCredit: number;
+};
+
+type Recommendation = {
+  id: string;
+  created_at: string;
+  county_name: string;
+  state: string;
+  plans: RankedPlan[];
+};
+
 export default function ProfilePage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [claimsLoading, setClaimsLoading] = useState(false);
+  const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
 
   useEffect(() => {
     async function getUser() {
@@ -51,11 +70,26 @@ export default function ProfilePage() {
     setClaimsLoading(false);
   }, [user]);
 
+  const fetchRecommendation = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('recommendations')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (data && data.length > 0) {
+      setRecommendation(data[0] as Recommendation);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (user) {
       fetchClaims();
+      fetchRecommendation();
     }
-  }, [user, fetchClaims]);
+  }, [user, fetchClaims, fetchRecommendation]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -126,6 +160,15 @@ export default function ProfilePage() {
 
   const claimsCount = claims.length;
 
+  // Compute recommendation-derived stats
+  const topPlan = recommendation?.plans?.find((p) => p.rank === 1);
+  const topMatchScore = topPlan?.matchScore ?? null;
+  const monthlySavings =
+    topPlan && topPlan.premium != null && topPlan.premiumWithCredit != null
+      ? Math.max(0, Math.round(topPlan.premium - topPlan.premiumWithCredit))
+      : null;
+  const hasRecommendation = !!recommendation;
+
   return (
     <div className="dash-layout">
       <Sidebar
@@ -148,13 +191,30 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {claimsCount === 0 ? (
+        {hasRecommendation ? (
+          <div className="welcome-banner" style={{ background: '#ebf3ea', borderColor: '#7a9b76' }}>
+            <div className="welcome-banner-icon">🎯</div>
+            <div style={{ flex: 1 }}>
+              <div className="welcome-banner-title">
+                Your top match: {topPlan?.name}
+              </div>
+              <div className="welcome-banner-desc">
+                Ranked #1 of {recommendation?.plans?.length ?? 0} plans for your household.{' '}
+                <Link href="/my-plans" style={{ color: '#5a7857', fontWeight: 600 }}>
+                  See full results →
+                </Link>
+              </div>
+            </div>
+          </div>
+        ) : claimsCount === 0 ? (
           <div className="welcome-banner">
             <div className="welcome-banner-icon">✨</div>
             <div style={{ flex: 1 }}>
               <div className="welcome-banner-title">You&apos;re all set up!</div>
               <div className="welcome-banner-desc">
-                Upload your claims below to start getting personalized plan recommendations based on your real health data.
+                Run your first plan recommendation from{' '}
+                <Link href="/find-plans" style={{ color: '#1e3a5f', fontWeight: 600 }}>Find Plans</Link>
+                {' '}or upload your claims below to get started.
               </div>
             </div>
           </div>
@@ -164,7 +224,8 @@ export default function ProfilePage() {
             <div style={{ flex: 1 }}>
               <div className="welcome-banner-title">{claimsCount} claim{claimsCount !== 1 ? 's' : ''} uploaded</div>
               <div className="welcome-banner-desc">
-                Your data is securely stored. AI plan recommendations will appear here in the next phase of the build.
+                Your data is securely stored.{' '}
+                <Link href="/find-plans" style={{ color: '#5a7857', fontWeight: 600 }}>Get your plan recommendations →</Link>
               </div>
             </div>
           </div>
@@ -173,13 +234,21 @@ export default function ProfilePage() {
         <div className="dash-stat-row">
           <div className="dash-stat">
             <div className="dash-stat-label">Top Match Score</div>
-            <div className="dash-stat-val muted-val">—</div>
-            <div className="dash-stat-change">Coming with AI engine</div>
+            <div className={`dash-stat-val ${topMatchScore == null ? 'muted-val' : ''}`}>
+              {topMatchScore != null ? `${topMatchScore}` : '—'}
+            </div>
+            <div className="dash-stat-change">
+              {topMatchScore != null ? `${topPlan?.name}` : 'Run Find Plans to see'}
+            </div>
           </div>
           <div className="dash-stat">
             <div className="dash-stat-label">Est. Monthly Savings</div>
-            <div className="dash-stat-val muted-val">—</div>
-            <div className="dash-stat-change">Pending analysis</div>
+            <div className={`dash-stat-val ${monthlySavings == null ? 'muted-val' : ''}`}>
+              {monthlySavings != null ? `$${monthlySavings.toLocaleString()}` : '—'}
+            </div>
+            <div className="dash-stat-change">
+              {monthlySavings != null ? 'vs. unsubsidized premium' : 'Pending analysis'}
+            </div>
           </div>
           <div className="dash-stat">
             <div className="dash-stat-label">Claims Uploaded</div>
@@ -289,11 +358,15 @@ export default function ProfilePage() {
                     <div className="checklist-desc">Conditions, family size, budget</div>
                   </div>
                 </div>
-                <div className="checklist-item">
-                  <div className="checklist-check empty">4</div>
+                <div className={`checklist-item ${hasRecommendation ? 'done' : ''}`}>
+                  <div className={`checklist-check ${hasRecommendation ? '' : 'empty'}`}>{hasRecommendation ? '✓' : '4'}</div>
                   <div>
                     <div className="checklist-title">Get your recommendations</div>
-                    <div className="checklist-desc">AI-ranked plans tailored to you</div>
+                    <div className="checklist-desc">
+                      {hasRecommendation
+                        ? `${recommendation?.plans?.length ?? 0} plans ranked for your household`
+                        : 'AI-ranked plans tailored to you'}
+                    </div>
                   </div>
                 </div>
               </div>
