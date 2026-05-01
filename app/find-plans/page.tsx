@@ -11,7 +11,7 @@ export default function FindPlansPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [result, setResult] = useState<any>(null);
+  const [statusMsg, setStatusMsg] = useState('');
 
   // Form fields
   const [zipCode, setZipCode] = useState('');
@@ -75,7 +75,7 @@ export default function FindPlansPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrorMsg('');
-    setResult(null);
+    setStatusMsg('');
 
     if (!zipCode || zipCode.length < 5) {
       setErrorMsg('Please enter a valid 5-digit ZIP code.');
@@ -101,6 +101,8 @@ export default function FindPlansPage() {
     };
 
     try {
+      setStatusMsg('Fetching plans from the federal Marketplace...');
+
       const res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -109,15 +111,39 @@ export default function FindPlansPage() {
 
       const data = await res.json();
 
-      if (!res.ok) {
+      if (!res.ok || !data.success) {
         setErrorMsg(data.error || 'Something went wrong');
-        setResult(data); // still show details for debugging
-      } else {
-        setResult(data);
+        setSubmitting(false);
+        return;
       }
+
+      setStatusMsg('Saving your recommendations...');
+
+      // Save to Supabase
+      const { error: saveError } = await supabase.from('recommendations').insert({
+        user_id: user.id,
+        zip_code: payload.zipCode,
+        county_name: data.county?.name || null,
+        state: data.county?.state || null,
+        household_size: payload.householdSize,
+        annual_income: payload.annualIncome,
+        ages: payload.ages,
+        uses_tobacco: payload.usesTobacco,
+        total_plans_available: data.totalPlansAvailable || 0,
+        overall_advice: data.overallAdvice || '',
+        plans: data.plans || [],
+      });
+
+      if (saveError) {
+        setErrorMsg(`Plans found, but saving failed: ${saveError.message}`);
+        setSubmitting(false);
+        return;
+      }
+
+      setStatusMsg('Done! Redirecting to your plans...');
+      router.push('/my-plans');
     } catch (err: any) {
       setErrorMsg(err?.message || 'Network error');
-    } finally {
       setSubmitting(false);
     }
   }
@@ -256,41 +282,14 @@ export default function FindPlansPage() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
             <button type="submit" className="btn-sm btn-accent" disabled={submitting}>
-              {submitting ? 'Searching plans...' : 'Get My Recommendations →'}
+              {submitting ? 'Working...' : 'Get My Recommendations →'}
             </button>
+            {statusMsg && <span style={{ color: '#7a9b76', fontSize: '0.875rem' }}>{statusMsg}</span>}
             {errorMsg && <span style={{ color: '#d95858', fontSize: '0.875rem' }}>{errorMsg}</span>}
           </div>
         </form>
-
-        {/* Results / debug panel */}
-        {result && (
-          <div className="dash-card" style={{ marginBottom: '2rem' }}>
-            <div className="dash-card-header">
-              <div className="dash-card-title">Raw API Response (debug view)</div>
-            </div>
-            <p style={{ color: '#6b7785', fontSize: '0.85rem', margin: '0 0 0.75rem 0' }}>
-              {result.success
-                ? `Found ${result.planCount} plans for ${result.county?.name}, ${result.county?.state}. Showing first ${result.plans?.length || 0}.`
-                : 'Error response from API. Details below for debugging.'}
-            </p>
-            <pre
-              style={{
-                backgroundColor: '#1e3a5f',
-                color: '#e6f0fa',
-                padding: '1rem',
-                borderRadius: '6px',
-                fontSize: '0.75rem',
-                overflowX: 'auto',
-                maxHeight: '500px',
-                overflowY: 'auto',
-              }}
-            >
-              {JSON.stringify(result, null, 2)}
-            </pre>
-          </div>
-        )}
       </main>
     </div>
   );
