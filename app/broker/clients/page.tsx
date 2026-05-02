@@ -25,6 +25,8 @@ export default function BrokerClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [agencyId, setAgencyId] = useState<string | null>(null);
   const [brokerId, setBrokerId] = useState<string | null>(null);
+  const [user, setUser] = useState<any>(null);
+  const [agencyName, setAgencyName] = useState('Your Agency');
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
 
@@ -55,10 +57,12 @@ export default function BrokerClientsPage() {
       return;
     }
 
-    // Get broker record
+    setUser(user);
+
+    // Get broker record + agency
     const { data: brokerData } = await supabase
       .from('brokers')
-      .select('id, agency_id')
+      .select('id, agency_id, agencies(name)')
       .eq('user_id', user.id)
       .single();
 
@@ -70,6 +74,10 @@ export default function BrokerClientsPage() {
     setBrokerId(brokerData.id);
     setAgencyId(brokerData.agency_id);
 
+    if (brokerData.agencies) {
+      setAgencyName((brokerData.agencies as any).name || 'Your Agency');
+    }
+
     // Load clients for this agency
     const { data: clientsData } = await supabase
       .from('clients')
@@ -79,6 +87,11 @@ export default function BrokerClientsPage() {
 
     setClients(clientsData || []);
     setLoading(false);
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push('/');
   }
 
   async function handleAddClient(e: React.FormEvent) {
@@ -141,7 +154,13 @@ export default function BrokerClientsPage() {
   if (loading) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
-        <BrokerSidebar />
+        <BrokerSidebar
+          active="clients"
+          firstName={user?.user_metadata?.first_name || ''}
+          lastName={user?.user_metadata?.last_name || ''}
+          agencyName={agencyName}
+          onLogout={handleLogout}
+        />
         <div style={{ flex: 1, padding: '40px', fontFamily: 'Figtree, sans-serif' }}>
           Loading clients...
         </div>
@@ -151,7 +170,13 @@ export default function BrokerClientsPage() {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
-      <BrokerSidebar />
+      <BrokerSidebar
+        active="clients"
+        firstName={user?.user_metadata?.first_name || ''}
+        lastName={user?.user_metadata?.last_name || ''}
+        agencyName={agencyName}
+        onLogout={handleLogout}
+      />
 
       <div style={{ flex: 1, padding: '40px', fontFamily: 'Figtree, sans-serif' }}>
         {/* Header */}

@@ -29,6 +29,8 @@ export default function ClientProfilePage() {
 
   const [loading, setLoading] = useState(true);
   const [client, setClient] = useState<Client | null>(null);
+  const [user, setUser] = useState<any>(null);
+  const [agencyName, setAgencyName] = useState('Your Agency');
   const [activeTab, setActiveTab] = useState<'overview' | 'documents' | 'recommendations' | 'notes' | 'activity'>('overview');
   const [notFound, setNotFound] = useState(false);
 
@@ -51,6 +53,19 @@ export default function ClientProfilePage() {
       return;
     }
 
+    setUser(user);
+
+    // Get broker's agency name for sidebar
+    const { data: brokerData } = await supabase
+      .from('brokers')
+      .select('agencies(name)')
+      .eq('user_id', user.id)
+      .single();
+
+    if (brokerData?.agencies) {
+      setAgencyName((brokerData.agencies as any).name || 'Your Agency');
+    }
+
     const { data, error } = await supabase
       .from('clients')
       .select('*')
@@ -67,10 +82,21 @@ export default function ClientProfilePage() {
     setLoading(false);
   }
 
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push('/');
+  }
+
   if (loading) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
-        <BrokerSidebar />
+        <BrokerSidebar
+          active="clients"
+          firstName={user?.user_metadata?.first_name || ''}
+          lastName={user?.user_metadata?.last_name || ''}
+          agencyName={agencyName}
+          onLogout={handleLogout}
+        />
         <div style={{ flex: 1, padding: '40px', fontFamily: 'Figtree, sans-serif' }}>
           Loading client...
         </div>
@@ -81,7 +107,13 @@ export default function ClientProfilePage() {
   if (notFound || !client) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
-        <BrokerSidebar />
+        <BrokerSidebar
+          active="clients"
+          firstName={user?.user_metadata?.first_name || ''}
+          lastName={user?.user_metadata?.last_name || ''}
+          agencyName={agencyName}
+          onLogout={handleLogout}
+        />
         <div style={{ flex: 1, padding: '40px', fontFamily: 'Figtree, sans-serif' }}>
           <h1 style={{ fontFamily: 'Playfair Display, serif', color: '#1e3a5f' }}>
             Client not found
@@ -99,7 +131,13 @@ export default function ClientProfilePage() {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
-      <BrokerSidebar />
+      <BrokerSidebar
+        active="clients"
+        firstName={user?.user_metadata?.first_name || ''}
+        lastName={user?.user_metadata?.last_name || ''}
+        agencyName={agencyName}
+        onLogout={handleLogout}
+      />
 
       <div style={{ flex: 1, padding: '40px', fontFamily: 'Figtree, sans-serif' }}>
         {/* Breadcrumb */}
