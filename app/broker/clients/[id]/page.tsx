@@ -28,7 +28,7 @@ type ClaimRow = {
   file_name: string;
   file_size: number | null;
   file_type: string | null;
-  created_at: string;
+  uploaded_at: string;
   parsed?: {
     parse_status: string | null;
     summary_text: string | null;
@@ -135,9 +135,9 @@ export default function ClientProfilePage() {
     // Pull claims for this client, plus any parsed row attached to each claim
     const { data: claimRows, error: claimErr } = await supabase
       .from('claims')
-      .select('id, file_name, file_size, file_type, created_at')
+      .select('id, file_name, file_size, file_type, uploaded_at')
       .eq('client_id', clientId)
-      .order('created_at', { ascending: false });
+      .order('uploaded_at', { ascending: false });
 
     if (claimErr || !claimRows) {
       console.error('Error loading claims:', claimErr);
@@ -478,7 +478,7 @@ export default function ClientProfilePage() {
                           📄 {c.file_name}
                         </div>
                         <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
-                          {formatDate(c.created_at)}
+                          {formatDate(c.uploaded_at)}
                         </div>
                       </div>
                       <StatusBadge status={c.parsed?.parse_status} />
@@ -578,7 +578,7 @@ export default function ClientProfilePage() {
                           📄 {c.file_name}
                         </div>
                         <div style={{ fontSize: '12px', color: '#5b7a99', marginTop: '4px' }}>
-                          {formatDate(c.created_at)} · {formatFileSize(c.file_size)}
+                          {formatDate(c.uploaded_at)} · {formatFileSize(c.file_size)}
                         </div>
                         {c.parsed?.summary_text && (
                           <div style={{ fontSize: '12px', color: '#888', marginTop: '6px', fontStyle: 'italic' }}>
