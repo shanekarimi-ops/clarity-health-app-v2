@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { supabase } from '../supabase';
+import { getAccountType, dashboardPathFor } from '../lib/account';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -30,7 +31,8 @@ export default function LoginPage() {
     }
 
     if (data.user) {
-      router.push('/profile');
+      const accountType = getAccountType(data.user);
+      router.push(dashboardPathFor(accountType));
     }
   }
 

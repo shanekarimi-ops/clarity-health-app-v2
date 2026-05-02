@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import Link from 'next/link';
 import { supabase } from '../supabase';
+import { dashboardPathFor } from '../lib/account';
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -18,7 +19,7 @@ export default function SignUpPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  function roleToAccountType(r: string): string {
+  function roleToAccountType(r: string): 'individual' | 'broker' | 'hr_employer' {
     if (r === 'Broker') return 'broker';
     if (r === 'HR') return 'hr_employer';
     return 'individual';
@@ -88,7 +89,7 @@ export default function SignUpPage() {
     }
 
     setLoading(false);
-    router.push('/profile');
+    router.push(dashboardPathFor(accountType));
   }
 
   return (
