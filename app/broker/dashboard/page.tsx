@@ -242,7 +242,13 @@ export default function BrokerDashboardPage() {
                   </div>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  maxHeight: '260px',
+                  overflowY: 'auto',
+                  paddingRight: '4px',
+                }}>
                   {recentClients.map((client) => (
                     <Link
                       key={client.id}
