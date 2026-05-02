@@ -26,6 +26,7 @@ type Client = {
 type ClaimRow = {
   id: string;
   file_name: string;
+  file_path: string;
   file_size: number | null;
   file_type: string | null;
   uploaded_at: string;
@@ -50,13 +51,14 @@ export default function ClientProfilePage() {
   // Documents state
   const [claims, setClaims] = useState<ClaimRow[]>([]);
   const [claimsLoading, setClaimsLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const pollTimerRef = useRef<any>(null);
 
   useEffect(() => {
     loadClient();
   }, [clientId]);
 
-  // Load claims when client is loaded, then again whenever activeTab changes to docs/overview
+  // Load claims when client is loaded
   useEffect(() => {
     if (client) {
       loadClaims();
@@ -132,10 +134,9 @@ export default function ClientProfilePage() {
     if (!clientId) return;
     setClaimsLoading(true);
 
-    // Pull claims for this client, plus any parsed row attached to each claim
     const { data: claimRows, error: claimErr } = await supabase
       .from('claims')
-      .select('id, file_name, file_size, file_type, uploaded_at')
+      .select('id, file_name, file_path, file_size, file_type, uploaded_at')
       .eq('client_id', clientId)
       .order('uploaded_at', { ascending: false });
 
@@ -152,7 +153,6 @@ export default function ClientProfilePage() {
       return;
     }
 
-    // Fetch parsed rows for these claim ids
     const claimIds = claimRows.map((c) => c.id);
     const { data: parsedRows } = await supabase
       .from('claims_parsed')
@@ -176,6 +176,55 @@ export default function ClientProfilePage() {
     setClaimsLoading(false);
   }, [clientId]);
 
+  async function handleDeleteClaim(claim: ClaimRow) {
+    const confirmed = window.confirm(
+      `Delete "${claim.file_name}"?\n\nThis will permanently remove the file and its parsed data. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingId(claim.id);
+
+    try {
+      // 1. Delete file from Storage (best-effort — don't block on failure)
+      if (claim.file_path) {
+        const { error: storageErr } = await supabase.storage
+          .from('claims')
+          .remove([claim.file_path]);
+        if (storageErr) {
+          console.warn('Storage delete failed (will continue):', storageErr.message);
+        }
+      }
+
+      // 2. Delete parsed row(s) for this claim
+      const { error: parsedErr } = await supabase
+        .from('claims_parsed')
+        .delete()
+        .eq('claim_id', claim.id);
+      if (parsedErr) {
+        console.warn('Parsed delete failed (will continue):', parsedErr.message);
+      }
+
+      // 3. Delete claim row
+      const { error: claimErr } = await supabase
+        .from('claims')
+        .delete()
+        .eq('id', claim.id);
+      if (claimErr) {
+        alert(`Could not delete document: ${claimErr.message}`);
+        setDeletingId(null);
+        return;
+      }
+
+      // 4. Refresh list
+      await loadClaims();
+    } catch (err: any) {
+      console.error('Unexpected delete error:', err);
+      alert(`Unexpected error deleting document: ${err.message || 'unknown'}`);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/');
@@ -183,7 +232,6 @@ export default function ClientProfilePage() {
 
   function handleUploadDocClick() {
     setActiveTab('documents');
-    // Scroll to top of tab area
     setTimeout(() => {
       window.scrollTo({ top: 200, behavior: 'smooth' });
     }, 50);
@@ -216,7 +264,6 @@ export default function ClientProfilePage() {
         </span>
       );
     }
-    // Any error status
     return (
       <span style={{ ...statusBadge, background: '#fde7e7', color: '#a44' }}>
         ✗ Failed
@@ -299,7 +346,6 @@ export default function ClientProfilePage() {
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-              {/* Avatar circle */}
               <div style={{
                 width: '64px',
                 height: '64px',
@@ -364,7 +410,6 @@ export default function ClientProfilePage() {
             </div>
           </div>
 
-          {/* Action buttons */}
           <div style={{ display: 'flex', gap: '10px', marginTop: '24px', flexWrap: 'wrap' }}>
             <button style={primaryButtonDisabled} disabled>
               Run Recommendation
@@ -427,7 +472,6 @@ export default function ClientProfilePage() {
         {/* Tab content */}
         {activeTab === 'overview' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            {/* Latest Recommendation */}
             <div style={cardStyle}>
               <h3 style={cardTitle}>Latest Recommendation</h3>
               <div style={emptyText}>
@@ -435,7 +479,6 @@ export default function ClientProfilePage() {
               </div>
             </div>
 
-            {/* Recent Documents — now real */}
             <div style={cardStyle}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
                 <h3 style={{ ...cardTitle, marginBottom: 0 }}>Recent Documents</h3>
@@ -488,7 +531,6 @@ export default function ClientProfilePage() {
               )}
             </div>
 
-            {/* Client Info */}
             <div style={cardStyle}>
               <h3 style={cardTitle}>Client Info</h3>
               <div style={{ fontSize: '14px', color: '#3a4d68', lineHeight: '1.8' }}>
@@ -502,7 +544,6 @@ export default function ClientProfilePage() {
               </div>
             </div>
 
-            {/* Link Status */}
             <div style={cardStyle}>
               <h3 style={cardTitle}>Account Link</h3>
               <div style={emptyText}>
@@ -514,7 +555,6 @@ export default function ClientProfilePage() {
 
         {activeTab === 'documents' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            {/* Upload widget */}
             <div style={cardStyle}>
               <h3 style={{ ...cardTitle, marginBottom: '6px' }}>
                 Upload claims for {client.first_name}
@@ -531,7 +571,6 @@ export default function ClientProfilePage() {
               )}
             </div>
 
-            {/* Uploaded list */}
             <div style={cardStyle}>
               <div style={{
                 display: 'flex',
@@ -553,44 +592,56 @@ export default function ClientProfilePage() {
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {claims.map((c) => (
-                    <div
-                      key={c.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '14px 16px',
-                        background: '#faf7f2',
-                        border: '1px solid #eef1f4',
-                        borderRadius: '8px',
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{
-                          fontSize: '14px',
-                          color: '#1e3a5f',
-                          fontWeight: 600,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}>
-                          📄 {c.file_name}
-                        </div>
-                        <div style={{ fontSize: '12px', color: '#5b7a99', marginTop: '4px' }}>
-                          {formatDate(c.uploaded_at)} · {formatFileSize(c.file_size)}
-                        </div>
-                        {c.parsed?.summary_text && (
-                          <div style={{ fontSize: '12px', color: '#888', marginTop: '6px', fontStyle: 'italic' }}>
-                            {c.parsed.summary_text}
+                  {claims.map((c) => {
+                    const isDeleting = deletingId === c.id;
+                    return (
+                      <div
+                        key={c.id}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '14px 16px',
+                          background: '#faf7f2',
+                          border: '1px solid #eef1f4',
+                          borderRadius: '8px',
+                          opacity: isDeleting ? 0.5 : 1,
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: '14px',
+                            color: '#1e3a5f',
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}>
+                            📄 {c.file_name}
                           </div>
-                        )}
+                          <div style={{ fontSize: '12px', color: '#5b7a99', marginTop: '4px' }}>
+                            {formatDate(c.uploaded_at)} · {formatFileSize(c.file_size)}
+                          </div>
+                          {c.parsed?.summary_text && (
+                            <div style={{ fontSize: '12px', color: '#888', marginTop: '6px', fontStyle: 'italic' }}>
+                              {c.parsed.summary_text}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ marginLeft: '16px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <StatusBadge status={c.parsed?.parse_status} />
+                          <button
+                            onClick={() => handleDeleteClaim(c)}
+                            disabled={isDeleting}
+                            style={deleteButton}
+                            title="Delete document"
+                          >
+                            {isDeleting ? 'Deleting…' : '🗑'}
+                          </button>
+                        </div>
                       </div>
-                      <div style={{ marginLeft: '16px', flexShrink: 0 }}>
-                        <StatusBadge status={c.parsed?.parse_status} />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -693,6 +744,17 @@ const linkButton: React.CSSProperties = {
   cursor: 'pointer',
   fontFamily: 'Figtree, sans-serif',
   padding: 0,
+};
+
+const deleteButton: React.CSSProperties = {
+  background: 'transparent',
+  color: '#a44',
+  border: '1px solid #f0d0d0',
+  borderRadius: '6px',
+  padding: '6px 10px',
+  fontSize: '13px',
+  cursor: 'pointer',
+  fontFamily: 'Figtree, sans-serif',
 };
 
 const statusBadge: React.CSSProperties = {
