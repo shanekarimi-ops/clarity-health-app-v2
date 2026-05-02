@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
+import ClaimsUpload from '../../../components/ClaimsUpload';
 import { getAccountType } from '../../../lib/account';
 
 type Client = {
@@ -22,6 +23,18 @@ type Client = {
   created_at: string;
 };
 
+type ClaimRow = {
+  id: string;
+  file_name: string;
+  file_size: number | null;
+  file_type: string | null;
+  created_at: string;
+  parsed?: {
+    parse_status: string | null;
+    summary_text: string | null;
+  } | null;
+};
+
 export default function ClientProfilePage() {
   const router = useRouter();
   const params = useParams();
@@ -34,9 +47,42 @@ export default function ClientProfilePage() {
   const [activeTab, setActiveTab] = useState<'overview' | 'documents' | 'recommendations' | 'notes' | 'activity'>('overview');
   const [notFound, setNotFound] = useState(false);
 
+  // Documents state
+  const [claims, setClaims] = useState<ClaimRow[]>([]);
+  const [claimsLoading, setClaimsLoading] = useState(false);
+  const pollTimerRef = useRef<any>(null);
+
   useEffect(() => {
     loadClient();
   }, [clientId]);
+
+  // Load claims when client is loaded, then again whenever activeTab changes to docs/overview
+  useEffect(() => {
+    if (client) {
+      loadClaims();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id]);
+
+  // Auto-refresh polling: every 5s while any claim is still parsing
+  useEffect(() => {
+    const anyPending = claims.some(
+      (c) => !c.parsed || c.parsed.parse_status === null || c.parsed.parse_status === 'pending'
+    );
+
+    if (anyPending && client) {
+      pollTimerRef.current = setTimeout(() => {
+        loadClaims();
+      }, 5000);
+    }
+
+    return () => {
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claims, client?.id]);
 
   async function loadClient() {
     setLoading(true);
@@ -82,9 +128,100 @@ export default function ClientProfilePage() {
     setLoading(false);
   }
 
+  const loadClaims = useCallback(async () => {
+    if (!clientId) return;
+    setClaimsLoading(true);
+
+    // Pull claims for this client, plus any parsed row attached to each claim
+    const { data: claimRows, error: claimErr } = await supabase
+      .from('claims')
+      .select('id, file_name, file_size, file_type, created_at')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false });
+
+    if (claimErr || !claimRows) {
+      console.error('Error loading claims:', claimErr);
+      setClaims([]);
+      setClaimsLoading(false);
+      return;
+    }
+
+    if (claimRows.length === 0) {
+      setClaims([]);
+      setClaimsLoading(false);
+      return;
+    }
+
+    // Fetch parsed rows for these claim ids
+    const claimIds = claimRows.map((c) => c.id);
+    const { data: parsedRows } = await supabase
+      .from('claims_parsed')
+      .select('claim_id, parse_status, summary_text')
+      .in('claim_id', claimIds);
+
+    const parsedMap = new Map<string, { parse_status: string | null; summary_text: string | null }>();
+    (parsedRows || []).forEach((p: any) => {
+      parsedMap.set(p.claim_id, {
+        parse_status: p.parse_status,
+        summary_text: p.summary_text,
+      });
+    });
+
+    const merged: ClaimRow[] = claimRows.map((c) => ({
+      ...c,
+      parsed: parsedMap.get(c.id) || null,
+    }));
+
+    setClaims(merged);
+    setClaimsLoading(false);
+  }, [clientId]);
+
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/');
+  }
+
+  function handleUploadDocClick() {
+    setActiveTab('documents');
+    // Scroll to top of tab area
+    setTimeout(() => {
+      window.scrollTo({ top: 200, behavior: 'smooth' });
+    }, 50);
+  }
+
+  function formatFileSize(bytes: number | null): string {
+    if (!bytes) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function formatDate(iso: string): string {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function StatusBadge({ status }: { status: string | null | undefined }) {
+    if (!status || status === 'pending') {
+      return (
+        <span style={{ ...statusBadge, background: '#fff4e0', color: '#a96a1c' }}>
+          ⏳ Parsing…
+        </span>
+      );
+    }
+    if (status === 'success') {
+      return (
+        <span style={{ ...statusBadge, background: '#e8f0e6', color: '#5a7857' }}>
+          ✓ Parsed
+        </span>
+      );
+    }
+    // Any error status
+    return (
+      <span style={{ ...statusBadge, background: '#fde7e7', color: '#a44' }}>
+        ✗ Failed
+      </span>
+    );
   }
 
   if (loading) {
@@ -128,6 +265,8 @@ export default function ClientProfilePage() {
       </div>
     );
   }
+
+  const recentClaims = claims.slice(0, 3);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
@@ -227,18 +366,18 @@ export default function ClientProfilePage() {
 
           {/* Action buttons */}
           <div style={{ display: 'flex', gap: '10px', marginTop: '24px', flexWrap: 'wrap' }}>
-            <button style={primaryButton} disabled>
+            <button style={primaryButtonDisabled} disabled>
               Run Recommendation
             </button>
-            <button style={secondaryButton} disabled>
+            <button style={secondaryButtonActive} onClick={handleUploadDocClick}>
               Upload Document
             </button>
-            <button style={secondaryButton} disabled>
+            <button style={secondaryButtonDisabled} disabled>
               Send Link Request
             </button>
           </div>
           <div style={{ color: '#999', fontSize: '12px', marginTop: '10px' }}>
-            (Action buttons coming in Session 15)
+            (Run Recommendation + Send Link Request coming in Session 16)
           </div>
         </div>
 
@@ -268,6 +407,19 @@ export default function ClientProfilePage() {
               }}
             >
               {tab}
+              {tab === 'documents' && claims.length > 0 && (
+                <span style={{
+                  marginLeft: '6px',
+                  background: '#eef1f4',
+                  color: '#5b7a99',
+                  padding: '2px 8px',
+                  borderRadius: '10px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                }}>
+                  {claims.length}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -283,12 +435,57 @@ export default function ClientProfilePage() {
               </div>
             </div>
 
-            {/* Recent Documents */}
+            {/* Recent Documents — now real */}
             <div style={cardStyle}>
-              <h3 style={cardTitle}>Recent Documents</h3>
-              <div style={emptyText}>
-                No documents uploaded yet.
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <h3 style={{ ...cardTitle, marginBottom: 0 }}>Recent Documents</h3>
+                {claims.length > 0 && (
+                  <button
+                    onClick={() => setActiveTab('documents')}
+                    style={linkButton}
+                  >
+                    View all →
+                  </button>
+                )}
               </div>
+              {recentClaims.length === 0 ? (
+                <div style={emptyText}>
+                  No documents uploaded yet.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {recentClaims.map((c) => (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '10px',
+                        background: '#faf7f2',
+                        borderRadius: '6px',
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: '13px',
+                          color: '#1e3a5f',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}>
+                          📄 {c.file_name}
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
+                          {formatDate(c.created_at)}
+                        </div>
+                      </div>
+                      <StatusBadge status={c.parsed?.parse_status} />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Client Info */}
@@ -316,9 +513,86 @@ export default function ClientProfilePage() {
         )}
 
         {activeTab === 'documents' && (
-          <div style={cardStyle}>
-            <div style={emptyText}>
-              Documents tab coming in Session 15. Will let you upload claims and employer benefits on behalf of the client.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {/* Upload widget */}
+            <div style={cardStyle}>
+              <h3 style={{ ...cardTitle, marginBottom: '6px' }}>
+                Upload claims for {client.first_name}
+              </h3>
+              <div style={{ color: '#5b7a99', fontSize: '13px', marginBottom: '18px' }}>
+                Drop in EOBs, claims, or medical statements. We'll auto-parse them with AI.
+              </div>
+              {user && (
+                <ClaimsUpload
+                  userId={user.id}
+                  clientId={client.id}
+                  onUploadComplete={loadClaims}
+                />
+              )}
+            </div>
+
+            {/* Uploaded list */}
+            <div style={cardStyle}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px',
+              }}>
+                <h3 style={{ ...cardTitle, marginBottom: 0 }}>
+                  Uploaded Documents ({claims.length})
+                </h3>
+                <button onClick={loadClaims} style={linkButton} disabled={claimsLoading}>
+                  {claimsLoading ? 'Refreshing...' : '↻ Refresh'}
+                </button>
+              </div>
+
+              {claims.length === 0 ? (
+                <div style={emptyText}>
+                  No documents uploaded yet. Use the upload area above to get started.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {claims.map((c) => (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '14px 16px',
+                        background: '#faf7f2',
+                        border: '1px solid #eef1f4',
+                        borderRadius: '8px',
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: '14px',
+                          color: '#1e3a5f',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}>
+                          📄 {c.file_name}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#5b7a99', marginTop: '4px' }}>
+                          {formatDate(c.created_at)} · {formatFileSize(c.file_size)}
+                        </div>
+                        {c.parsed?.summary_text && (
+                          <div style={{ fontSize: '12px', color: '#888', marginTop: '6px', fontStyle: 'italic' }}>
+                            {c.parsed.summary_text}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ marginLeft: '16px', flexShrink: 0 }}>
+                        <StatusBadge status={c.parsed?.parse_status} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -326,7 +600,7 @@ export default function ClientProfilePage() {
         {activeTab === 'recommendations' && (
           <div style={cardStyle}>
             <div style={emptyText}>
-              Recommendations tab coming in Session 15. Will show all plan recommendations run for this client.
+              Recommendations tab coming in Session 16. Will show all plan recommendations run for this client.
             </div>
           </div>
         )}
@@ -334,7 +608,7 @@ export default function ClientProfilePage() {
         {activeTab === 'notes' && (
           <div style={cardStyle}>
             <div style={emptyText}>
-              Notes tab coming in Session 15. Internal notes only — never shown to the client.
+              Notes tab coming in Session 16. Internal notes only — never shown to the client.
             </div>
           </div>
         )}
@@ -342,7 +616,7 @@ export default function ClientProfilePage() {
         {activeTab === 'activity' && (
           <div style={cardStyle}>
             <div style={emptyText}>
-              Activity log coming in Session 15.
+              Activity log coming in Session 17.
             </div>
           </div>
         )}
@@ -372,7 +646,7 @@ const emptyText: React.CSSProperties = {
   fontStyle: 'italic',
 };
 
-const primaryButton: React.CSSProperties = {
+const primaryButtonDisabled: React.CSSProperties = {
   background: '#7a9b76',
   color: 'white',
   border: 'none',
@@ -385,7 +659,19 @@ const primaryButton: React.CSSProperties = {
   opacity: 0.6,
 };
 
-const secondaryButton: React.CSSProperties = {
+const secondaryButtonActive: React.CSSProperties = {
+  background: 'white',
+  color: '#1e3a5f',
+  border: '1px solid #1e3a5f',
+  padding: '10px 20px',
+  borderRadius: '8px',
+  fontSize: '14px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'Figtree, sans-serif',
+};
+
+const secondaryButtonDisabled: React.CSSProperties = {
   background: 'white',
   color: '#3a4d68',
   border: '1px solid #d4d4d4',
@@ -396,4 +682,24 @@ const secondaryButton: React.CSSProperties = {
   cursor: 'not-allowed',
   fontFamily: 'Figtree, sans-serif',
   opacity: 0.6,
+};
+
+const linkButton: React.CSSProperties = {
+  background: 'transparent',
+  color: '#7a9b76',
+  border: 'none',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'Figtree, sans-serif',
+  padding: 0,
+};
+
+const statusBadge: React.CSSProperties = {
+  display: 'inline-block',
+  padding: '4px 10px',
+  borderRadius: '12px',
+  fontSize: '11px',
+  fontWeight: 600,
+  whiteSpace: 'nowrap',
 };

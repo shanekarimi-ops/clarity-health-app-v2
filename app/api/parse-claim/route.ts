@@ -40,7 +40,7 @@ Rules:
 
 export async function POST(request: Request) {
   try {
-    const { claim_id, user_id } = await request.json();
+    const { claim_id, user_id, client_id } = await request.json();
 
     if (!claim_id || !user_id) {
       return NextResponse.json(
@@ -90,6 +90,7 @@ export async function POST(request: Request) {
       await supabaseAdmin.from('claims_parsed').upsert({
         claim_id,
         user_id,
+        client_id: client_id ?? claim.client_id ?? null,
         parse_status: 'unsupported_format',
         parse_error: `File type ${claim.file_type} not supported for parsing`,
       });
@@ -152,6 +153,7 @@ export async function POST(request: Request) {
       await supabaseAdmin.from('claims_parsed').upsert({
         claim_id,
         user_id,
+        client_id: client_id ?? claim.client_id ?? null,
         parse_status: 'json_parse_failed',
         parse_error: `Could not parse Claude response as JSON: ${responseText.slice(0, 500)}`,
         raw_extraction: { raw_response: responseText },
@@ -168,6 +170,7 @@ export async function POST(request: Request) {
       .upsert({
         claim_id,
         user_id,
+        client_id: client_id ?? claim.client_id ?? null,
         conditions: extracted.conditions || [],
         procedures: extracted.procedures || [],
         medications: extracted.medications || [],
@@ -197,7 +200,7 @@ export async function POST(request: Request) {
       parsed: saved,
     });
   } catch (error: any) {
-    console.error('Parse claim error:', error);
+    console.error('Unexpected parse-claim error:', error);
     return NextResponse.json(
       { error: 'Unexpected error', details: error.message },
       { status: 500 }

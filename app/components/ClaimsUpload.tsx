@@ -5,10 +5,11 @@ import { supabase } from '../supabase';
 
 type Props = {
   userId: string;
+  clientId?: string;
   onUploadComplete?: () => void;
 };
 
-export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
+export default function ClaimsUpload({ userId, clientId, onUploadComplete }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
@@ -46,7 +47,10 @@ export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
 
       const timestamp = Date.now();
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const filePath = `${userId}/${timestamp}_${safeName}`;
+      // Broker uploads land in a clients/<clientId> subfolder; Individual uploads keep old path
+      const filePath = clientId
+        ? `${userId}/clients/${clientId}/${timestamp}_${safeName}`
+        : `${userId}/${timestamp}_${safeName}`;
 
       const { error: uploadError } = await supabase.storage
         .from('claims')
@@ -66,6 +70,7 @@ export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
         .from('claims')
         .insert({
           user_id: userId,
+          client_id: clientId ?? null,
           file_name: file.name,
           file_path: filePath,
           file_size: file.size,
@@ -99,14 +104,18 @@ export default function ClaimsUpload({ userId, onUploadComplete }: Props) {
       fetch('/api/parse-claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ claim_id: claimId, user_id: userId }),
+        body: JSON.stringify({
+          claim_id: claimId,
+          user_id: userId,
+          client_id: clientId ?? null,
+        }),
       }).catch((err) => {
         console.error('Background parse failed for claim', claimId, err);
       });
     });
 
     setTimeout(() => setSuccessMsg(''), 4000);
-  }, [userId, onUploadComplete]);
+  }, [userId, clientId, onUploadComplete]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
