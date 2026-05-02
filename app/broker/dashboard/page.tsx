@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '../../supabase';
 import BrokerSidebar from '../../components/BrokerSidebar';
 import { getAccountType } from '../../lib/account';
@@ -13,6 +14,14 @@ type Agency = {
   accent_color: string | null;
 };
 
+type RecentClient = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  employer_name: string | null;
+  created_at: string;
+};
+
 export default function BrokerDashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -21,6 +30,7 @@ export default function BrokerDashboardPage() {
   const [clientCount, setClientCount] = useState(0);
   const [recentRecCount, setRecentRecCount] = useState(0);
   const [pendingLinks, setPendingLinks] = useState(0);
+  const [recentClients, setRecentClients] = useState<RecentClient[]>([]);
 
   useEffect(() => {
     async function init() {
@@ -86,6 +96,16 @@ export default function BrokerDashboardPage() {
       .eq('status', 'pending');
 
     setPendingLinks(links || 0);
+
+    // 5 most recently added clients in this agency
+    const { data: recent } = await supabase
+      .from('clients')
+      .select('id, first_name, last_name, employer_name, created_at')
+      .eq('agency_id', agency.id)
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    setRecentClients(recent || []);
   }, [user, agency]);
 
   useEffect(() => {
@@ -95,6 +115,21 @@ export default function BrokerDashboardPage() {
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/');
+  }
+
+  function formatRelativeTime(dateString: string) {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
   }
 
   if (loading) {
@@ -187,16 +222,90 @@ export default function BrokerDashboardPage() {
             <div className="dash-card">
               <div className="dash-card-header">
                 <div className="dash-card-title">Recent Activity</div>
-                <div className="dash-card-action">View all</div>
+                {recentClients.length > 0 && (
+                  <Link
+                    href="/broker/clients"
+                    className="dash-card-action"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    View all
+                  </Link>
+                )}
               </div>
-              <div className="empty-state">
-                <div className="empty-state-icon">📋</div>
-                <div className="empty-state-title">No activity yet</div>
-                <div className="empty-state-desc">
-                  Activity will appear here as you add clients, run recommendations,
-                  and upload documents.
+              {recentClients.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-state-icon">📋</div>
+                  <div className="empty-state-title">No activity yet</div>
+                  <div className="empty-state-desc">
+                    Activity will appear here as you add clients, run recommendations,
+                    and upload documents.
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  {recentClients.map((client) => (
+                    <Link
+                      key={client.id}
+                      href={`/broker/clients/${client.id}`}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px 4px',
+                        borderBottom: '1px solid #eef1f4',
+                        textDecoration: 'none',
+                        color: 'inherit',
+                        transition: 'background 0.15s',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <div style={{
+                        width: '36px',
+                        height: '36px',
+                        borderRadius: '50%',
+                        background: '#1e3a5f',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        fontFamily: 'Playfair Display, serif',
+                        flexShrink: 0,
+                      }}>
+                        {client.first_name[0]}{client.last_name[0]}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          color: '#1e3a5f',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}>
+                          ➕ Added {client.first_name} {client.last_name}
+                        </div>
+                        <div style={{
+                          fontSize: '12px',
+                          color: '#3a4d68',
+                          marginTop: '2px',
+                        }}>
+                          {client.employer_name || 'No employer'}
+                        </div>
+                      </div>
+                      <div style={{
+                        fontSize: '12px',
+                        color: '#888',
+                        flexShrink: 0,
+                      }}>
+                        {formatRelativeTime(client.created_at)}
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="dash-card">
