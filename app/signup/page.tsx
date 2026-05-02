@@ -13,9 +13,16 @@ export default function SignUpPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('Individual');
+  const [agencyName, setAgencyName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  function roleToAccountType(r: string): string {
+    if (r === 'Broker') return 'broker';
+    if (r === 'HR') return 'hr_employer';
+    return 'individual';
+  }
 
   async function handleSignUp(e: React.FormEvent) {
     e.preventDefault();
@@ -25,8 +32,15 @@ export default function SignUpPage() {
       return;
     }
 
+    if (role === 'Broker' && !agencyName.trim()) {
+      setErrorMsg('Please enter your agency name.');
+      return;
+    }
+
     setLoading(true);
     setErrorMsg('');
+
+    const accountType = roleToAccountType(role);
 
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -36,17 +50,47 @@ export default function SignUpPage() {
           first_name: firstName,
           last_name: lastName,
           role: role,
+          account_type: accountType,
         },
       },
     });
 
-    setLoading(false);
-
     if (error) {
+      setLoading(false);
       setErrorMsg(error.message);
       return;
     }
 
+    // For brokers: create agency + broker (owner) records
+    if (role === 'Broker' && data.user) {
+      const { data: agency, error: agencyError } = await supabase
+        .from('agencies')
+        .insert({ name: agencyName.trim() })
+        .select()
+        .single();
+
+      if (agencyError) {
+        setLoading(false);
+        setErrorMsg('Account created, but agency setup failed: ' + agencyError.message);
+        return;
+      }
+
+      const { error: brokerError } = await supabase
+        .from('brokers')
+        .insert({
+          user_id: data.user.id,
+          agency_id: agency.id,
+          role: 'owner',
+        });
+
+      if (brokerError) {
+        setLoading(false);
+        setErrorMsg('Account created, but broker setup failed: ' + brokerError.message);
+        return;
+      }
+    }
+
+    setLoading(false);
     router.push('/profile');
   }
 
@@ -105,6 +149,20 @@ export default function SignUpPage() {
               <input className="form-input" placeholder="Smith" value={lastName} onChange={(e) => setLastName(e.target.value)} required />
             </div>
           </div>
+
+          {role === 'Broker' && (
+            <div className="form-field">
+              <label className="form-label">Agency Name</label>
+              <input
+                className="form-input"
+                placeholder="Karimi Benefits Group"
+                value={agencyName}
+                onChange={(e) => setAgencyName(e.target.value)}
+                required
+              />
+            </div>
+          )}
+
           <div className="form-field">
             <label className="form-label">Work Email</label>
             <input className="form-input" type="email" placeholder="jane@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
