@@ -61,31 +61,28 @@ export default function SignUpPage() {
       return;
     }
 
-    // For brokers: create agency + broker (owner) records
+    // For brokers: call server-side route to bootstrap agency + broker records
     if (role === 'Broker' && data.user) {
-      const { data: agency, error: agencyError } = await supabase
-        .from('agencies')
-        .insert({ name: agencyName.trim() })
-        .select()
-        .single();
-
-      if (agencyError) {
-        setLoading(false);
-        setErrorMsg('Account created, but agency setup failed: ' + agencyError.message);
-        return;
-      }
-
-      const { error: brokerError } = await supabase
-        .from('brokers')
-        .insert({
-          user_id: data.user.id,
-          agency_id: agency.id,
-          role: 'owner',
+      try {
+        const res = await fetch('/api/signup-broker', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: data.user.id,
+            agency_name: agencyName.trim(),
+          }),
         });
 
-      if (brokerError) {
+        const body = await res.json();
+
+        if (!res.ok || !body?.success) {
+          setLoading(false);
+          setErrorMsg(body?.error || 'Broker setup failed.');
+          return;
+        }
+      } catch (apiErr: any) {
         setLoading(false);
-        setErrorMsg('Account created, but broker setup failed: ' + brokerError.message);
+        setErrorMsg('Broker setup failed: ' + (apiErr?.message || 'network error'));
         return;
       }
     }
