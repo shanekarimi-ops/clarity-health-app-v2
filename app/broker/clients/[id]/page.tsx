@@ -68,6 +68,17 @@ type ActivityRow = {
   created_at: string;
 };
 
+type LinkRow = {
+  id: string;
+  client_id: string;
+  user_id: string | null;
+  initiated_by: string;
+  status: string;
+  access_level: string;
+  linked_at: string | null;
+  created_at: string;
+};
+
 export default function ClientProfilePage() {
   const router = useRouter();
   const params = useParams();
@@ -101,6 +112,9 @@ export default function ClientProfilePage() {
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
 
+  // Link requests state
+  const [links, setLinks] = useState<LinkRow[]>([]);
+
   // Run Recommendation modal state
   const [showRecModal, setShowRecModal] = useState(false);
   const [running, setRunning] = useState(false);
@@ -125,6 +139,15 @@ export default function ClientProfilePage() {
   const [editZip, setEditZip] = useState('');
   const [editStatus, setEditStatus] = useState<'active' | 'pending' | 'closed'>('active');
 
+  // Send Link Request modal state
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [sendingLink, setSendingLink] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkEmail, setLinkEmail] = useState('');
+
+  // Toast state
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
   useEffect(() => {
     loadClient();
   }, [clientId]);
@@ -135,6 +158,7 @@ export default function ClientProfilePage() {
       loadRecommendations();
       loadNotes();
       loadActivity();
+      loadLinks();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id]);
@@ -171,6 +195,23 @@ export default function ClientProfilePage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showEditModal, client?.id]);
+
+  // Prefill Link modal when opening
+  useEffect(() => {
+    if (showLinkModal && client) {
+      setLinkEmail(client.email || '');
+      setLinkError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLinkModal, client?.id]);
+
+  // Auto-dismiss toast after 4 seconds
+  useEffect(() => {
+    if (toastMessage) {
+      const t = setTimeout(() => setToastMessage(null), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [toastMessage]);
 
   // Auto-refresh polling: every 5s while any claim is still parsing
   useEffect(() => {
@@ -358,6 +399,23 @@ export default function ClientProfilePage() {
       setActivity((data as ActivityRow[]) || []);
     }
     setActivityLoading(false);
+  }, [clientId]);
+
+  const loadLinks = useCallback(async () => {
+    if (!clientId) return;
+
+    const { data, error } = await supabase
+      .from('client_links')
+      .select('*')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error loading links:', error);
+      setLinks([]);
+    } else {
+      setLinks((data as LinkRow[]) || []);
+    }
   }, [clientId]);
 
   async function handleDeleteClaim(claim: ClaimRow) {
@@ -616,6 +674,80 @@ export default function ClientProfilePage() {
     }
   }
 
+  // ===== Send Link Request handler =====
+  async function handleSendLinkRequest() {
+    if (!user || !client) return;
+    setLinkError(null);
+
+    const trimmedEmail = linkEmail.trim();
+    if (!trimmedEmail) {
+      setLinkError("Please enter the client's email address.");
+      return;
+    }
+
+    // Basic email format check
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setLinkError('Please enter a valid email address.');
+      return;
+    }
+
+    // Check if there's already a pending link request
+    const existingPending = links.find((l) => l.status === 'pending');
+    if (existingPending) {
+      setLinkError('There is already a pending link request for this client. Please wait for them to respond.');
+      return;
+    }
+
+    setSendingLink(true);
+
+    try {
+      // Create the client_links row
+      const { error: insertErr } = await supabase
+        .from('client_links')
+        .insert({
+          client_id: client.id,
+          user_id: null, // Will be filled when client signs up / accepts
+          initiated_by: 'broker',
+          status: 'pending',
+          access_level: 'read',
+        });
+
+      if (insertErr) {
+        setLinkError(insertErr.message);
+        setSendingLink(false);
+        return;
+      }
+
+      // If the email was different from what's saved on the client, save it back
+      if (client.email !== trimmedEmail) {
+        await supabase
+          .from('clients')
+          .update({ email: trimmedEmail })
+          .eq('id', client.id);
+
+        // Refresh client locally
+        setClient({ ...client, email: trimmedEmail });
+      }
+
+      // Log activity
+      logActivity('link_request_sent', `Sent link request to ${trimmedEmail}`, {
+        recipient_email: trimmedEmail,
+      });
+
+      // Refresh links list
+      await loadLinks();
+
+      // Close modal & show toast
+      setShowLinkModal(false);
+      setToastMessage('Link request created! Email delivery coming in Session 20.');
+    } catch (err: any) {
+      setLinkError(err?.message || 'Unexpected error. Please try again.');
+    } finally {
+      setSendingLink(false);
+    }
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/');
@@ -661,6 +793,8 @@ export default function ClientProfilePage() {
       case 'note_deleted': return '🗑';
       case 'client_added': return '👤';
       case 'client_edited': return '✏️';
+      case 'link_request_sent': return '🔗';
+      case 'link_accepted': return '✅';
       default: return '•';
     }
   }
@@ -734,6 +868,10 @@ export default function ClientProfilePage() {
   const latestRecTopPlan = latestRec && Array.isArray(latestRec.plans) && latestRec.plans.length > 0
     ? latestRec.plans[0]
     : null;
+
+  // Account link status
+  const activeLink = links.find((l) => l.status === 'active' || l.status === 'accepted');
+  const pendingLink = links.find((l) => l.status === 'pending');
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
@@ -844,12 +982,19 @@ export default function ClientProfilePage() {
             <button style={secondaryButtonActive} onClick={handleUploadDocClick}>
               Upload Document
             </button>
-            <button style={secondaryButtonDisabled} disabled>
-              Send Link Request
-            </button>
-          </div>
-          <div style={{ color: '#999', fontSize: '12px', marginTop: '10px' }}>
-            (Send Link Request coming in Session 18)
+            {activeLink ? (
+              <button style={secondaryButtonDisabled} disabled title="Account already linked">
+                ✅ Account Linked
+              </button>
+            ) : pendingLink ? (
+              <button style={secondaryButtonDisabled} disabled title="Link request already pending">
+                🔗 Link Request Pending
+              </button>
+            ) : (
+              <button style={secondaryButtonActive} onClick={() => setShowLinkModal(true)}>
+                🔗 Send Link Request
+              </button>
+            )}
           </div>
         </div>
 
@@ -1012,9 +1157,59 @@ export default function ClientProfilePage() {
 
             <div style={cardStyle}>
               <h3 style={cardTitle}>Account Link</h3>
-              <div style={emptyText}>
-                Not linked to an Individual account yet. Send a link request to connect their data.
-              </div>
+              {activeLink ? (
+                <div>
+                  <div style={{
+                    padding: '12px',
+                    background: '#e8f0e6',
+                    border: '1px solid #c5d8c0',
+                    borderRadius: '8px',
+                    marginBottom: '10px',
+                  }}>
+                    <div style={{ fontSize: '13px', color: '#5a7857', fontWeight: 700, marginBottom: '4px' }}>
+                      ✅ ACCOUNT LINKED
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#3a4d68' }}>
+                      Linked on {activeLink.linked_at ? formatDate(activeLink.linked_at) : formatDate(activeLink.created_at)}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#888' }}>
+                    You have {activeLink.access_level || 'read'} access to this client's data.
+                  </div>
+                </div>
+              ) : pendingLink ? (
+                <div>
+                  <div style={{
+                    padding: '12px',
+                    background: '#fff4e0',
+                    border: '1px solid #f0d8a8',
+                    borderRadius: '8px',
+                    marginBottom: '10px',
+                  }}>
+                    <div style={{ fontSize: '13px', color: '#a96a1c', fontWeight: 700, marginBottom: '4px' }}>
+                      🔗 LINK REQUEST PENDING
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#3a4d68' }}>
+                      Sent {formatRelativeTime(pendingLink.created_at)} · Waiting for client to accept
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#888' }}>
+                    Email delivery coming in Session 20. For now, the request is logged in the database and will activate once the client accepts.
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div style={emptyText}>
+                    Not linked to an Individual account yet. Send a link request to connect their data.
+                  </div>
+                  <button
+                    onClick={() => setShowLinkModal(true)}
+                    style={{ ...primaryButtonActive, marginTop: '12px' }}
+                  >
+                    🔗 Send Link Request
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1618,6 +1813,97 @@ export default function ClientProfilePage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Send Link Request Modal */}
+      {showLinkModal && (
+        <div style={modalOverlay} onClick={() => !sendingLink && setShowLinkModal(false)}>
+          <div style={modalContent} onClick={(e) => e.stopPropagation()}>
+            <h2 style={modalTitle}>🔗 Send Link Request</h2>
+            <div style={{ color: '#5b7a99', fontSize: '13px', marginBottom: '20px', lineHeight: '1.5' }}>
+              Invite {client.first_name} to link their personal Clarity Health account so you can collaborate on their benefits.
+            </div>
+
+            <div style={{
+              background: '#faf7f2',
+              border: '1px solid #eef1f4',
+              borderRadius: '8px',
+              padding: '14px',
+              marginBottom: '20px',
+            }}>
+              <div style={{ fontSize: '13px', color: '#1e3a5f', fontWeight: 600, marginBottom: '8px' }}>
+                What happens next:
+              </div>
+              <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#3a4d68', lineHeight: '1.7' }}>
+                <li>A pending link request is created in our system</li>
+                <li>The client gets an email invite to sign up or log in <em style={{ color: '#a96a1c' }}>(coming Session 20)</em></li>
+                <li>Once they accept, you'll have read access to their data</li>
+              </ul>
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Client's Email *</label>
+              <input
+                type="email"
+                value={linkEmail}
+                onChange={(e) => setLinkEmail(e.target.value)}
+                placeholder="client@example.com"
+                style={inputStyle}
+                disabled={sendingLink}
+                autoFocus
+              />
+              <div style={{ fontSize: '11px', color: '#888', marginTop: '4px' }}>
+                {client.email
+                  ? `Prefilled from client record. Edit if needed.`
+                  : `No email on file — adding one here will save it to the client record.`}
+              </div>
+            </div>
+
+            {linkError && (
+              <div style={errorBox}>
+                {linkError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowLinkModal(false)}
+                style={secondaryButtonActive}
+                disabled={sendingLink}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSendLinkRequest}
+                style={primaryButtonActive}
+                disabled={sendingLink}
+              >
+                {sendingLink ? 'Sending…' : '🔗 Send Link Request'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          background: '#1e3a5f',
+          color: 'white',
+          padding: '14px 20px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 16px rgba(30, 58, 95, 0.3)',
+          fontSize: '14px',
+          fontWeight: 500,
+          fontFamily: 'Figtree, sans-serif',
+          zIndex: 2000,
+          maxWidth: '380px',
+        }}>
+          ✅ {toastMessage}
         </div>
       )}
     </div>
