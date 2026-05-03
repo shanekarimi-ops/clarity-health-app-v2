@@ -143,6 +143,9 @@ export default function BrokerDashboardPage() {
       note_added: '📝',
       note_deleted: '🗑',
       agency_edited: '🏢',
+      link_request_sent: '🔗',
+      link_accepted: '✅',
+      link_revoked: '🚫',
     };
     return icons[eventType] || '•';
   }
