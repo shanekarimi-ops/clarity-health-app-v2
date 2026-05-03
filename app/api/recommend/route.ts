@@ -27,32 +27,89 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { zipCode, householdSize, annualIncome, ages, usesTobacco, userId } = body;
+  const { zipCode, householdSize, annualIncome, ages, usesTobacco, userId, clientId } = body;
 
   if (!zipCode || !householdSize || !annualIncome || !Array.isArray(ages) || ages.length === 0) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
   try {
-    // ===== Step 0: Fetch parsed claims for this user (if userId provided) =====
-    // This is OPTIONAL — if no userId or no claims, we fall back to demographic-only ranking.
+    // ===== Step 0a: If clientId is set, verify broker can access this client =====
+    // Security check — prevents brokers from running recs against clients in other agencies.
+    if (clientId && userId && supabaseUrl && serviceKey) {
+      try {
+        const supabaseAdmin = createClient(supabaseUrl, serviceKey);
+
+        // Get the broker's agency
+        const { data: brokerRow, error: brokerErr } = await supabaseAdmin
+          .from('brokers')
+          .select('agency_id, role')
+          .eq('user_id', userId)
+          .single();
+
+        if (brokerErr || !brokerRow) {
+          return NextResponse.json(
+            { error: 'You are not registered as a broker' },
+            { status: 403 }
+          );
+        }
+
+        // Get the client's agency
+        const { data: clientRow, error: clientErr } = await supabaseAdmin
+          .from('clients')
+          .select('agency_id')
+          .eq('id', clientId)
+          .single();
+
+        if (clientErr || !clientRow) {
+          return NextResponse.json(
+            { error: 'Client not found' },
+            { status: 404 }
+          );
+        }
+
+        if (clientRow.agency_id !== brokerRow.agency_id) {
+          return NextResponse.json(
+            { error: 'You do not have access to this client' },
+            { status: 403 }
+          );
+        }
+      } catch (e: any) {
+        console.error('Access check failed:', e);
+        return NextResponse.json(
+          { error: 'Access check failed', detail: e?.message },
+          { status: 500 }
+        );
+      }
+    }
+
+    // ===== Step 0b: Fetch parsed claims =====
+    // - If clientId provided: pull claims_parsed for that client (broker flow)
+    // - Otherwise: pull claims_parsed for the user (individual flow)
     let parsedClaims: any[] = [];
     let claimsSummaryText = '';
 
-    if (userId && supabaseUrl && serviceKey) {
+    if (supabaseUrl && serviceKey && (clientId || userId)) {
       try {
         const supabaseAdmin = createClient(supabaseUrl, serviceKey);
-        const { data: claimsData, error: claimsError } = await supabaseAdmin
+
+        let query = supabaseAdmin
           .from('claims_parsed')
           .select('conditions, procedures, medications, specialty_visits_count, prescription_count, total_billed, total_out_of_pocket, summary_text, parse_status')
-          .eq('user_id', userId)
           .eq('parse_status', 'success');
+
+        if (clientId) {
+          query = query.eq('client_id', clientId);
+        } else if (userId) {
+          query = query.eq('user_id', userId);
+        }
+
+        const { data: claimsData, error: claimsError } = await query;
 
         if (!claimsError && claimsData) {
           parsedClaims = claimsData;
         }
       } catch (e) {
-        // Don't fail the whole request if claims fetch breaks — just rank without them.
         console.error('Claims fetch failed, continuing without claims context:', e);
       }
     }
@@ -255,8 +312,43 @@ Rules:
       .filter(Boolean)
       .sort((a: any, b: any) => a.rank - b.rank);
 
+    // ===== Step 4: Save the recommendation row to the recommendations table =====
+    let savedRecId: string | null = null;
+    if (supabaseUrl && serviceKey && userId) {
+      try {
+        const supabaseAdmin = createClient(supabaseUrl, serviceKey);
+        const { data: savedRec, error: saveErr } = await supabaseAdmin
+          .from('recommendations')
+          .insert({
+            user_id: userId,
+            client_id: clientId || null,
+            zip_code: zipCode,
+            county_name: county.name,
+            state: state,
+            household_size: householdSize,
+            annual_income: annualIncome,
+            ages: ages,
+            uses_tobacco: !!usesTobacco,
+            total_plans_available: allPlans.length,
+            overall_advice: claudeData.overallAdvice || '',
+            plans: rankedWithDetails,
+          })
+          .select('id')
+          .single();
+
+        if (!saveErr && savedRec) {
+          savedRecId = savedRec.id;
+        } else if (saveErr) {
+          console.error('Failed to save recommendation row:', saveErr);
+        }
+      } catch (e) {
+        console.error('Recommendation save failed:', e);
+      }
+    }
+
     return NextResponse.json({
       success: true,
+      recommendationId: savedRecId,
       county: { fips: countyfips, state: state, name: county.name },
       totalPlansAvailable: allPlans.length,
       planCount: rankedWithDetails.length,
