@@ -57,7 +57,7 @@ export default function BrokerReportsPage() {
   }
 
   return (
-    <div className="dash-shell">
+    <div className="dash-layout">
       <BrokerSidebar
         active="reports"
         firstName={firstName}

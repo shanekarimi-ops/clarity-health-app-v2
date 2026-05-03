@@ -57,7 +57,7 @@ export default function BrokerBillingPage() {
   }
 
   return (
-    <div className="dash-shell">
+    <div className="dash-layout">
       <BrokerSidebar
         active="billing"
         firstName={firstName}

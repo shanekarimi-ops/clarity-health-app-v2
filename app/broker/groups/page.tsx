@@ -57,7 +57,7 @@ export default function BrokerGroupsPage() {
   }
 
   return (
-    <div className="dash-shell">
+    <div className="dash-layout">
       <BrokerSidebar
         active="groups"
         firstName={firstName}

@@ -156,7 +156,7 @@ export default function BrokerSettingsPage() {
     : '—';
 
   return (
-    <div className="dash-shell">
+    <div className="dash-layout">
       <BrokerSidebar
         active="settings"
         firstName={firstName}

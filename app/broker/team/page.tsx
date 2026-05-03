@@ -66,7 +66,7 @@ export default function BrokerTeamPage() {
   const isOwner = role === 'owner';
 
   return (
-    <div className="dash-shell">
+    <div className="dash-layout">
       <BrokerSidebar
         active="team"
         firstName={firstName}

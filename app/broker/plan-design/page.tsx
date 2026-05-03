@@ -57,7 +57,7 @@ export default function BrokerPlanDesignPage() {
   }
 
   return (
-    <div className="dash-shell">
+    <div className="dash-layout">
       <BrokerSidebar
         active="plan-design"
         firstName={firstName}
