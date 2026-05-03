@@ -110,22 +110,47 @@ export default function BrokerClientsPage() {
 
     setSubmitting(true);
 
-    const { error } = await supabase.from('clients').insert({
-      agency_id: agencyId,
-      assigned_broker_id: brokerId,
-      first_name: firstName.trim(),
-      last_name: lastName.trim(),
-      email: email.trim() || null,
-      employer_name: employerName.trim() || null,
-      member_count: parseInt(memberCount) || 1,
-      status: 'active',
-    });
+    const { data: newClient, error } = await supabase
+      .from('clients')
+      .insert({
+        agency_id: agencyId,
+        assigned_broker_id: brokerId,
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        email: email.trim() || null,
+        employer_name: employerName.trim() || null,
+        member_count: parseInt(memberCount) || 1,
+        status: 'active',
+      })
+      .select()
+      .single();
 
     setSubmitting(false);
 
     if (error) {
       setFormError(error.message);
       return;
+    }
+
+    // Log activity (fire and forget)
+    if (newClient) {
+      try {
+        const actorName = `${user?.user_metadata?.first_name || ''} ${user?.user_metadata?.last_name || ''}`.trim() || 'Broker';
+        await supabase.from('activity_log').insert({
+          agency_id: agencyId,
+          client_id: newClient.id,
+          actor_user_id: user.id,
+          actor_name: actorName,
+          event_type: 'client_added',
+          event_summary: `Added ${newClient.first_name} ${newClient.last_name}`,
+          metadata: {
+            employer_name: newClient.employer_name,
+            member_count: newClient.member_count,
+          },
+        });
+      } catch (logErr) {
+        console.warn('Activity log insert failed', logErr);
+      }
     }
 
     // Reset form & close modal

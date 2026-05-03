@@ -14,11 +14,12 @@ type Agency = {
   accent_color: string | null;
 };
 
-type RecentClient = {
+type ActivityEvent = {
   id: string;
-  first_name: string;
-  last_name: string;
-  employer_name: string | null;
+  client_id: string | null;
+  actor_name: string;
+  event_type: string;
+  event_summary: string;
   created_at: string;
 };
 
@@ -30,7 +31,7 @@ export default function BrokerDashboardPage() {
   const [clientCount, setClientCount] = useState(0);
   const [recentRecCount, setRecentRecCount] = useState(0);
   const [pendingLinks, setPendingLinks] = useState(0);
-  const [recentClients, setRecentClients] = useState<RecentClient[]>([]);
+  const [recentActivity, setRecentActivity] = useState<ActivityEvent[]>([]);
 
   useEffect(() => {
     async function init() {
@@ -97,15 +98,15 @@ export default function BrokerDashboardPage() {
 
     setPendingLinks(links || 0);
 
-    // 5 most recently added clients in this agency
-    const { data: recent } = await supabase
-      .from('clients')
-      .select('id, first_name, last_name, employer_name, created_at')
+    // Recent activity (last 10 events) for this agency
+    const { data: activityRows } = await supabase
+      .from('activity_log')
+      .select('id, client_id, actor_name, event_type, event_summary, created_at')
       .eq('agency_id', agency.id)
       .order('created_at', { ascending: false })
-      .limit(5);
+      .limit(10);
 
-    setRecentClients(recent || []);
+    setRecentActivity(activityRows || []);
   }, [user, agency]);
 
   useEffect(() => {
@@ -130,6 +131,20 @@ export default function BrokerDashboardPage() {
     if (diffHours < 24) return `${diffHours}h ago`;
     if (diffDays < 7) return `${diffDays}d ago`;
     return date.toLocaleDateString();
+  }
+
+  function iconForEvent(eventType: string) {
+    const icons: Record<string, string> = {
+      client_added: '➕',
+      client_edited: '✏️',
+      claim_uploaded: '📎',
+      claim_deleted: '🗑',
+      recommendation_run: '⭐',
+      note_added: '📝',
+      note_deleted: '🗑',
+      agency_edited: '🏢',
+    };
+    return icons[eventType] || '•';
   }
 
   if (loading) {
@@ -222,7 +237,7 @@ export default function BrokerDashboardPage() {
             <div className="dash-card">
               <div className="dash-card-header">
                 <div className="dash-card-title">Recent Activity</div>
-                {recentClients.length > 0 && (
+                {recentActivity.length > 0 && (
                   <Link
                     href="/broker/clients"
                     className="dash-card-action"
@@ -232,7 +247,7 @@ export default function BrokerDashboardPage() {
                   </Link>
                 )}
               </div>
-              {recentClients.length === 0 ? (
+              {recentActivity.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-state-icon">📋</div>
                   <div className="empty-state-title">No activity yet</div>
@@ -245,71 +260,86 @@ export default function BrokerDashboardPage() {
                 <div style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  maxHeight: '260px',
+                  maxHeight: '320px',
                   overflowY: 'auto',
                   paddingRight: '4px',
                 }}>
-                  {recentClients.map((client) => (
-                    <Link
-                      key={client.id}
-                      href={`/broker/clients/${client.id}`}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '12px',
-                        padding: '12px 4px',
-                        borderBottom: '1px solid #eef1f4',
-                        textDecoration: 'none',
-                        color: 'inherit',
-                        transition: 'background 0.15s',
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    >
-                      <div style={{
-                        width: '36px',
-                        height: '36px',
-                        borderRadius: '50%',
-                        background: '#1e3a5f',
-                        color: 'white',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        fontFamily: 'Playfair Display, serif',
-                        flexShrink: 0,
-                      }}>
-                        {client.first_name[0]}{client.last_name[0]}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                  {recentActivity.map((event) => {
+                    const inner = (
+                      <>
                         <div style={{
-                          fontSize: '14px',
-                          fontWeight: 600,
-                          color: '#1e3a5f',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
+                          width: '36px',
+                          height: '36px',
+                          borderRadius: '50%',
+                          background: event.client_id ? '#1e3a5f' : '#7a9b76',
+                          color: 'white',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '16px',
+                          flexShrink: 0,
                         }}>
-                          ➕ Added {client.first_name} {client.last_name}
+                          {iconForEvent(event.event_type)}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: '14px',
+                            fontWeight: 600,
+                            color: '#1e3a5f',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}>
+                            {event.event_summary}
+                          </div>
+                          <div style={{
+                            fontSize: '12px',
+                            color: '#3a4d68',
+                            marginTop: '2px',
+                          }}>
+                            {event.actor_name}
+                          </div>
                         </div>
                         <div style={{
                           fontSize: '12px',
-                          color: '#3a4d68',
-                          marginTop: '2px',
+                          color: '#888',
+                          flexShrink: 0,
                         }}>
-                          {client.employer_name || 'No employer'}
+                          {formatRelativeTime(event.created_at)}
                         </div>
+                      </>
+                    );
+
+                    const rowStyle: React.CSSProperties = {
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '12px 4px',
+                      borderBottom: '1px solid #eef1f4',
+                      textDecoration: 'none',
+                      color: 'inherit',
+                      transition: 'background 0.15s',
+                    };
+
+                    return event.client_id ? (
+                      <Link
+                        key={event.id}
+                        href={`/broker/clients/${event.client_id}`}
+                        style={rowStyle}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        {inner}
+                      </Link>
+                    ) : (
+                      <div
+                        key={event.id}
+                        style={rowStyle}
+                      >
+                        {inner}
                       </div>
-                      <div style={{
-                        fontSize: '12px',
-                        color: '#888',
-                        flexShrink: 0,
-                      }}>
-                        {formatRelativeTime(client.created_at)}
-                      </div>
-                    </Link>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
