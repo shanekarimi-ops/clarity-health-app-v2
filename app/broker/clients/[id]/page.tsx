@@ -710,7 +710,7 @@ export default function ClientProfilePage() {
           user_id: null, // Will be filled when client signs up / accepts
           initiated_by: 'broker',
           status: 'pending',
-          access_level: 'read',
+          access_level: 'limited',
         });
 
       if (insertErr) {
@@ -1174,7 +1174,7 @@ export default function ClientProfilePage() {
                     </div>
                   </div>
                   <div style={{ fontSize: '12px', color: '#888' }}>
-                    You have {activeLink.access_level || 'read'} access to this client's data.
+                  You have {activeLink.access_level || 'limited'} access to this client's data.
                   </div>
                 </div>
               ) : pendingLink ? (
