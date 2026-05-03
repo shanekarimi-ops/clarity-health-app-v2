@@ -19,6 +19,7 @@ type Client = {
   employer_name: string | null;
   member_count: number | null;
   state: string | null;
+  zip: string | null;
   status: string;
   created_at: string;
 };
@@ -48,6 +49,25 @@ type RecRow = {
   plans: any;
 };
 
+type NoteRow = {
+  id: string;
+  client_id: string;
+  broker_id: string;
+  body: string;
+  created_at: string;
+};
+
+type ActivityRow = {
+  id: string;
+  client_id: string | null;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  event_type: string;
+  event_summary: string;
+  metadata: any;
+  created_at: string;
+};
+
 export default function ClientProfilePage() {
   const router = useRouter();
   const params = useParams();
@@ -70,6 +90,17 @@ export default function ClientProfilePage() {
   const [recs, setRecs] = useState<RecRow[]>([]);
   const [recsLoading, setRecsLoading] = useState(false);
 
+  // Notes state
+  const [notes, setNotes] = useState<NoteRow[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [newNoteText, setNewNoteText] = useState('');
+  const [postingNote, setPostingNote] = useState(false);
+  const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
+
+  // Activity state
+  const [activity, setActivity] = useState<ActivityRow[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+
   // Run Recommendation modal state
   const [showRecModal, setShowRecModal] = useState(false);
   const [running, setRunning] = useState(false);
@@ -80,31 +111,66 @@ export default function ClientProfilePage() {
   const [agesText, setAgesText] = useState('');
   const [usesTobacco, setUsesTobacco] = useState(false);
 
+  // Edit Client modal state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [savingClient, setSavingClient] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editEmployer, setEditEmployer] = useState('');
+  const [editMemberCount, setEditMemberCount] = useState(1);
+  const [editState, setEditState] = useState('');
+  const [editZip, setEditZip] = useState('');
+  const [editStatus, setEditStatus] = useState<'active' | 'pending' | 'closed'>('active');
+
   useEffect(() => {
     loadClient();
   }, [clientId]);
 
-  // Load claims and recommendations when client is loaded
   useEffect(() => {
     if (client) {
       loadClaims();
       loadRecommendations();
+      loadNotes();
+      loadActivity();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id]);
 
-  // When opening the modal, prefill household size from client.member_count
+  // Prefill rec modal household size
   useEffect(() => {
     if (showRecModal && client) {
       const mc = client.member_count || 1;
       setHouseholdSize(mc);
-      // Prefill ages text with the right number of placeholder slots
       if (!agesText) {
         setAgesText(Array.from({ length: mc }, () => '').join(', '));
+      }
+      // Prefill ZIP if client has one
+      if (client.zip && !zipCode) {
+        setZipCode(client.zip);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showRecModal, client?.id]);
+
+  // Prefill Edit modal when opening
+  useEffect(() => {
+    if (showEditModal && client) {
+      setEditFirstName(client.first_name || '');
+      setEditLastName(client.last_name || '');
+      setEditEmail(client.email || '');
+      setEditPhone(client.phone || '');
+      setEditEmployer(client.employer_name || '');
+      setEditMemberCount(client.member_count || 1);
+      setEditState(client.state || '');
+      setEditZip(client.zip || '');
+      setEditStatus((client.status as any) || 'active');
+      setEditError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showEditModal, client?.id]);
 
   // Auto-refresh polling: every 5s while any claim is still parsing
   useEffect(() => {
@@ -126,6 +192,27 @@ export default function ClientProfilePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claims, client?.id]);
 
+  // ===== Activity logging helper =====
+  async function logActivity(eventType: string, eventSummary: string, metadata: any = null) {
+    if (!user || !client) return;
+    try {
+      const actorName = `${user.user_metadata?.first_name || ''} ${user.user_metadata?.last_name || ''}`.trim() || user.email || 'Unknown';
+      await supabase.from('activity_log').insert({
+        agency_id: client.agency_id,
+        client_id: client.id,
+        actor_user_id: user.id,
+        actor_name: actorName,
+        event_type: eventType,
+        event_summary: eventSummary,
+        metadata: metadata,
+      });
+      // Refresh in background — don't await
+      loadActivity();
+    } catch (e) {
+      console.warn('Activity log failed (non-blocking):', e);
+    }
+  }
+
   async function loadClient() {
     setLoading(true);
 
@@ -143,7 +230,6 @@ export default function ClientProfilePage() {
 
     setUser(user);
 
-    // Get broker's agency name for sidebar
     const { data: brokerData } = await supabase
       .from('brokers')
       .select('agencies(name)')
@@ -235,6 +321,45 @@ export default function ClientProfilePage() {
     setRecsLoading(false);
   }, [clientId]);
 
+  const loadNotes = useCallback(async () => {
+    if (!clientId) return;
+    setNotesLoading(true);
+
+    const { data, error } = await supabase
+      .from('broker_notes')
+      .select('*')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error loading notes:', error);
+      setNotes([]);
+    } else {
+      setNotes((data as NoteRow[]) || []);
+    }
+    setNotesLoading(false);
+  }, [clientId]);
+
+  const loadActivity = useCallback(async () => {
+    if (!clientId) return;
+    setActivityLoading(true);
+
+    const { data, error } = await supabase
+      .from('activity_log')
+      .select('*')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) {
+      console.error('Error loading activity:', error);
+      setActivity([]);
+    } else {
+      setActivity((data as ActivityRow[]) || []);
+    }
+    setActivityLoading(false);
+  }, [clientId]);
+
   async function handleDeleteClaim(claim: ClaimRow) {
     const confirmed = window.confirm(
       `Delete "${claim.file_name}"?\n\nThis will permanently remove the file and its parsed data. This cannot be undone.`
@@ -272,6 +397,9 @@ export default function ClientProfilePage() {
       }
 
       await loadClaims();
+      logActivity('claim_deleted', `Deleted document "${claim.file_name}"`, {
+        file_name: claim.file_name,
+      });
     } catch (err: any) {
       console.error('Unexpected delete error:', err);
       alert(`Unexpected error deleting document: ${err.message || 'unknown'}`);
@@ -280,10 +408,15 @@ export default function ClientProfilePage() {
     }
   }
 
+  async function handleClaimUploaded() {
+    await loadClaims();
+    // Best-effort log — we don't have the file_name easily here, so generic.
+    logActivity('claim_uploaded', 'Uploaded a new document', null);
+  }
+
   async function handleRunRecommendation() {
     setRunError(null);
 
-    // Validate inputs
     if (!zipCode || zipCode.length < 5) {
       setRunError('Please enter a valid 5-digit ZIP code.');
       return;
@@ -341,7 +474,14 @@ export default function ClientProfilePage() {
         return;
       }
 
-      // Navigate to the results page
+      // Log the run
+      const topPlanName = data.plans?.[0]?.name || 'Unknown plan';
+      logActivity('recommendation_run', `Ran recommendation — top match: ${topPlanName}`, {
+        recommendation_id: data.recommendationId,
+        top_plan: topPlanName,
+        plans_considered: data.totalPlansAvailable,
+      });
+
       router.push(`/broker/clients/${client?.id}/recommendations/${data.recommendationId}`);
     } catch (err: any) {
       console.error('Run recommendation failed:', err);
@@ -352,12 +492,128 @@ export default function ClientProfilePage() {
 
   function handleOpenRecModal() {
     setRunError(null);
-    setZipCode('');
+    setZipCode(client?.zip || '');
     setAnnualIncome('');
     setAgesText('');
     setUsesTobacco(false);
     setHouseholdSize(client?.member_count || 1);
     setShowRecModal(true);
+  }
+
+  // ===== Notes handlers =====
+  async function handleAddNote() {
+    if (!user || !client) return;
+    const body = newNoteText.trim();
+    if (!body) return;
+
+    setPostingNote(true);
+
+    try {
+      const { error } = await supabase
+        .from('broker_notes')
+        .insert({
+          client_id: client.id,
+          broker_id: user.id,
+          body: body,
+        });
+
+      if (error) {
+        alert(`Could not save note: ${error.message}`);
+        setPostingNote(false);
+        return;
+      }
+
+      setNewNoteText('');
+      await loadNotes();
+      logActivity('note_added', `Added a note`, {
+        note_preview: body.slice(0, 60),
+      });
+    } catch (err: any) {
+      alert(`Unexpected error: ${err?.message || 'unknown'}`);
+    } finally {
+      setPostingNote(false);
+    }
+  }
+
+  async function handleDeleteNote(note: NoteRow) {
+    const confirmed = window.confirm('Delete this note? This cannot be undone.');
+    if (!confirmed) return;
+
+    setDeletingNoteId(note.id);
+
+    try {
+      const { error } = await supabase
+        .from('broker_notes')
+        .delete()
+        .eq('id', note.id);
+
+      if (error) {
+        alert(`Could not delete note: ${error.message}`);
+        setDeletingNoteId(null);
+        return;
+      }
+
+      await loadNotes();
+      logActivity('note_deleted', 'Deleted a note', null);
+    } catch (err: any) {
+      alert(`Unexpected error: ${err?.message || 'unknown'}`);
+    } finally {
+      setDeletingNoteId(null);
+    }
+  }
+
+  // ===== Edit Client handler =====
+  async function handleSaveClient() {
+    if (!client) return;
+    setEditError(null);
+
+    if (!editFirstName.trim() || !editLastName.trim()) {
+      setEditError('First name and last name are required.');
+      return;
+    }
+
+    setSavingClient(true);
+
+    try {
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          first_name: editFirstName.trim(),
+          last_name: editLastName.trim(),
+          email: editEmail.trim() || null,
+          phone: editPhone.trim() || null,
+          employer_name: editEmployer.trim() || null,
+          member_count: editMemberCount,
+          state: editState.trim() || null,
+          zip: editZip.trim() || null,
+          status: editStatus,
+        })
+        .eq('id', client.id);
+
+      if (error) {
+        setEditError(error.message);
+        setSavingClient(false);
+        return;
+      }
+
+      // Reload the client to reflect changes
+      const { data: refreshed } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('id', client.id)
+        .single();
+
+      if (refreshed) {
+        setClient(refreshed as Client);
+      }
+
+      setShowEditModal(false);
+      logActivity('client_edited', 'Updated client info', null);
+    } catch (err: any) {
+      setEditError(err?.message || 'Unexpected error');
+    } finally {
+      setSavingClient(false);
+    }
   }
 
   async function handleLogout() {
@@ -382,6 +638,31 @@ export default function ClientProfilePage() {
   function formatDate(iso: string): string {
     const d = new Date(iso);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatRelativeTime(iso: string): string {
+    const now = Date.now();
+    const then = new Date(iso).getTime();
+    const diffSec = Math.floor((now - then) / 1000);
+
+    if (diffSec < 60) return 'just now';
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} min ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} hr ago`;
+    if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
+    return formatDate(iso);
+  }
+
+  function eventIcon(eventType: string): string {
+    switch (eventType) {
+      case 'claim_uploaded': return '📎';
+      case 'claim_deleted': return '🗑';
+      case 'recommendation_run': return '⭐';
+      case 'note_added': return '📝';
+      case 'note_deleted': return '🗑';
+      case 'client_added': return '👤';
+      case 'client_edited': return '✏️';
+      default: return '•';
+    }
   }
 
   function StatusBadge({ status }: { status: string | null | undefined }) {
@@ -521,7 +802,7 @@ export default function ClientProfilePage() {
                   </span>
                   {client.state && (
                     <span style={{ color: '#3a4d68', fontSize: '14px' }}>
-                      📍 {client.state}
+                      📍 {client.state}{client.zip ? ` ${client.zip}` : ''}
                     </span>
                   )}
                 </div>
@@ -546,6 +827,13 @@ export default function ClientProfilePage() {
               }}>
                 {client.status}
               </span>
+              <button
+                onClick={() => setShowEditModal(true)}
+                style={editButton}
+                title="Edit client"
+              >
+                ✏️ Edit
+              </button>
             </div>
           </div>
 
@@ -596,6 +884,12 @@ export default function ClientProfilePage() {
               )}
               {tab === 'recommendations' && recs.length > 0 && (
                 <span style={countBadge}>{recs.length}</span>
+              )}
+              {tab === 'notes' && notes.length > 0 && (
+                <span style={countBadge}>{notes.length}</span>
+              )}
+              {tab === 'activity' && activity.length > 0 && (
+                <span style={countBadge}>{activity.length}</span>
               )}
             </button>
           ))}
@@ -711,6 +1005,7 @@ export default function ClientProfilePage() {
                 <div><strong style={{ color: '#1e3a5f' }}>Employer:</strong> {client.employer_name || '—'}</div>
                 <div><strong style={{ color: '#1e3a5f' }}>Members:</strong> {client.member_count || 1}</div>
                 <div><strong style={{ color: '#1e3a5f' }}>State:</strong> {client.state || '—'}</div>
+                <div><strong style={{ color: '#1e3a5f' }}>ZIP:</strong> {client.zip || '—'}</div>
                 <div><strong style={{ color: '#1e3a5f' }}>Added:</strong> {new Date(client.created_at).toLocaleDateString()}</div>
               </div>
             </div>
@@ -737,7 +1032,7 @@ export default function ClientProfilePage() {
                 <ClaimsUpload
                   userId={user.id}
                   clientId={client.id}
-                  onUploadComplete={loadClaims}
+                  onUploadComplete={handleClaimUploaded}
                 />
               )}
             </div>
@@ -892,18 +1187,164 @@ export default function ClientProfilePage() {
         )}
 
         {activeTab === 'notes' && (
-          <div style={cardStyle}>
-            <div style={emptyText}>
-              Notes tab coming in Session 17. Internal notes only — never shown to the client.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={cardStyle}>
+              <h3 style={{ ...cardTitle, marginBottom: '6px' }}>
+                Add a Note
+              </h3>
+              <div style={{ color: '#5b7a99', fontSize: '13px', marginBottom: '14px' }}>
+                Internal only — never shown to the client. Use for advisor reminders, quick context, or follow-up items.
+              </div>
+              <textarea
+                value={newNoteText}
+                onChange={(e) => setNewNoteText(e.target.value)}
+                placeholder="What's on your mind?"
+                rows={4}
+                disabled={postingNote}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: '1px solid #eef1f4',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontFamily: 'Figtree, sans-serif',
+                  color: '#1e3a5f',
+                  resize: 'vertical',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+                <button
+                  onClick={handleAddNote}
+                  disabled={postingNote || !newNoteText.trim()}
+                  style={{
+                    ...primaryButtonActive,
+                    opacity: postingNote || !newNoteText.trim() ? 0.5 : 1,
+                    cursor: postingNote || !newNoteText.trim() ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {postingNote ? 'Saving…' : 'Save Note'}
+                </button>
+              </div>
+            </div>
+
+            <div style={cardStyle}>
+              <h3 style={cardTitle}>
+                Notes ({notes.length})
+              </h3>
+              {notesLoading ? (
+                <div style={emptyText}>Loading...</div>
+              ) : notes.length === 0 ? (
+                <div style={emptyText}>
+                  No notes yet. Add one above to get started.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {notes.map((n) => {
+                    const isDeletingThis = deletingNoteId === n.id;
+                    return (
+                      <div
+                        key={n.id}
+                        style={{
+                          padding: '16px',
+                          background: '#faf7f2',
+                          border: '1px solid #eef1f4',
+                          borderRadius: '8px',
+                          opacity: isDeletingThis ? 0.5 : 1,
+                        }}
+                      >
+                        <div style={{
+                          color: '#1e3a5f',
+                          fontSize: '14px',
+                          lineHeight: '1.6',
+                          whiteSpace: 'pre-wrap',
+                        }}>
+                          {n.body}
+                        </div>
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginTop: '12px',
+                          paddingTop: '10px',
+                          borderTop: '1px solid #eef1f4',
+                        }}>
+                          <div style={{ fontSize: '11px', color: '#888' }}>
+                            {formatRelativeTime(n.created_at)} · {formatDate(n.created_at)}
+                          </div>
+                          <button
+                            onClick={() => handleDeleteNote(n)}
+                            disabled={isDeletingThis}
+                            style={deleteButton}
+                          >
+                            {isDeletingThis ? 'Deleting…' : '🗑 Delete'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
 
         {activeTab === 'activity' && (
           <div style={cardStyle}>
-            <div style={emptyText}>
-              Activity log coming in Session 17.
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '16px',
+            }}>
+              <h3 style={{ ...cardTitle, marginBottom: 0 }}>
+                Activity ({activity.length})
+              </h3>
+              <button onClick={loadActivity} style={linkButton} disabled={activityLoading}>
+                {activityLoading ? 'Refreshing...' : '↻ Refresh'}
+              </button>
             </div>
+
+            {activityLoading ? (
+              <div style={emptyText}>Loading...</div>
+            ) : activity.length === 0 ? (
+              <div style={emptyText}>
+                No activity yet. Things will show up here as you work with this client (uploads, recommendations, notes, etc.)
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {activity.map((a) => (
+                  <div
+                    key={a.id}
+                    style={{
+                      display: 'flex',
+                      gap: '14px',
+                      padding: '12px 14px',
+                      background: '#faf7f2',
+                      border: '1px solid #eef1f4',
+                      borderRadius: '8px',
+                    }}
+                  >
+                    <div style={{
+                      fontSize: '20px',
+                      lineHeight: 1,
+                      flexShrink: 0,
+                      paddingTop: '2px',
+                    }}>
+                      {eventIcon(a.event_type)}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '14px', color: '#1e3a5f', fontWeight: 500 }}>
+                        {a.event_summary}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#888', marginTop: '4px' }}>
+                        {a.actor_name || 'Someone'} · {formatRelativeTime(a.created_at)} · {formatDate(a.created_at)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -912,15 +1353,7 @@ export default function ClientProfilePage() {
       {showRecModal && (
         <div style={modalOverlay} onClick={() => !running && setShowRecModal(false)}>
           <div style={modalContent} onClick={(e) => e.stopPropagation()}>
-            <h2 style={{
-              fontFamily: 'Playfair Display, serif',
-              fontSize: '24px',
-              color: '#1e3a5f',
-              marginTop: 0,
-              marginBottom: '8px',
-            }}>
-              Run Recommendation
-            </h2>
+            <h2 style={modalTitle}>Run Recommendation</h2>
             <div style={{ color: '#5b7a99', fontSize: '13px', marginBottom: '20px' }}>
               For {client.first_name} {client.last_name}
               {claims.filter((c) => c.parsed?.parse_status === 'success').length > 0 && (
@@ -1003,14 +1436,7 @@ export default function ClientProfilePage() {
             </div>
 
             {runError && (
-              <div style={{
-                background: '#fde7e7',
-                color: '#a44',
-                padding: '12px',
-                borderRadius: '6px',
-                fontSize: '13px',
-                marginBottom: '16px',
-              }}>
+              <div style={errorBox}>
                 {runError}
               </div>
             )}
@@ -1045,6 +1471,152 @@ export default function ClientProfilePage() {
                 Searching CMS Marketplace and ranking with Claude AI. Please don't close this window.
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Client Modal */}
+      {showEditModal && (
+        <div style={modalOverlay} onClick={() => !savingClient && setShowEditModal(false)}>
+          <div style={modalContent} onClick={(e) => e.stopPropagation()}>
+            <h2 style={modalTitle}>Edit Client</h2>
+            <div style={{ color: '#5b7a99', fontSize: '13px', marginBottom: '20px' }}>
+              Update {client.first_name}'s details.
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>First Name *</label>
+                <input
+                  type="text"
+                  value={editFirstName}
+                  onChange={(e) => setEditFirstName(e.target.value)}
+                  style={inputStyle}
+                  disabled={savingClient}
+                />
+              </div>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>Last Name *</label>
+                <input
+                  type="text"
+                  value={editLastName}
+                  onChange={(e) => setEditLastName(e.target.value)}
+                  style={inputStyle}
+                  disabled={savingClient}
+                />
+              </div>
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Email</label>
+              <input
+                type="email"
+                value={editEmail}
+                onChange={(e) => setEditEmail(e.target.value)}
+                style={inputStyle}
+                disabled={savingClient}
+              />
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Phone</label>
+              <input
+                type="text"
+                value={editPhone}
+                onChange={(e) => setEditPhone(e.target.value)}
+                style={inputStyle}
+                disabled={savingClient}
+              />
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Employer</label>
+              <input
+                type="text"
+                value={editEmployer}
+                onChange={(e) => setEditEmployer(e.target.value)}
+                style={inputStyle}
+                disabled={savingClient}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>Members</label>
+                <input
+                  type="number"
+                  value={editMemberCount}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    if (!isNaN(n) && n > 0 && n < 100) setEditMemberCount(n);
+                  }}
+                  style={inputStyle}
+                  min={1}
+                  disabled={savingClient}
+                />
+              </div>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>State</label>
+                <input
+                  type="text"
+                  value={editState}
+                  onChange={(e) => setEditState(e.target.value.toUpperCase().slice(0, 2))}
+                  placeholder="AZ"
+                  style={inputStyle}
+                  maxLength={2}
+                  disabled={savingClient}
+                />
+              </div>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>ZIP</label>
+                <input
+                  type="text"
+                  value={editZip}
+                  onChange={(e) => setEditZip(e.target.value.replace(/[^0-9]/g, '').slice(0, 5))}
+                  placeholder="85001"
+                  style={inputStyle}
+                  maxLength={5}
+                  disabled={savingClient}
+                />
+              </div>
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Status</label>
+              <select
+                value={editStatus}
+                onChange={(e) => setEditStatus(e.target.value as any)}
+                style={inputStyle}
+                disabled={savingClient}
+              >
+                <option value="active">Active</option>
+                <option value="pending">Pending</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+
+            {editError && (
+              <div style={errorBox}>
+                {editError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowEditModal(false)}
+                style={secondaryButtonActive}
+                disabled={savingClient}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveClient}
+                style={primaryButtonActive}
+                disabled={savingClient}
+              >
+                {savingClient ? 'Saving…' : 'Save Changes'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1132,6 +1704,18 @@ const deleteButton: React.CSSProperties = {
   fontFamily: 'Figtree, sans-serif',
 };
 
+const editButton: React.CSSProperties = {
+  background: 'white',
+  color: '#5b7a99',
+  border: '1px solid #d4d4d4',
+  borderRadius: '6px',
+  padding: '6px 12px',
+  fontSize: '12px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'Figtree, sans-serif',
+};
+
 const statusBadge: React.CSSProperties = {
   display: 'inline-block',
   padding: '4px 10px',
@@ -1169,11 +1753,19 @@ const modalContent: React.CSSProperties = {
   background: 'white',
   borderRadius: '12px',
   padding: '32px',
-  maxWidth: '480px',
+  maxWidth: '520px',
   width: '100%',
   maxHeight: '90vh',
   overflowY: 'auto',
   fontFamily: 'Figtree, sans-serif',
+};
+
+const modalTitle: React.CSSProperties = {
+  fontFamily: 'Playfair Display, serif',
+  fontSize: '24px',
+  color: '#1e3a5f',
+  marginTop: 0,
+  marginBottom: '8px',
 };
 
 const fieldGroup: React.CSSProperties = {
@@ -1197,4 +1789,13 @@ const inputStyle: React.CSSProperties = {
   fontFamily: 'Figtree, sans-serif',
   color: '#1e3a5f',
   boxSizing: 'border-box',
+};
+
+const errorBox: React.CSSProperties = {
+  background: '#fde7e7',
+  color: '#a44',
+  padding: '12px',
+  borderRadius: '6px',
+  fontSize: '13px',
+  marginBottom: '16px',
 };
