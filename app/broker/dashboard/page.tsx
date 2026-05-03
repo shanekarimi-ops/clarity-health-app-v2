@@ -137,6 +137,7 @@ export default function BrokerDashboardPage() {
     const icons: Record<string, string> = {
       client_added: '➕',
       client_edited: '✏️',
+      client_deleted: '🗑',
       claim_uploaded: '📎',
       claim_deleted: '🗑',
       recommendation_run: '⭐',
@@ -238,17 +239,8 @@ export default function BrokerDashboardPage() {
         <div className="dash-two-col">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div className="dash-card">
-              <div className="dash-card-header">
+            <div className="dash-card-header">
                 <div className="dash-card-title">Recent Activity</div>
-                {recentActivity.length > 0 && (
-                  <Link
-                    href="/broker/clients"
-                    className="dash-card-action"
-                    style={{ textDecoration: 'none' }}
-                  >
-                    View all
-                  </Link>
-                )}
               </div>
               {recentActivity.length === 0 ? (
                 <div className="empty-state">

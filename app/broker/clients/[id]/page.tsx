@@ -145,6 +145,12 @@ export default function ClientProfilePage() {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkEmail, setLinkEmail] = useState('');
 
+  // Delete Client modal state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletingClient, setDeletingClient] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+
   // Toast state
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -204,6 +210,14 @@ export default function ClientProfilePage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showLinkModal, client?.id]);
+
+  // Reset Delete modal when opening
+  useEffect(() => {
+    if (showDeleteModal) {
+      setDeleteConfirmText('');
+      setDeleteError(null);
+    }
+  }, [showDeleteModal]);
 
   // Auto-dismiss toast after 4 seconds
   useEffect(() => {
@@ -748,6 +762,140 @@ export default function ClientProfilePage() {
     }
   }
 
+  // ===== Delete Client handler =====
+  async function handleDeleteClient() {
+    if (!user || !client) return;
+    setDeleteError(null);
+
+    const expectedText = `${client.first_name} ${client.last_name}`;
+    if (deleteConfirmText.trim() !== expectedText) {
+      setDeleteError(`Please type the exact name "${expectedText}" to confirm.`);
+      return;
+    }
+
+    setDeletingClient(true);
+
+    try {
+      // Snapshot info we need for the post-delete activity log
+      const snapshotName = `${client.first_name} ${client.last_name}`;
+      const snapshotAgencyId = client.agency_id;
+      const snapshotEmployer = client.employer_name;
+      const actorName = `${user.user_metadata?.first_name || ''} ${user.user_metadata?.last_name || ''}`.trim() || user.email || 'Unknown';
+
+      // 1. Delete storage files (best effort — broker storage path is /{userId}/clients/{clientId}/...)
+      try {
+        const { data: fileList } = await supabase.storage
+          .from('claims')
+          .list(`${user.id}/clients/${client.id}`);
+
+        if (fileList && fileList.length > 0) {
+          const paths = fileList.map((f: any) => `${user.id}/clients/${client.id}/${f.name}`);
+          await supabase.storage.from('claims').remove(paths);
+        }
+      } catch (storageErr) {
+        console.warn('Storage cleanup failed (continuing):', storageErr);
+      }
+
+      // 2. Delete dependent rows in correct order (children → parents)
+
+      // Get claim IDs first so we can delete claims_parsed
+      const { data: claimsToDelete } = await supabase
+        .from('claims')
+        .select('id')
+        .eq('client_id', client.id);
+
+      const claimIds = (claimsToDelete || []).map((c: any) => c.id);
+
+      // claims_parsed (children of claims)
+      if (claimIds.length > 0) {
+        const { error: cpErr } = await supabase
+          .from('claims_parsed')
+          .delete()
+          .in('claim_id', claimIds);
+        if (cpErr) console.warn('claims_parsed delete failed (continuing):', cpErr.message);
+      }
+
+      // claims
+      const { error: claimsErr } = await supabase
+        .from('claims')
+        .delete()
+        .eq('client_id', client.id);
+      if (claimsErr) console.warn('claims delete failed (continuing):', claimsErr.message);
+
+      // recommendations
+      const { error: recsErr } = await supabase
+        .from('recommendations')
+        .delete()
+        .eq('client_id', client.id);
+      if (recsErr) console.warn('recommendations delete failed (continuing):', recsErr.message);
+
+      // broker_notes
+      const { error: notesErr } = await supabase
+        .from('broker_notes')
+        .delete()
+        .eq('client_id', client.id);
+      if (notesErr) console.warn('broker_notes delete failed (continuing):', notesErr.message);
+
+      // client_links
+      const { error: linksErr } = await supabase
+        .from('client_links')
+        .delete()
+        .eq('client_id', client.id);
+      if (linksErr) console.warn('client_links delete failed (continuing):', linksErr.message);
+
+      // activity_log (this client's history goes away with the client)
+      const { error: actErr } = await supabase
+        .from('activity_log')
+        .delete()
+        .eq('client_id', client.id);
+      if (actErr) console.warn('activity_log delete failed (continuing):', actErr.message);
+
+      // 3. Finally, delete the client itself
+      const { error: clientErr } = await supabase
+        .from('clients')
+        .delete()
+        .eq('id', client.id);
+
+      if (clientErr) {
+        setDeleteError(`Could not delete client: ${clientErr.message}`);
+        setDeletingClient(false);
+        return;
+      }
+
+      // 4. Log agency-scoped activity (client_id = NULL since the client is gone)
+      try {
+        await supabase.from('activity_log').insert({
+          agency_id: snapshotAgencyId,
+          client_id: null,
+          actor_user_id: user.id,
+          actor_name: actorName,
+          event_type: 'client_deleted',
+          event_summary: `Deleted client ${snapshotName}`,
+          metadata: {
+            client_name: snapshotName,
+            employer_name: snapshotEmployer,
+          },
+        });
+      } catch (logErr) {
+        console.warn('Final activity log failed (non-blocking):', logErr);
+      }
+
+      // 5. Redirect back to clients list with toast on the next page
+      // We use sessionStorage to pass the toast since we're navigating away
+      try {
+        sessionStorage.setItem('clientDeletedToast', `${snapshotName} has been deleted.`);
+      } catch (e) {
+        // sessionStorage may be unavailable in SSR; non-critical
+      }
+
+      router.push('/broker/clients');
+    } catch (err: any) {
+      console.error('Unexpected delete client error:', err);
+      setDeleteError(err?.message || 'Unexpected error. Please try again.');
+      setDeletingClient(false);
+    }
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/');
@@ -793,6 +941,7 @@ export default function ClientProfilePage() {
       case 'note_deleted': return '🗑';
       case 'client_added': return '👤';
       case 'client_edited': return '✏️';
+      case 'client_deleted': return '🗑';
       case 'link_request_sent': return '🔗';
       case 'link_accepted': return '✅';
       default: return '•';
@@ -873,6 +1022,18 @@ export default function ClientProfilePage() {
   const activeLink = links.find((l) => l.status === 'active' || l.status === 'accepted');
   const pendingLink = links.find((l) => l.status === 'pending');
 
+  // Build the location string for the header (handles state-only, zip-only, or both)
+  const locationString = (() => {
+    if (client.state && client.zip) return `${client.state} ${client.zip}`;
+    if (client.state) return client.state;
+    if (client.zip) return client.zip;
+    return null;
+  })();
+
+  // Expected confirmation text
+  const expectedConfirmText = `${client.first_name} ${client.last_name}`;
+  const confirmTextMatches = deleteConfirmText.trim() === expectedConfirmText;
+
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
       <BrokerSidebar
@@ -938,9 +1099,9 @@ export default function ClientProfilePage() {
                   <span style={{ color: '#3a4d68', fontSize: '14px' }}>
                     👥 {client.member_count || 1} {(client.member_count || 1) === 1 ? 'member' : 'members'}
                   </span>
-                  {client.state && (
+                  {locationString && (
                     <span style={{ color: '#3a4d68', fontSize: '14px' }}>
-                      📍 {client.state}{client.zip ? ` ${client.zip}` : ''}
+                      📍 {locationString}
                     </span>
                   )}
                 </div>
@@ -971,6 +1132,13 @@ export default function ClientProfilePage() {
                 title="Edit client"
               >
                 ✏️ Edit
+              </button>
+              <button
+                onClick={() => setShowDeleteModal(true)}
+                style={deleteHeaderButton}
+                title="Delete client"
+              >
+                🗑 Delete
               </button>
             </div>
           </div>
@@ -1174,7 +1342,7 @@ export default function ClientProfilePage() {
                     </div>
                   </div>
                   <div style={{ fontSize: '12px', color: '#888' }}>
-                  You have {activeLink.access_level || 'limited'} access to this client's data.
+                    You have {activeLink.access_level || 'limited'} access to this client's data.
                   </div>
                 </div>
               ) : pendingLink ? (
@@ -1886,6 +2054,79 @@ export default function ClientProfilePage() {
         </div>
       )}
 
+      {/* Delete Client Modal */}
+      {showDeleteModal && (
+        <div style={modalOverlay} onClick={() => !deletingClient && setShowDeleteModal(false)}>
+          <div style={modalContent} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ ...modalTitle, color: '#a44' }}>🗑 Delete Client</h2>
+
+            <div style={{
+              background: '#fde7e7',
+              border: '1px solid #f0c0c0',
+              borderRadius: '8px',
+              padding: '14px',
+              marginBottom: '20px',
+            }}>
+              <div style={{ fontSize: '13px', color: '#a44', fontWeight: 700, marginBottom: '8px' }}>
+                ⚠️ This action cannot be undone.
+              </div>
+              <div style={{ fontSize: '12px', color: '#3a4d68', lineHeight: '1.6' }}>
+                You are about to permanently delete <strong>{expectedConfirmText}</strong> and ALL of their data, including:
+              </div>
+              <ul style={{ margin: '8px 0 0 0', paddingLeft: '18px', fontSize: '12px', color: '#3a4d68', lineHeight: '1.7' }}>
+                <li>{claims.length} document{claims.length === 1 ? '' : 's'} (and parsed data)</li>
+                <li>{recs.length} recommendation{recs.length === 1 ? '' : 's'}</li>
+                <li>{notes.length} note{notes.length === 1 ? '' : 's'}</li>
+                <li>{links.length} link request{links.length === 1 ? '' : 's'}</li>
+                <li>All activity history</li>
+              </ul>
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>
+                Type <strong style={{ color: '#a44' }}>{expectedConfirmText}</strong> to confirm:
+              </label>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder={expectedConfirmText}
+                style={inputStyle}
+                disabled={deletingClient}
+                autoFocus
+              />
+            </div>
+
+            {deleteError && (
+              <div style={errorBox}>
+                {deleteError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                style={secondaryButtonActive}
+                disabled={deletingClient}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteClient}
+                style={{
+                  ...primaryButtonActive,
+                  background: confirmTextMatches && !deletingClient ? '#a44' : '#d4a8a8',
+                  cursor: confirmTextMatches && !deletingClient ? 'pointer' : 'not-allowed',
+                }}
+                disabled={!confirmTextMatches || deletingClient}
+              >
+                {deletingClient ? 'Deleting…' : '🗑 Permanently Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast */}
       {toastMessage && (
         <div style={{
@@ -1994,6 +2235,18 @@ const editButton: React.CSSProperties = {
   background: 'white',
   color: '#5b7a99',
   border: '1px solid #d4d4d4',
+  borderRadius: '6px',
+  padding: '6px 12px',
+  fontSize: '12px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'Figtree, sans-serif',
+};
+
+const deleteHeaderButton: React.CSSProperties = {
+  background: 'white',
+  color: '#a44',
+  border: '1px solid #f0c0c0',
   borderRadius: '6px',
   padding: '6px 12px',
   fontSize: '12px',

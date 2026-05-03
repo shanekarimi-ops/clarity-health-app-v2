@@ -38,10 +38,27 @@ export default function BrokerClientsPage() {
   const [memberCount, setMemberCount] = useState('1');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
+    // Check for toast message from a redirect (e.g. after deleting a client)
+    try {
+      const msg = sessionStorage.getItem('clientDeletedToast');
+      if (msg) {
+        setToastMessage(msg);
+        sessionStorage.removeItem('clientDeletedToast');
+      }
+    } catch {}
   }, []);
+
+  // Auto-dismiss toast after 4 seconds
+  useEffect(() => {
+    if (toastMessage) {
+      const t = setTimeout(() => setToastMessage(null), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [toastMessage]);
 
   async function loadData() {
     setLoading(true);
@@ -515,6 +532,27 @@ export default function BrokerClientsPage() {
           </div>
         )}
       </div>
+
+      {/* Toast */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          background: '#1e3a5f',
+          color: 'white',
+          padding: '14px 20px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 16px rgba(30, 58, 95, 0.3)',
+          fontSize: '14px',
+          fontWeight: 500,
+          fontFamily: 'Figtree, sans-serif',
+          zIndex: 2000,
+          maxWidth: '380px',
+        }}>
+          ✅ {toastMessage}
+        </div>
+      )}
     </div>
   );
 }
