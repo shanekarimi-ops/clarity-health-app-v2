@@ -119,16 +119,17 @@ const styles = StyleSheet.create({
   // Tables (shared structure)
   table: {
     borderWidth: 1,
-    borderColor: PDF_COLORS.warm,
+    borderColor: PDF_COLORS.border,
     borderRadius: 4,
     marginBottom: 16,
+    overflow: 'hidden',
   },
   tableHeader: {
     flexDirection: 'row',
-    backgroundColor: PDF_COLORS.cream,
+    backgroundColor: '#eef1f4',
     padding: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: PDF_COLORS.warm,
+    borderBottomWidth: 2,
+    borderBottomColor: PDF_COLORS.ink,
   },
   tableRow: {
     flexDirection: 'row',
