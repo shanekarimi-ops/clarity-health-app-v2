@@ -145,26 +145,44 @@ export async function POST(req: NextRequest) {
 
     // If we have no clients, synthesize 5 fake group names so the report isn't empty
     const fallbackGroups = [
-      { id: 'mock-1', employer_name: 'Acme Manufacturing', member_count: 142 },
-      { id: 'mock-2', employer_name: 'Riverside Logistics', member_count: 87 },
-      { id: 'mock-3', employer_name: 'Bluebird Cafe Group', member_count: 38 },
-      { id: 'mock-4', employer_name: 'Summit Tech Solutions', member_count: 65 },
-      { id: 'mock-5', employer_name: 'Northstar Healthcare', member_count: 215 },
-    ];
-
-    type Group = { id: string; name: string; employees: number };
-
-    const groups: Group[] = (clientRows && clientRows.length > 0)
-      ? clientRows.map((c: any) => ({
-          id: c.id,
-          name: c.employer_name || `${c.first_name} ${c.last_name}`,
-          employees: c.member_count || 25,
-        }))
-      : fallbackGroups.map((g) => ({
+        { id: 'mock-1', employer_name: 'Acme Manufacturing', member_count: 142 },
+        { id: 'mock-2', employer_name: 'Riverside Logistics', member_count: 87 },
+        { id: 'mock-3', employer_name: 'Bluebird Cafe Group', member_count: 38 },
+        { id: 'mock-4', employer_name: 'Summit Tech Solutions', member_count: 65 },
+        { id: 'mock-5', employer_name: 'Northstar Healthcare', member_count: 215 },
+      ];
+  
+      // Demo "big employer" groups injected for sample purposes so ACA + 5500 tables
+      // always have data. These are clearly synthesized — not real clients.
+      const demoBigEmployers = [
+        { id: 'demo-big-1', employer_name: '[Demo] Apex Industrial Group', member_count: 145 },
+        { id: 'demo-big-2', employer_name: '[Demo] Cascade Regional Hospital', member_count: 320 },
+        { id: 'demo-big-3', employer_name: '[Demo] Pinnacle Logistics Co', member_count: 85 },
+      ];
+  
+      type Group = { id: string; name: string; employees: number };
+  
+      const realGroups: Group[] = (clientRows && clientRows.length > 0)
+        ? clientRows.map((c: any) => ({
+            id: c.id,
+            name: c.employer_name || `${c.first_name} ${c.last_name}`,
+            employees: c.member_count || 25,
+          }))
+        : fallbackGroups.map((g) => ({
+            id: g.id,
+            name: g.employer_name,
+            employees: g.member_count,
+          }));
+  
+      // Always include the demo big employers so all 3 sections populate
+      const groups: Group[] = [
+        ...realGroups,
+        ...demoBigEmployers.map((g) => ({
           id: g.id,
           name: g.employer_name,
           employees: g.member_count,
-        }));
+        })),
+      ];
 
     // 4. Synthesize sample compliance data deterministically (seeded by agencyId + group id)
     const periodLabel = PERIOD_LABELS[periodKey];

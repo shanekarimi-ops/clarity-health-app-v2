@@ -205,6 +205,21 @@ const styles = StyleSheet.create({
     color: PDF_COLORS.ink2,
     lineHeight: 1.4,
   },
+
+  // Empty state for tables with no qualifying rows
+  emptyState: {
+    backgroundColor: PDF_COLORS.cream,
+    borderWidth: 1,
+    borderColor: PDF_COLORS.warm,
+    borderRadius: 4,
+    padding: 12,
+    marginBottom: 16,
+  },
+  emptyStateText: {
+    fontSize: 9,
+    color: PDF_COLORS.ink2,
+    fontStyle: 'italic',
+  },
 });
 
 function StatusPill({ status, label }: { status: ComplianceStatus; label: string }) {
@@ -259,15 +274,23 @@ export default function CompliancePDF({ data }: { data: ComplianceData }) {
           provide copies to employees.
         </Text>
 
-        <View style={styles.table}>
-          <View style={styles.tableHeader}>
-            <Text style={[styles.cellHeader, styles.acaColGroup]}>Group</Text>
-            <Text style={[styles.cellHeader, styles.acaColEmps]}>Emps</Text>
-            <Text style={[styles.cellHeader, styles.acaColAle]}>ALE Status</Text>
-            <Text style={[styles.cellHeader, styles.acaColDeadline]}>Deadline</Text>
-            <Text style={[styles.cellHeader, styles.acaColStatus]}>Status</Text>
+        {data.acaRows.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateText}>
+              No groups in your roster currently meet the 50+ FTE threshold for
+              ACA reporting.
+            </Text>
           </View>
-          {data.acaRows.map((row, i) => {
+        ) : (
+          <View style={styles.table}>
+            <View style={styles.tableHeader}>
+              <Text style={[styles.cellHeader, styles.acaColGroup]}>Group</Text>
+              <Text style={[styles.cellHeader, styles.acaColEmps]}>Emps</Text>
+              <Text style={[styles.cellHeader, styles.acaColAle]}>ALE Status</Text>
+              <Text style={[styles.cellHeader, styles.acaColDeadline]}>Deadline</Text>
+              <Text style={[styles.cellHeader, styles.acaColStatus]}>Status</Text>
+            </View>
+            {data.acaRows.map((row, i) => {
             const isLast = i === data.acaRows.length - 1;
             return (
               <View
@@ -284,7 +307,8 @@ export default function CompliancePDF({ data }: { data: ComplianceData }) {
               </View>
             );
           })}
-        </View>
+          </View>
+        )}
       </View>
 
       {/* SBC Distribution */}
@@ -331,15 +355,23 @@ export default function CompliancePDF({ data }: { data: ComplianceData }) {
           after plan year end.
         </Text>
 
-        <View style={styles.table}>
-          <View style={styles.tableHeader}>
-            <Text style={[styles.cellHeader, styles.f5500ColGroup]}>Group</Text>
-            <Text style={[styles.cellHeader, styles.f5500ColType]}>Filing Type</Text>
-            <Text style={[styles.cellHeader, styles.f5500ColDeadline]}>Deadline</Text>
-            <Text style={[styles.cellHeader, styles.f5500ColStatus]}>Status</Text>
-            <Text style={[styles.cellHeader, styles.f5500ColNotes]}>Notes</Text>
+        {data.form5500Rows.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateText}>
+              No groups in your roster currently require Form 5500 filings (80+
+              participants).
+            </Text>
           </View>
-          {data.form5500Rows.map((row, i) => {
+        ) : (
+          <View style={styles.table}>
+            <View style={styles.tableHeader}>
+              <Text style={[styles.cellHeader, styles.f5500ColGroup]}>Group</Text>
+              <Text style={[styles.cellHeader, styles.f5500ColType]}>Filing Type</Text>
+              <Text style={[styles.cellHeader, styles.f5500ColDeadline]}>Deadline</Text>
+              <Text style={[styles.cellHeader, styles.f5500ColStatus]}>Status</Text>
+              <Text style={[styles.cellHeader, styles.f5500ColNotes]}>Notes</Text>
+            </View>
+            {data.form5500Rows.map((row, i) => {
             const isLast = i === data.form5500Rows.length - 1;
             return (
               <View
@@ -356,7 +388,8 @@ export default function CompliancePDF({ data }: { data: ComplianceData }) {
               </View>
             );
           })}
-        </View>
+          </View>
+        )}
       </View>
 
       {/* Disclaimer */}
