@@ -6,7 +6,7 @@ import {
   Document,
   StyleSheet,
 } from '@react-pdf/renderer';
-import BrandedPDF, { reportStyles, PDF_COLORS } from './BrandedPDF';
+import { BrandedPDF, reportStyles, PDF_COLORS } from './BrandedPDF';
 
 type CohortRow = {
   year: number;
