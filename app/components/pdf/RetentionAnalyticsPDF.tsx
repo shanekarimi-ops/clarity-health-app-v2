@@ -234,7 +234,7 @@ export default function RetentionAnalyticsPDF({ data }: { data: RetentionData })
 
   return (
     <Document>
-      <Page size="LETTER" style={reportStyles.page}>
+      <Page size="LETTER">
         <BrandedPDF
           agencyName={data.agencyName}
           brokerName={data.brokerName}
