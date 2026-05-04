@@ -21,6 +21,7 @@ type Client = {
   state: string | null;
   zip: string | null;
   status: string;
+  renewal_date: string | null;
   created_at: string;
 };
 
@@ -138,6 +139,7 @@ export default function ClientProfilePage() {
   const [editState, setEditState] = useState('');
   const [editZip, setEditZip] = useState('');
   const [editStatus, setEditStatus] = useState<'active' | 'pending' | 'closed'>('active');
+  const [editRenewalDate, setEditRenewalDate] = useState('');
 
   // Send Link Request modal state
   const [showLinkModal, setShowLinkModal] = useState(false);
@@ -197,6 +199,7 @@ export default function ClientProfilePage() {
       setEditState(client.state || '');
       setEditZip(client.zip || '');
       setEditStatus((client.status as any) || 'active');
+      setEditRenewalDate(client.renewal_date || '');
       setEditError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -644,9 +647,19 @@ export default function ClientProfilePage() {
       return;
     }
 
+    // Validate renewal date format if provided (HTML date input gives us YYYY-MM-DD)
+    const trimmedRenewal = editRenewalDate.trim();
+    if (trimmedRenewal && !/^\d{4}-\d{2}-\d{2}$/.test(trimmedRenewal)) {
+      setEditError('Renewal date must be a valid date.');
+      return;
+    }
+
     setSavingClient(true);
 
     try {
+      const oldRenewal = client.renewal_date || null;
+      const newRenewal = trimmedRenewal || null;
+
       const { error } = await supabase
         .from('clients')
         .update({
@@ -659,6 +672,7 @@ export default function ClientProfilePage() {
           state: editState.trim() || null,
           zip: editZip.trim() || null,
           status: editStatus,
+          renewal_date: newRenewal,
         })
         .eq('id', client.id);
 
@@ -680,7 +694,26 @@ export default function ClientProfilePage() {
       }
 
       setShowEditModal(false);
-      logActivity('client_edited', 'Updated client info', null);
+
+      // Log a more specific event if the renewal date changed
+      if (oldRenewal !== newRenewal) {
+        if (newRenewal && !oldRenewal) {
+          logActivity('renewal_date_set', `Set renewal date to ${formatRenewalDate(newRenewal)}`, {
+            renewal_date: newRenewal,
+          });
+        } else if (newRenewal && oldRenewal) {
+          logActivity('renewal_date_set', `Updated renewal date to ${formatRenewalDate(newRenewal)}`, {
+            renewal_date: newRenewal,
+            previous: oldRenewal,
+          });
+        } else {
+          logActivity('renewal_date_set', 'Cleared renewal date', {
+            previous: oldRenewal,
+          });
+        }
+      } else {
+        logActivity('client_edited', 'Updated client info', null);
+      }
     } catch (err: any) {
       setEditError(err?.message || 'Unexpected error');
     } finally {
@@ -920,6 +953,34 @@ export default function ClientProfilePage() {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
+  // Format a renewal date (YYYY-MM-DD from Postgres) without timezone slippage.
+  // We parse the parts manually so we don't accidentally show "yesterday" for users
+  // west of UTC when the DB returns midnight UTC.
+  function formatRenewalDate(dateStr: string): string {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+    if (!m) return dateStr;
+    const year = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10) - 1;
+    const day = parseInt(m[3], 10);
+    const d = new Date(year, month, day);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // Returns an integer number of days from today until the renewal date.
+  // Negative means the date has passed.
+  function daysUntilRenewal(dateStr: string): number | null {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+    if (!m) return null;
+    const year = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10) - 1;
+    const day = parseInt(m[3], 10);
+    const renewal = new Date(year, month, day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const ms = renewal.getTime() - today.getTime();
+    return Math.round(ms / (1000 * 60 * 60 * 24));
+  }
+
   function formatRelativeTime(iso: string): string {
     const now = Date.now();
     const then = new Date(iso).getTime();
@@ -944,6 +1005,7 @@ export default function ClientProfilePage() {
       case 'client_deleted': return '🗑';
       case 'link_request_sent': return '🔗';
       case 'link_accepted': return '✅';
+      case 'renewal_date_set': return '📅';
       default: return '•';
     }
   }
@@ -1030,6 +1092,17 @@ export default function ClientProfilePage() {
     return null;
   })();
 
+  // Renewal date display logic for header
+  const renewalDays = client.renewal_date ? daysUntilRenewal(client.renewal_date) : null;
+  const renewalBadgeColors = (() => {
+    if (renewalDays === null) return null;
+    if (renewalDays < 0) return { bg: '#f5f5f5', fg: '#888' }; // past
+    if (renewalDays <= 30) return { bg: '#fde7e7', fg: '#a44' }; // urgent
+    if (renewalDays <= 60) return { bg: '#fff4e0', fg: '#a96a1c' }; // soon
+    if (renewalDays <= 90) return { bg: '#e8f0fb', fg: '#3a6ea5' }; // upcoming
+    return { bg: '#e8f0e6', fg: '#5a7857' }; // far out
+  })();
+
   // Expected confirmation text
   const expectedConfirmText = `${client.first_name} ${client.last_name}`;
   const confirmTextMatches = deleteConfirmText.trim() === expectedConfirmText;
@@ -1102,6 +1175,28 @@ export default function ClientProfilePage() {
                   {locationString && (
                     <span style={{ color: '#3a4d68', fontSize: '14px' }}>
                       📍 {locationString}
+                    </span>
+                  )}
+                  {client.renewal_date && renewalBadgeColors && (
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        background: renewalBadgeColors.bg,
+                        color: renewalBadgeColors.fg,
+                      }}
+                      title={`Renewal: ${formatRenewalDate(client.renewal_date)}`}
+                    >
+                      📅 Renews {formatRenewalDate(client.renewal_date)}
+                      {renewalDays !== null && renewalDays >= 0 && renewalDays <= 90 && (
+                        <> · in {renewalDays}d</>
+                      )}
+                      {renewalDays !== null && renewalDays < 0 && (
+                        <> · {Math.abs(renewalDays)}d ago</>
+                      )}
                     </span>
                   )}
                 </div>
@@ -1319,6 +1414,10 @@ export default function ClientProfilePage() {
                 <div><strong style={{ color: '#1e3a5f' }}>Members:</strong> {client.member_count || 1}</div>
                 <div><strong style={{ color: '#1e3a5f' }}>State:</strong> {client.state || '—'}</div>
                 <div><strong style={{ color: '#1e3a5f' }}>ZIP:</strong> {client.zip || '—'}</div>
+                <div>
+                  <strong style={{ color: '#1e3a5f' }}>Renewal Date:</strong>{' '}
+                  {client.renewal_date ? formatRenewalDate(client.renewal_date) : '—'}
+                </div>
                 <div><strong style={{ color: '#1e3a5f' }}>Added:</strong> {new Date(client.created_at).toLocaleDateString()}</div>
               </div>
             </div>
@@ -1944,18 +2043,38 @@ export default function ClientProfilePage() {
               </div>
             </div>
 
-            <div style={fieldGroup}>
-              <label style={fieldLabel}>Status</label>
-              <select
-                value={editStatus}
-                onChange={(e) => setEditStatus(e.target.value as any)}
-                style={inputStyle}
-                disabled={savingClient}
-              >
-                <option value="active">Active</option>
-                <option value="pending">Pending</option>
-                <option value="closed">Closed</option>
-              </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>Status</label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value as any)}
+                  style={inputStyle}
+                  disabled={savingClient}
+                >
+                  <option value="active">Active</option>
+                  <option value="pending">Pending</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </div>
+              <div style={fieldGroup}>
+                <label style={fieldLabel}>
+                  Renewal Date{' '}
+                  <span style={{ color: '#888', fontWeight: 400, fontSize: '12px' }}>
+                    (optional)
+                  </span>
+                </label>
+                <input
+                  type="date"
+                  value={editRenewalDate}
+                  onChange={(e) => setEditRenewalDate(e.target.value)}
+                  style={inputStyle}
+                  disabled={savingClient}
+                />
+                <div style={{ fontSize: '11px', color: '#888', marginTop: '4px' }}>
+                  Used by the Renewal Pipeline report.
+                </div>
+              </div>
             </div>
 
             {editError && (
