@@ -164,13 +164,10 @@ const s = StyleSheet.create({
     fontFamily: 'Helvetica-Bold',
     fontSize: 15,
     color: PDF_COLORS.ink,
-    flex: 1,
-    paddingRight: 8,
   },
   topPickIssuer: {
     fontSize: 9,
     color: PDF_COLORS.textMuted,
-    marginTop: 2,
   },
   topPickPremium: {
     fontFamily: 'Helvetica-Bold',
@@ -549,8 +546,9 @@ export function ClientRecPDF({
         <View style={s.topPickBox} wrap={false}>
           <Text style={s.topPickBadge}>★ TOP MATCH</Text>
           <View style={s.topPickHeader}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
+            <View style={{ flex: 1, paddingRight: 12, flexDirection: 'column' }}>
               <Text style={s.topPickName}>{topPlan.name}</Text>
+              <View style={{ height: 4 }} />
               <Text style={s.topPickIssuer}>
                 {topPlan.issuer} · {topPlan.metalLevel} · {topPlan.type}
                 {topPlan.hsaEligible ? ' · HSA-eligible' : ''}
