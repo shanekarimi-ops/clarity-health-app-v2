@@ -5,17 +5,49 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../../supabase';
 import BrokerSidebar from '../../components/BrokerSidebar';
 
+type ClientRow = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  employer_name: string | null;
+};
+
+type RecRow = {
+  id: string;
+  created_at: string;
+  client_id: string;
+  plans: any[] | null;
+};
+
 export default function BrokerReportsPage() {
   const router = useRouter();
+
+  // Auth/user state
   const [loading, setLoading] = useState(true);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [agencyName, setAgencyName] = useState('');
   const [userId, setUserId] = useState('');
 
-  // Test PDF state (Push 1 — will be removed in Push 5)
+  // Test PDF state (Push 1)
   const [testGenerating, setTestGenerating] = useState(false);
   const [testStatus, setTestStatus] = useState<string>('');
+
+  // Client Rec PDF modal state (Push 2)
+  const [showClientRecModal, setShowClientRecModal] = useState(false);
+  const [modalClients, setModalClients] = useState<ClientRow[]>([]);
+  const [modalRecs, setModalRecs] = useState<RecRow[]>([]);
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
+  const [selectedRecId, setSelectedRecId] = useState<string>('');
+  const [includeClaims, setIncludeClaims] = useState(true);
+  const [includeReasoning, setIncludeReasoning] = useState(true);
+  const [topN, setTopN] = useState(5);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalError, setModalError] = useState<string>('');
+  const [generatingClientRec, setGeneratingClientRec] = useState(false);
+
+  // Toast for successful generation
+  const [toastMessage, setToastMessage] = useState<string>('');
 
   useEffect(() => {
     loadUser();
@@ -55,7 +87,7 @@ export default function BrokerReportsPage() {
     router.push('/login');
   }
 
-  // ---- TEST PDF GENERATION (Push 1 verification — remove in Push 5) ----
+  // ---- TEST PDF (Push 1 - will be removed in Push 5) ----
   async function handleTestPDF() {
     if (!userId) {
       setTestStatus('❌ Not logged in');
@@ -80,7 +112,6 @@ export default function BrokerReportsPage() {
         return;
       }
 
-      // Download the PDF
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -97,6 +128,164 @@ export default function BrokerReportsPage() {
       setTestStatus(`❌ Error: ${err?.message || String(err)}`);
     } finally {
       setTestGenerating(false);
+    }
+  }
+
+  // ---- CLIENT REC PDF MODAL (Push 2) ----
+
+  async function openClientRecModal() {
+    setShowClientRecModal(true);
+    setSelectedClientId('');
+    setSelectedRecId('');
+    setModalRecs([]);
+    setModalError('');
+    setModalLoading(true);
+    setIncludeClaims(true);
+    setIncludeReasoning(true);
+    setTopN(5);
+
+    try {
+      // Load clients for this broker (RLS scopes to their agency)
+      const { data, error } = await supabase
+        .from('clients')
+        .select('id, first_name, last_name, employer_name')
+        .order('first_name', { ascending: true });
+
+      if (error) {
+        console.error('Load clients error:', error);
+        setModalError('Could not load clients: ' + error.message);
+      } else {
+        setModalClients((data || []) as ClientRow[]);
+      }
+    } catch (err: any) {
+      console.error('Load clients exception:', err);
+      setModalError('Could not load clients: ' + (err?.message || String(err)));
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  async function handleClientChange(clientId: string) {
+    setSelectedClientId(clientId);
+    setSelectedRecId('');
+    setModalRecs([]);
+    setModalError('');
+
+    if (!clientId) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('recommendations')
+        .select('id, created_at, client_id, plans')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Load recs error:', error);
+        setModalError('Could not load recommendations: ' + error.message);
+      } else {
+        const recs = (data || []) as RecRow[];
+        setModalRecs(recs);
+        if (recs.length === 0) {
+          setModalError(
+            'No recommendations have been run for this client yet.'
+          );
+        } else {
+          // Auto-select the most recent recommendation
+          setSelectedRecId(recs[0].id);
+        }
+      }
+    } catch (err: any) {
+      console.error('Load recs exception:', err);
+      setModalError('Could not load recommendations: ' + (err?.message || String(err)));
+    }
+  }
+
+  async function handleGenerateClientRec() {
+    if (!userId || !selectedClientId || !selectedRecId) {
+      setModalError('Please select a client and recommendation.');
+      return;
+    }
+
+    setGeneratingClientRec(true);
+    setModalError('');
+
+    try {
+      const res = await fetch('/api/reports/client-rec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          clientId: selectedClientId,
+          recId: selectedRecId,
+          includeClaims,
+          includeReasoning,
+          topN,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Client rec PDF error response:', errText);
+        let errMsg = `Failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error) errMsg = errJson.error;
+          if (errJson.details) errMsg += ' — ' + errJson.details;
+        } catch {}
+        setModalError('❌ ' + errMsg);
+        setGeneratingClientRec(false);
+        return;
+      }
+
+      // Download the PDF
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+
+      // Build filename from selected client
+      const client = modalClients.find((c) => c.id === selectedClientId);
+      const safe = client
+        ? `${client.first_name}-${client.last_name}-recommendations.pdf`
+            .toLowerCase()
+            .replace(/[^a-z0-9.-]/g, '-')
+        : 'client-recommendations.pdf';
+
+      a.download = safe;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      // Close modal and show toast
+      setShowClientRecModal(false);
+      setToastMessage('✅ Client recommendation PDF generated!');
+      setTimeout(() => setToastMessage(''), 4000);
+    } catch (err: any) {
+      console.error('Client rec generate exception:', err);
+      setModalError('❌ ' + (err?.message || String(err)));
+    } finally {
+      setGeneratingClientRec(false);
+    }
+  }
+
+  function closeModal() {
+    if (generatingClientRec) return; // don't close mid-generation
+    setShowClientRecModal(false);
+  }
+
+  // ---- HELPERS ----
+
+  function formatDateShort(iso: string): string {
+    try {
+      return new Date(iso).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+    } catch {
+      return iso;
     }
   }
 
@@ -181,13 +370,16 @@ export default function BrokerReportsPage() {
         <div style={sectionTitle}>Available Reports</div>
 
         <div style={cardGrid}>
-          <div style={mockCard}>
+          {/* CLIENT REC PDF — REAL */}
+          <div style={liveCard}>
             <div style={cardIconWrap}>📄</div>
             <h3 style={mockCardTitle}>Client Recommendation PDF</h3>
             <p style={mockCardDesc}>
               White-labeled, agency-branded PDF showing top plan recommendations with claims insights
             </p>
-            <button style={secondaryBtnDisabled} disabled>Generate</button>
+            <button style={liveBtn} onClick={openClientRecModal}>
+              Generate
+            </button>
           </div>
 
           <div style={mockCard}>
@@ -248,6 +440,153 @@ export default function BrokerReportsPage() {
           </ul>
         </div>
       </main>
+
+      {/* CLIENT REC MODAL */}
+      {showClientRecModal && (
+        <div style={modalOverlay} onClick={closeModal}>
+          <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>📄 Generate Client Recommendation PDF</h2>
+              <button
+                style={modalCloseBtn}
+                onClick={closeModal}
+                disabled={generatingClientRec}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={modalBody}>
+              {modalLoading ? (
+                <div style={{ padding: 20, color: '#3a4d68' }}>
+                  Loading clients...
+                </div>
+              ) : (
+                <>
+                  {/* Step 1: Pick client */}
+                  <div style={modalField}>
+                    <label style={modalLabel}>Step 1: Choose client</label>
+                    <select
+                      value={selectedClientId}
+                      onChange={(e) => handleClientChange(e.target.value)}
+                      style={modalSelect}
+                      disabled={generatingClientRec}
+                    >
+                      <option value="">— Select a client —</option>
+                      {modalClients.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.first_name} {c.last_name}
+                          {c.employer_name ? ` (${c.employer_name})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Step 2: Pick recommendation */}
+                  {selectedClientId && (
+                    <div style={modalField}>
+                      <label style={modalLabel}>Step 2: Choose recommendation</label>
+                      {modalRecs.length === 0 ? (
+                        <div style={modalEmpty}>
+                          {modalError || 'Loading recommendations...'}
+                        </div>
+                      ) : (
+                        <select
+                          value={selectedRecId}
+                          onChange={(e) => setSelectedRecId(e.target.value)}
+                          style={modalSelect}
+                          disabled={generatingClientRec}
+                        >
+                          {modalRecs.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              Run from {formatDateShort(r.created_at)} (
+                              {Array.isArray(r.plans) ? r.plans.length : 0} plans)
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Step 3: Options */}
+                  {selectedRecId && (
+                    <>
+                      <div style={modalDivider} />
+                      <div style={modalLabel}>Report options</div>
+
+                      <label style={checkboxRow}>
+                        <input
+                          type="checkbox"
+                          checked={includeClaims}
+                          onChange={(e) => setIncludeClaims(e.target.checked)}
+                          disabled={generatingClientRec}
+                        />
+                        <span>Include claims insights (conditions, prescriptions, providers)</span>
+                      </label>
+
+                      <label style={checkboxRow}>
+                        <input
+                          type="checkbox"
+                          checked={includeReasoning}
+                          onChange={(e) => setIncludeReasoning(e.target.checked)}
+                          disabled={generatingClientRec}
+                        />
+                        <span>Include AI reasoning (pros/cons per plan)</span>
+                      </label>
+
+                      <div style={modalField}>
+                        <label style={modalLabel}>Number of plans to show</label>
+                        <select
+                          value={topN}
+                          onChange={(e) => setTopN(Number(e.target.value))}
+                          style={modalSelect}
+                          disabled={generatingClientRec}
+                        >
+                          <option value={3}>Top 3 plans</option>
+                          <option value={5}>Top 5 plans</option>
+                          <option value={10}>Top 10 plans</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
+
+                  {modalError && (
+                    <div style={modalErrorBox}>{modalError}</div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div style={modalFooter}>
+              <button
+                style={modalCancelBtn}
+                onClick={closeModal}
+                disabled={generatingClientRec}
+              >
+                Cancel
+              </button>
+              <button
+                style={
+                  selectedRecId && !generatingClientRec
+                    ? modalGenerateBtn
+                    : modalGenerateBtnDisabled
+                }
+                onClick={handleGenerateClientRec}
+                disabled={!selectedRecId || generatingClientRec}
+              >
+                {generatingClientRec ? '⏳ Generating PDF...' : '📄 Generate PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TOAST */}
+      {toastMessage && (
+        <div style={toastStyle}>
+          {toastMessage}
+        </div>
+      )}
     </div>
   );
 }
@@ -324,6 +663,19 @@ const secondaryBtnDisabled: React.CSSProperties = {
   width: '100%',
 };
 
+const liveBtn: React.CSSProperties = {
+  background: '#7a9b76',
+  color: '#fff',
+  border: 'none',
+  padding: '10px 16px',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+  width: '100%',
+};
+
 const comingSoonBanner: React.CSSProperties = {
   background: 'linear-gradient(135deg, #faf7f2 0%, #eef1f4 100%)',
   border: '1px solid #d4dae2',
@@ -386,7 +738,6 @@ const cardGrid: React.CSSProperties = {
   gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
   gap: 16,
   marginBottom: 32,
-  opacity: 0.7,
 };
 
 const mockCard: React.CSSProperties = {
@@ -395,6 +746,16 @@ const mockCard: React.CSSProperties = {
   borderRadius: 10,
   padding: 22,
   fontFamily: 'Figtree, sans-serif',
+  opacity: 0.7,
+};
+
+const liveCard: React.CSSProperties = {
+  background: '#fff',
+  border: '2px solid #7a9b76',
+  borderRadius: 10,
+  padding: 22,
+  fontFamily: 'Figtree, sans-serif',
+  position: 'relative',
 };
 
 const cardIconWrap: React.CSSProperties = {
@@ -437,4 +798,177 @@ const featureList: React.CSSProperties = {
   color: '#3a4d68',
   fontSize: 14,
   lineHeight: 1.9,
+};
+
+// ---- Modal styles ----
+
+const modalOverlay: React.CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  background: 'rgba(30, 58, 95, 0.5)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+  padding: 16,
+};
+
+const modalBox: React.CSSProperties = {
+  background: '#fff',
+  borderRadius: 12,
+  width: '100%',
+  maxWidth: 520,
+  maxHeight: '90vh',
+  overflowY: 'auto',
+  fontFamily: 'Figtree, sans-serif',
+  boxShadow: '0 20px 50px rgba(0,0,0,0.2)',
+};
+
+const modalHeader: React.CSSProperties = {
+  padding: '18px 22px',
+  borderBottom: '1px solid #e2e8f0',
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+};
+
+const modalTitle: React.CSSProperties = {
+  fontFamily: 'Playfair Display, serif',
+  color: '#1e3a5f',
+  fontSize: 20,
+  margin: 0,
+};
+
+const modalCloseBtn: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  fontSize: 18,
+  cursor: 'pointer',
+  color: '#7a8a9b',
+  padding: 4,
+};
+
+const modalBody: React.CSSProperties = {
+  padding: '20px 22px',
+};
+
+const modalField: React.CSSProperties = {
+  marginBottom: 16,
+};
+
+const modalLabel: React.CSSProperties = {
+  display: 'block',
+  fontFamily: 'Figtree, sans-serif',
+  color: '#1e3a5f',
+  fontSize: 13,
+  fontWeight: 600,
+  marginBottom: 6,
+};
+
+const modalSelect: React.CSSProperties = {
+  width: '100%',
+  padding: '10px 12px',
+  border: '1px solid #d4dae2',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 14,
+  color: '#1e3a5f',
+  background: '#fff',
+};
+
+const modalEmpty: React.CSSProperties = {
+  background: '#faf7f2',
+  border: '1px solid #d4dae2',
+  borderRadius: 6,
+  padding: '10px 12px',
+  fontSize: 13,
+  color: '#7a8a9b',
+};
+
+const modalDivider: React.CSSProperties = {
+  height: 1,
+  background: '#e2e8f0',
+  margin: '20px 0 12px',
+};
+
+const checkboxRow: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginBottom: 8,
+  fontSize: 13,
+  color: '#3a4d68',
+  cursor: 'pointer',
+};
+
+const modalErrorBox: React.CSSProperties = {
+  background: '#fee',
+  border: '1px solid #f8b4b4',
+  borderRadius: 6,
+  padding: '10px 12px',
+  fontSize: 13,
+  color: '#a44',
+  marginTop: 12,
+};
+
+const modalFooter: React.CSSProperties = {
+  padding: '14px 22px',
+  borderTop: '1px solid #e2e8f0',
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: 8,
+};
+
+const modalCancelBtn: React.CSSProperties = {
+  background: '#fff',
+  color: '#3a4d68',
+  border: '1px solid #d4dae2',
+  padding: '10px 18px',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const modalGenerateBtn: React.CSSProperties = {
+  background: '#7a9b76',
+  color: '#fff',
+  border: 'none',
+  padding: '10px 18px',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const modalGenerateBtnDisabled: React.CSSProperties = {
+  background: '#c8d4c5',
+  color: '#fff',
+  border: 'none',
+  padding: '10px 18px',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'not-allowed',
+};
+
+const toastStyle: React.CSSProperties = {
+  position: 'fixed',
+  bottom: 24,
+  right: 24,
+  background: '#1e3a5f',
+  color: '#fff',
+  padding: '12px 18px',
+  borderRadius: 8,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 14,
+  fontWeight: 600,
+  boxShadow: '0 8px 20px rgba(0,0,0,0.15)',
+  zIndex: 1100,
 };
