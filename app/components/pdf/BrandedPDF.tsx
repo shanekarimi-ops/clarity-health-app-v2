@@ -125,7 +125,7 @@ interface BrandedPDFProps {
   reportTitle: string;
   reportSubtitle?: string;
   generatedDate?: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }
 
 /**
