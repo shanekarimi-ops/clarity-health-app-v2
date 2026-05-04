@@ -46,6 +46,15 @@ export default function BrokerReportsPage() {
   const [modalError, setModalError] = useState<string>('');
   const [generatingClientRec, setGeneratingClientRec] = useState(false);
 
+  // Agency Perf PDF modal state (Push 3)
+  const [showAgencyPerfModal, setShowAgencyPerfModal] = useState(false);
+  const [agencyDaysBack, setAgencyDaysBack] = useState(90);
+  const [agencyIncludeRoster, setAgencyIncludeRoster] = useState(true);
+  const [agencyIncludeActivity, setAgencyIncludeActivity] = useState(true);
+  const [agencyIncludeCarriers, setAgencyIncludeCarriers] = useState(true);
+  const [agencyError, setAgencyError] = useState<string>('');
+  const [generatingAgencyPerf, setGeneratingAgencyPerf] = useState(false);
+
   // Toast for successful generation
   const [toastMessage, setToastMessage] = useState<string>('');
 
@@ -145,7 +154,6 @@ export default function BrokerReportsPage() {
     setTopN(5);
 
     try {
-      // Load clients for this broker (RLS scopes to their agency)
       const { data, error } = await supabase
         .from('clients')
         .select('id, first_name, last_name, employer_name')
@@ -191,7 +199,6 @@ export default function BrokerReportsPage() {
             'No recommendations have been run for this client yet.'
           );
         } else {
-          // Auto-select the most recent recommendation
           setSelectedRecId(recs[0].id);
         }
       }
@@ -238,13 +245,11 @@ export default function BrokerReportsPage() {
         return;
       }
 
-      // Download the PDF
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
 
-      // Build filename from selected client
       const client = modalClients.find((c) => c.id === selectedClientId);
       const safe = client
         ? `${client.first_name}-${client.last_name}-recommendations.pdf`
@@ -258,7 +263,6 @@ export default function BrokerReportsPage() {
       a.remove();
       window.URL.revokeObjectURL(url);
 
-      // Close modal and show toast
       setShowClientRecModal(false);
       setToastMessage('✅ Client recommendation PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
@@ -270,9 +274,82 @@ export default function BrokerReportsPage() {
     }
   }
 
-  function closeModal() {
-    if (generatingClientRec) return; // don't close mid-generation
+  function closeClientRecModal() {
+    if (generatingClientRec) return;
     setShowClientRecModal(false);
+  }
+
+  // ---- AGENCY PERF PDF MODAL (Push 3) ----
+
+  function openAgencyPerfModal() {
+    setShowAgencyPerfModal(true);
+    setAgencyDaysBack(90);
+    setAgencyIncludeRoster(true);
+    setAgencyIncludeActivity(true);
+    setAgencyIncludeCarriers(true);
+    setAgencyError('');
+  }
+
+  function closeAgencyPerfModal() {
+    if (generatingAgencyPerf) return;
+    setShowAgencyPerfModal(false);
+  }
+
+  async function handleGenerateAgencyPerf() {
+    if (!userId) {
+      setAgencyError('Not logged in.');
+      return;
+    }
+
+    setGeneratingAgencyPerf(true);
+    setAgencyError('');
+
+    try {
+      const res = await fetch('/api/reports/agency-perf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          daysBack: agencyDaysBack,
+          includeRoster: agencyIncludeRoster,
+          includeActivity: agencyIncludeActivity,
+          includeCarriers: agencyIncludeCarriers,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Agency perf PDF error response:', errText);
+        let errMsg = `Failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error) errMsg = errJson.error;
+          if (errJson.details) errMsg += ' — ' + errJson.details;
+        } catch {}
+        setAgencyError('❌ ' + errMsg);
+        setGeneratingAgencyPerf(false);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'agency-performance.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setShowAgencyPerfModal(false);
+      setToastMessage('✅ Agency performance PDF generated!');
+      setTimeout(() => setToastMessage(''), 4000);
+    } catch (err: any) {
+      console.error('Agency perf generate exception:', err);
+      setAgencyError('❌ ' + (err?.message || String(err)));
+    } finally {
+      setGeneratingAgencyPerf(false);
+    }
   }
 
   // ---- HELPERS ----
@@ -382,13 +459,16 @@ export default function BrokerReportsPage() {
             </button>
           </div>
 
-          <div style={mockCard}>
+          {/* AGENCY PERF PDF — REAL */}
+          <div style={liveCard}>
             <div style={cardIconWrap}>📊</div>
             <h3 style={mockCardTitle}>Agency Performance Dashboard</h3>
             <p style={mockCardDesc}>
               Monthly snapshot of clients added, recommendations run, plans sold, and commission earned
             </p>
-            <button style={secondaryBtnDisabled} disabled>Generate</button>
+            <button style={liveBtn} onClick={openAgencyPerfModal}>
+              Generate
+            </button>
           </div>
 
           <div style={mockCard}>
@@ -443,13 +523,13 @@ export default function BrokerReportsPage() {
 
       {/* CLIENT REC MODAL */}
       {showClientRecModal && (
-        <div style={modalOverlay} onClick={closeModal}>
+        <div style={modalOverlay} onClick={closeClientRecModal}>
           <div style={modalBox} onClick={(e) => e.stopPropagation()}>
             <div style={modalHeader}>
               <h2 style={modalTitle}>📄 Generate Client Recommendation PDF</h2>
               <button
                 style={modalCloseBtn}
-                onClick={closeModal}
+                onClick={closeClientRecModal}
                 disabled={generatingClientRec}
               >
                 ✕
@@ -463,7 +543,6 @@ export default function BrokerReportsPage() {
                 </div>
               ) : (
                 <>
-                  {/* Step 1: Pick client */}
                   <div style={modalField}>
                     <label style={modalLabel}>Step 1: Choose client</label>
                     <select
@@ -482,7 +561,6 @@ export default function BrokerReportsPage() {
                     </select>
                   </div>
 
-                  {/* Step 2: Pick recommendation */}
                   {selectedClientId && (
                     <div style={modalField}>
                       <label style={modalLabel}>Step 2: Choose recommendation</label>
@@ -508,7 +586,6 @@ export default function BrokerReportsPage() {
                     </div>
                   )}
 
-                  {/* Step 3: Options */}
                   {selectedRecId && (
                     <>
                       <div style={modalDivider} />
@@ -560,7 +637,7 @@ export default function BrokerReportsPage() {
             <div style={modalFooter}>
               <button
                 style={modalCancelBtn}
-                onClick={closeModal}
+                onClick={closeClientRecModal}
                 disabled={generatingClientRec}
               >
                 Cancel
@@ -575,6 +652,99 @@ export default function BrokerReportsPage() {
                 disabled={!selectedRecId || generatingClientRec}
               >
                 {generatingClientRec ? '⏳ Generating PDF...' : '📄 Generate PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AGENCY PERF MODAL */}
+      {showAgencyPerfModal && (
+        <div style={modalOverlay} onClick={closeAgencyPerfModal}>
+          <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>📊 Generate Agency Performance Dashboard</h2>
+              <button
+                style={modalCloseBtn}
+                onClick={closeAgencyPerfModal}
+                disabled={generatingAgencyPerf}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={modalBody}>
+              <div style={modalField}>
+                <label style={modalLabel}>Time range</label>
+                <select
+                  value={agencyDaysBack}
+                  onChange={(e) => setAgencyDaysBack(Number(e.target.value))}
+                  style={modalSelect}
+                  disabled={generatingAgencyPerf}
+                >
+                  <option value={7}>Last 7 days</option>
+                  <option value={30}>Last 30 days</option>
+                  <option value={90}>Last 90 days (recommended)</option>
+                  <option value={365}>Last 12 months</option>
+                </select>
+              </div>
+
+              <div style={modalDivider} />
+              <div style={modalLabel}>Sections to include</div>
+
+              <label style={checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={agencyIncludeCarriers}
+                  onChange={(e) => setAgencyIncludeCarriers(e.target.checked)}
+                  disabled={generatingAgencyPerf}
+                />
+                <span>Top Carriers Recommended</span>
+              </label>
+
+              <label style={checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={agencyIncludeRoster}
+                  onChange={(e) => setAgencyIncludeRoster(e.target.checked)}
+                  disabled={generatingAgencyPerf}
+                />
+                <span>Client Roster</span>
+              </label>
+
+              <label style={checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={agencyIncludeActivity}
+                  onChange={(e) => setAgencyIncludeActivity(e.target.checked)}
+                  disabled={generatingAgencyPerf}
+                />
+                <span>Recent Activity Log</span>
+              </label>
+
+              {agencyError && (
+                <div style={modalErrorBox}>{agencyError}</div>
+              )}
+            </div>
+
+            <div style={modalFooter}>
+              <button
+                style={modalCancelBtn}
+                onClick={closeAgencyPerfModal}
+                disabled={generatingAgencyPerf}
+              >
+                Cancel
+              </button>
+              <button
+                style={
+                  !generatingAgencyPerf
+                    ? modalGenerateBtn
+                    : modalGenerateBtnDisabled
+                }
+                onClick={handleGenerateAgencyPerf}
+                disabled={generatingAgencyPerf}
+              >
+                {generatingAgencyPerf ? '⏳ Generating PDF...' : '📊 Generate PDF'}
               </button>
             </div>
           </div>
@@ -799,8 +969,6 @@ const featureList: React.CSSProperties = {
   fontSize: 14,
   lineHeight: 1.9,
 };
-
-// ---- Modal styles ----
 
 const modalOverlay: React.CSSProperties = {
   position: 'fixed',
