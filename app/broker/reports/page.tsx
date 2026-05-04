@@ -66,6 +66,12 @@ export default function BrokerReportsPage() {
   const [commissionError, setCommissionError] = useState<string>('');
   const [generatingCommission, setGeneratingCommission] = useState(false);
 
+  // Retention Analytics modal state (Session 21 Push 2)
+  const [showRetentionModal, setShowRetentionModal] = useState(false);
+  const [retentionPeriod, setRetentionPeriod] = useState('12m');
+  const [retentionError, setRetentionError] = useState<string>('');
+  const [generatingRetention, setGeneratingRetention] = useState(false);
+
   // Toast for successful generation
   const [toastMessage, setToastMessage] = useState<string>('');
 
@@ -107,7 +113,7 @@ export default function BrokerReportsPage() {
     router.push('/login');
   }
 
-  // ---- TEST PDF (Push 1 - will be removed in Push 5) ----
+  // ---- TEST PDF (Push 1 - will be removed in Push 4 of S21) ----
   async function handleTestPDF() {
     if (!userId) {
       setTestStatus('❌ Not logged in');
@@ -493,6 +499,73 @@ export default function BrokerReportsPage() {
     }
   }
 
+  // ---- RETENTION ANALYTICS MODAL (Session 21 Push 2) ----
+
+  function openRetentionModal() {
+    setShowRetentionModal(true);
+    setRetentionPeriod('12m');
+    setRetentionError('');
+  }
+
+  function closeRetentionModal() {
+    if (generatingRetention) return;
+    setShowRetentionModal(false);
+  }
+
+  async function handleGenerateRetention() {
+    if (!userId) {
+      setRetentionError('Not logged in.');
+      return;
+    }
+
+    setGeneratingRetention(true);
+    setRetentionError('');
+
+    try {
+      const res = await fetch('/api/reports/retention', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          periodKey: retentionPeriod,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Retention PDF error response:', errText);
+        let errMsg = `Failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error) errMsg = errJson.error;
+          if (errJson.details) errMsg += ' — ' + errJson.details;
+        } catch {}
+        setRetentionError('❌ ' + errMsg);
+        setGeneratingRetention(false);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `retention-analytics-${retentionPeriod}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setShowRetentionModal(false);
+      setToastMessage('✅ Retention analytics PDF generated!');
+      setTimeout(() => setToastMessage(''), 4000);
+    } catch (err: any) {
+      console.error('Retention generate exception:', err);
+      setRetentionError('❌ ' + (err?.message || String(err)));
+    } finally {
+      setGeneratingRetention(false);
+    }
+  }
+
   // ---- HELPERS ----
 
   function formatDateShort(iso: string): string {
@@ -612,7 +685,7 @@ export default function BrokerReportsPage() {
             </button>
           </div>
 
-          {/* RENEWAL PIPELINE — SAMPLE */}
+          {/* RENEWAL PIPELINE — SAMPLE (auto-flips to real when renewal_date is set) */}
           <div style={liveCard}>
             <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>🎯</div>
@@ -638,13 +711,17 @@ export default function BrokerReportsPage() {
             </button>
           </div>
 
-          <div style={mockCard}>
+          {/* RETENTION ANALYTICS — SAMPLE (Session 21 Push 2) */}
+          <div style={liveCard}>
+            <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>📈</div>
             <h3 style={mockCardTitle}>Retention Analytics</h3>
             <p style={mockCardDesc}>
               Year-over-year client retention, churn reasons, and lifetime value by client segment
             </p>
-            <button style={secondaryBtnDisabled} disabled>Generate</button>
+            <button style={liveBtn} onClick={openRetentionModal}>
+              Generate
+            </button>
           </div>
 
           <div style={mockCard}>
@@ -1028,6 +1105,84 @@ export default function BrokerReportsPage() {
         </div>
       )}
 
+      {/* RETENTION ANALYTICS MODAL (Session 21 Push 2) */}
+      {showRetentionModal && (
+        <div style={modalOverlay} onClick={closeRetentionModal}>
+          <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>📈 Generate Retention Analytics</h2>
+              <button
+                style={modalCloseBtn}
+                onClick={closeRetentionModal}
+                disabled={generatingRetention}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={modalBody}>
+              <div style={sampleNotice}>
+                <strong>⚠ Sample report:</strong> Real retention tracking
+                requires multiple renewal cycles of data. This report uses
+                illustrative figures to demonstrate the format. Real retention
+                analytics will become available as your agency accumulates
+                client history.
+              </div>
+
+              <div style={modalField}>
+                <label style={modalLabel}>Reporting period</label>
+                <select
+                  value={retentionPeriod}
+                  onChange={(e) => setRetentionPeriod(e.target.value)}
+                  style={modalSelect}
+                  disabled={generatingRetention}
+                >
+                  <option value="12m">Last 12 months</option>
+                  <option value="24m">Last 24 months</option>
+                  <option value="36m">Last 36 months</option>
+                  <option value="all">All time</option>
+                </select>
+              </div>
+
+              <div style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5 }}>
+                The report includes:
+                <ul style={{ marginTop: 8, paddingLeft: 18 }}>
+                  <li>Year-over-year retention rate (headline)</li>
+                  <li>Cohort table by acquisition year</li>
+                  <li>Churn reason breakdown</li>
+                  <li>Lifetime value by client segment</li>
+                </ul>
+              </div>
+
+              {retentionError && (
+                <div style={modalErrorBox}>{retentionError}</div>
+              )}
+            </div>
+
+            <div style={modalFooter}>
+              <button
+                style={modalCancelBtn}
+                onClick={closeRetentionModal}
+                disabled={generatingRetention}
+              >
+                Cancel
+              </button>
+              <button
+                style={
+                  !generatingRetention
+                    ? modalGenerateBtn
+                    : modalGenerateBtnDisabled
+                }
+                onClick={handleGenerateRetention}
+                disabled={generatingRetention}
+              >
+                {generatingRetention ? '⏳ Generating PDF...' : '📈 Generate PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TOAST */}
       {toastMessage && (
         <div style={toastStyle}>
@@ -1188,26 +1343,26 @@ const cardGrid: React.CSSProperties = {
 };
 
 const mockCard: React.CSSProperties = {
-    background: '#fff',
-    border: '1px solid #e2e8f0',
-    borderRadius: 10,
-    padding: 22,
-    fontFamily: 'Figtree, sans-serif',
-    opacity: 0.7,
-    display: 'flex',
-    flexDirection: 'column',
-  };
+  background: '#fff',
+  border: '1px solid #e2e8f0',
+  borderRadius: 10,
+  padding: 22,
+  fontFamily: 'Figtree, sans-serif',
+  opacity: 0.7,
+  display: 'flex',
+  flexDirection: 'column',
+};
 
-  const liveCard: React.CSSProperties = {
-    background: '#fff',
-    border: '2px solid #7a9b76',
-    borderRadius: 10,
-    padding: 22,
-    fontFamily: 'Figtree, sans-serif',
-    position: 'relative',
-    display: 'flex',
-    flexDirection: 'column',
-  };
+const liveCard: React.CSSProperties = {
+  background: '#fff',
+  border: '2px solid #7a9b76',
+  borderRadius: 10,
+  padding: 22,
+  fontFamily: 'Figtree, sans-serif',
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+};
 
 const sampleBadge: React.CSSProperties = {
   position: 'absolute',
@@ -1236,12 +1391,12 @@ const mockCardTitle: React.CSSProperties = {
 };
 
 const mockCardDesc: React.CSSProperties = {
-    color: '#3a4d68',
-    fontSize: 13,
-    lineHeight: 1.5,
-    margin: '0 0 14px',
-    flex: 1,
-  };
+  color: '#3a4d68',
+  fontSize: 13,
+  lineHeight: 1.5,
+  margin: '0 0 14px',
+  flex: 1,
+};
 
 const featureListCard: React.CSSProperties = {
   background: '#fff',
