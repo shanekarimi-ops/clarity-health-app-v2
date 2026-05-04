@@ -1188,22 +1188,26 @@ const cardGrid: React.CSSProperties = {
 };
 
 const mockCard: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #e2e8f0',
-  borderRadius: 10,
-  padding: 22,
-  fontFamily: 'Figtree, sans-serif',
-  opacity: 0.7,
-};
+    background: '#fff',
+    border: '1px solid #e2e8f0',
+    borderRadius: 10,
+    padding: 22,
+    fontFamily: 'Figtree, sans-serif',
+    opacity: 0.7,
+    display: 'flex',
+    flexDirection: 'column',
+  };
 
-const liveCard: React.CSSProperties = {
-  background: '#fff',
-  border: '2px solid #7a9b76',
-  borderRadius: 10,
-  padding: 22,
-  fontFamily: 'Figtree, sans-serif',
-  position: 'relative',
-};
+  const liveCard: React.CSSProperties = {
+    background: '#fff',
+    border: '2px solid #7a9b76',
+    borderRadius: 10,
+    padding: 22,
+    fontFamily: 'Figtree, sans-serif',
+    position: 'relative',
+    display: 'flex',
+    flexDirection: 'column',
+  };
 
 const sampleBadge: React.CSSProperties = {
   position: 'absolute',
@@ -1232,11 +1236,12 @@ const mockCardTitle: React.CSSProperties = {
 };
 
 const mockCardDesc: React.CSSProperties = {
-  color: '#3a4d68',
-  fontSize: 13,
-  lineHeight: 1.5,
-  margin: '0 0 14px',
-};
+    color: '#3a4d68',
+    fontSize: 13,
+    lineHeight: 1.5,
+    margin: '0 0 14px',
+    flex: 1,
+  };
 
 const featureListCard: React.CSSProperties = {
   background: '#fff',

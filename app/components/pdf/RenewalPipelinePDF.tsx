@@ -297,7 +297,7 @@ export function RenewalPipelinePDF({
       {/* 30-day bucket */}
       <View style={[s.bucketBox, s.bucketBoxRed]}>
         <View style={s.bucketHeader}>
-          <Text style={s.bucketTitle}>🚨 Urgent — Renewing in 30 days</Text>
+        <Text style={s.bucketTitle}>Urgent: Renewing in 30 days</Text>
           <Text style={s.bucketCount}>
             {renewals30.length} {renewals30.length === 1 ? 'client' : 'clients'}
           </Text>
@@ -308,7 +308,7 @@ export function RenewalPipelinePDF({
       {/* 60-day bucket */}
       <View style={[s.bucketBox, s.bucketBoxOrange]}>
         <View style={s.bucketHeader}>
-          <Text style={s.bucketTitle}>⚠️ Renewing in 31–60 days</Text>
+        <Text style={s.bucketTitle}>Renewing in 31–60 days</Text>
           <Text style={s.bucketCount}>
             {renewals60.length} {renewals60.length === 1 ? 'client' : 'clients'}
           </Text>
@@ -319,7 +319,7 @@ export function RenewalPipelinePDF({
       {/* 90-day bucket */}
       <View style={[s.bucketBox, s.bucketBoxBlue]}>
         <View style={s.bucketHeader}>
-          <Text style={s.bucketTitle}>📅 Renewing in 61–90 days</Text>
+        <Text style={s.bucketTitle}>Renewing in 61–90 days</Text>
           <Text style={s.bucketCount}>
             {renewals90.length} {renewals90.length === 1 ? 'client' : 'clients'}
           </Text>
