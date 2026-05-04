@@ -11,6 +11,11 @@ export default function BrokerReportsPage() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [agencyName, setAgencyName] = useState('');
+  const [userId, setUserId] = useState('');
+
+  // Test PDF state (Push 1 — will be removed in Push 5)
+  const [testGenerating, setTestGenerating] = useState(false);
+  const [testStatus, setTestStatus] = useState<string>('');
 
   useEffect(() => {
     loadUser();
@@ -22,6 +27,8 @@ export default function BrokerReportsPage() {
       router.push('/login');
       return;
     }
+
+    setUserId(user.id);
 
     const meta = user.user_metadata || {};
     setFirstName(meta.first_name || '');
@@ -46,6 +53,51 @@ export default function BrokerReportsPage() {
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/login');
+  }
+
+  // ---- TEST PDF GENERATION (Push 1 verification — remove in Push 5) ----
+  async function handleTestPDF() {
+    if (!userId) {
+      setTestStatus('❌ Not logged in');
+      return;
+    }
+
+    setTestGenerating(true);
+    setTestStatus('Generating test PDF...');
+
+    try {
+      const res = await fetch('/api/reports/test-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Test PDF error response:', errText);
+        setTestStatus(`❌ Failed (${res.status}). Check console.`);
+        setTestGenerating(false);
+        return;
+      }
+
+      // Download the PDF
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'clarity-health-test.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setTestStatus('✅ Test PDF downloaded!');
+    } catch (err: any) {
+      console.error('Test PDF generation error:', err);
+      setTestStatus(`❌ Error: ${err?.message || String(err)}`);
+    } finally {
+      setTestGenerating(false);
+    }
   }
 
   if (loading) {
@@ -74,10 +126,26 @@ export default function BrokerReportsPage() {
               Generate white-label PDFs for clients and pull agency-wide analytics
             </p>
           </div>
-          <button style={primaryBtnDisabled} disabled title="Coming in Session 24">
-            + Generate Report
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              style={testBtn}
+              onClick={handleTestPDF}
+              disabled={testGenerating}
+              title="Test the PDF generation pipeline (will be removed)"
+            >
+              {testGenerating ? '⏳ Generating...' : '🧪 Test PDF'}
+            </button>
+            <button style={primaryBtnDisabled} disabled title="Coming in Session 24">
+              + Generate Report
+            </button>
+          </div>
         </div>
+
+        {testStatus && (
+          <div style={testStatusRow}>
+            {testStatus}
+          </div>
+        )}
 
         <div style={comingSoonBanner}>
           <span style={{ fontSize: 20, marginRight: 10 }}>🚧</span>
@@ -219,6 +287,29 @@ const primaryBtnDisabled: React.CSSProperties = {
   fontSize: 14,
   cursor: 'not-allowed',
   opacity: 0.7,
+};
+
+const testBtn: React.CSSProperties = {
+  background: '#1e3a5f',
+  color: '#fff',
+  border: 'none',
+  padding: '12px 18px',
+  borderRadius: 8,
+  fontFamily: 'Figtree, sans-serif',
+  fontWeight: 600,
+  fontSize: 13,
+  cursor: 'pointer',
+};
+
+const testStatusRow: React.CSSProperties = {
+  background: '#fff',
+  border: '1px solid #d4dae2',
+  borderRadius: 8,
+  padding: '10px 14px',
+  marginBottom: 18,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
+  color: '#1e3a5f',
 };
 
 const secondaryBtnDisabled: React.CSSProperties = {

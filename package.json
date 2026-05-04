@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
+    "@react-pdf/renderer": "^4.5.1",
     "@supabase/supabase-js": "^2.104.1",
     "@types/node": "20.6.2",
     "@types/react": "18.2.22",
