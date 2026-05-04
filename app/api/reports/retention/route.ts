@@ -84,7 +84,8 @@ export async function POST(req: NextRequest) {
       .select('id', { count: 'exact', head: true })
       .eq('agency_id', agencyId);
 
-    const baseCount = Math.max(realClientCount || 0, 5); // floor at 5 so the report is never empty
+    // Floor at 12 so sample numbers look realistic (S21 P2 polish)
+    const baseCount = Math.max(realClientCount || 0, 12);
 
     // 4. Synthesize sample data deterministically (seeded by agencyId)
     const seed = hashStr(agencyId);
@@ -111,8 +112,8 @@ export async function POST(req: NextRequest) {
 
     for (let i = 0; i < cohortYears; i++) {
       const year = currentYear - i;
-      // Older cohorts have more clients; current year is partial
-      const ageMultiplier = i === 0 ? 0.4 : 1 + i * 0.5;
+      // Older cohorts have more clients; current year is partial (S21 P2 polish — bumped multipliers)
+      const ageMultiplier = i === 0 ? 0.6 : 1.2 + i * 0.6;
       const acquired = Math.round(baseCount * ageMultiplier * (0.9 + ((seed + i * 7) % 20) / 100));
       // Older cohorts have more churn
       const churnRate = 0.04 + i * 0.06 + ((seed + i * 13) % 5) / 100;

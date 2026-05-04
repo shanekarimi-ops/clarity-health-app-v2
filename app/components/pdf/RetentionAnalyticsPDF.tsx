@@ -355,11 +355,12 @@ export default function RetentionAnalyticsPDF({ data }: { data: RetentionData })
         })}
       </View>
 
-      {/* LTV by segment */}
-      <Text style={styles.sectionHeading}>Lifetime Value by Segment</Text>
+      {/* LTV by segment — keep heading + cards together on the same page */}
+      <View wrap={false}>
+        <Text style={styles.sectionHeading}>Lifetime Value by Segment</Text>
 
-      <View style={styles.ltvRow}>
-        {data.ltvSegments.map((seg, i) => {
+        <View style={styles.ltvRow}>
+          {data.ltvSegments.map((seg, i) => {
           const isLast = i === data.ltvSegments.length - 1;
           return (
             <View key={seg.label} style={isLast ? styles.ltvCardLast : styles.ltvCard}>
@@ -369,9 +370,10 @@ export default function RetentionAnalyticsPDF({ data }: { data: RetentionData })
               <Text style={styles.ltvCount}>
                 avg LTV · {seg.clientCount} clients
               </Text>
-            </View>
+              </View>
           );
         })}
+        </View>
       </View>
 
       {/* Disclaimer */}
