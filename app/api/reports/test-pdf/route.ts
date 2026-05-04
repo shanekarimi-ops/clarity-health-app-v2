@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { renderToStream } from '@react-pdf/renderer';
+import { renderToBuffer } from '@react-pdf/renderer';
 import { createClient } from '@supabase/supabase-js';
 import React from 'react';
 import { BrandedPDF, reportStyles } from '../../../components/pdf/BrandedPDF';
@@ -43,7 +43,6 @@ export async function POST(req: NextRequest) {
       console.error('Broker lookup error:', brokerError);
     }
 
-    // Type assertion - agencies is a joined relation
     const agencyName =
       (brokerRow?.agencies as any)?.name || 'Your Agency';
 
@@ -91,19 +90,13 @@ export async function POST(req: NextRequest) {
         React.createElement(
           Text,
           { style: reportStyles.value },
-          '✓ PDF generation working'
+          '\u2713 PDF generation working'
         )
       )
     );
 
-    // Render the PDF to a stream, then collect into a buffer
-    const stream = await renderToStream(doc as any);
-
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream as any) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const pdfBuffer = Buffer.concat(chunks);
+    // Render the PDF to a buffer (simpler than stream)
+    const pdfBuffer = await renderToBuffer(doc as any);
 
     return new NextResponse(pdfBuffer, {
       status: 200,
