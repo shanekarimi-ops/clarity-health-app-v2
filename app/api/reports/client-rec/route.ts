@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
     // 1. Look up the broker + agency
     const { data: brokerRow, error: brokerError } = await supabase
       .from('brokers')
-      .select('agency_id, first_name, last_name, agencies(name)')
+      .select('agency_id, agencies(name)')
       .eq('user_id', userId)
       .maybeSingle();
 
@@ -55,10 +55,20 @@ export async function POST(req: NextRequest) {
 
     const agencyName =
       (brokerRow.agencies as any)?.name || 'Your Agency';
-    const brokerName =
-      `${brokerRow.first_name || ''} ${brokerRow.last_name || ''}`.trim() ||
-      'Your Broker';
     const agencyId = brokerRow.agency_id;
+
+    // Get broker's name from auth.users metadata (not stored in brokers table)
+    let brokerName = 'Your Broker';
+    try {
+      const { data: userData } = await supabase.auth.admin.getUserById(userId);
+      const meta = userData?.user?.user_metadata || {};
+      const fn = meta.first_name || '';
+      const ln = meta.last_name || '';
+      const fullName = `${fn} ${ln}`.trim();
+      if (fullName) brokerName = fullName;
+    } catch (nameErr) {
+      console.error('Could not fetch broker name (non-fatal):', nameErr);
+    }
 
     // 2. Fetch the client
     const { data: clientData, error: clientError } = await supabase
