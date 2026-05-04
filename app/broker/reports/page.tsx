@@ -55,6 +55,17 @@ export default function BrokerReportsPage() {
   const [agencyError, setAgencyError] = useState<string>('');
   const [generatingAgencyPerf, setGeneratingAgencyPerf] = useState(false);
 
+  // Renewal Pipeline modal state (Push 4)
+  const [showRenewalModal, setShowRenewalModal] = useState(false);
+  const [renewalError, setRenewalError] = useState<string>('');
+  const [generatingRenewal, setGeneratingRenewal] = useState(false);
+
+  // Commission Report modal state (Push 4)
+  const [showCommissionModal, setShowCommissionModal] = useState(false);
+  const [commissionPeriod, setCommissionPeriod] = useState('ytd');
+  const [commissionError, setCommissionError] = useState<string>('');
+  const [generatingCommission, setGeneratingCommission] = useState(false);
+
   // Toast for successful generation
   const [toastMessage, setToastMessage] = useState<string>('');
 
@@ -352,6 +363,136 @@ export default function BrokerReportsPage() {
     }
   }
 
+  // ---- RENEWAL PIPELINE MODAL (Push 4) ----
+
+  function openRenewalModal() {
+    setShowRenewalModal(true);
+    setRenewalError('');
+  }
+
+  function closeRenewalModal() {
+    if (generatingRenewal) return;
+    setShowRenewalModal(false);
+  }
+
+  async function handleGenerateRenewal() {
+    if (!userId) {
+      setRenewalError('Not logged in.');
+      return;
+    }
+
+    setGeneratingRenewal(true);
+    setRenewalError('');
+
+    try {
+      const res = await fetch('/api/reports/renewal-pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Renewal pipeline PDF error response:', errText);
+        let errMsg = `Failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error) errMsg = errJson.error;
+          if (errJson.details) errMsg += ' — ' + errJson.details;
+        } catch {}
+        setRenewalError('❌ ' + errMsg);
+        setGeneratingRenewal(false);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'renewal-pipeline.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setShowRenewalModal(false);
+      setToastMessage('✅ Renewal pipeline PDF generated!');
+      setTimeout(() => setToastMessage(''), 4000);
+    } catch (err: any) {
+      console.error('Renewal generate exception:', err);
+      setRenewalError('❌ ' + (err?.message || String(err)));
+    } finally {
+      setGeneratingRenewal(false);
+    }
+  }
+
+  // ---- COMMISSION REPORT MODAL (Push 4) ----
+
+  function openCommissionModal() {
+    setShowCommissionModal(true);
+    setCommissionPeriod('ytd');
+    setCommissionError('');
+  }
+
+  function closeCommissionModal() {
+    if (generatingCommission) return;
+    setShowCommissionModal(false);
+  }
+
+  async function handleGenerateCommission() {
+    if (!userId) {
+      setCommissionError('Not logged in.');
+      return;
+    }
+
+    setGeneratingCommission(true);
+    setCommissionError('');
+
+    try {
+      const res = await fetch('/api/reports/commission', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          period: commissionPeriod,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Commission PDF error response:', errText);
+        let errMsg = `Failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error) errMsg = errJson.error;
+          if (errJson.details) errMsg += ' — ' + errJson.details;
+        } catch {}
+        setCommissionError('❌ ' + errMsg);
+        setGeneratingCommission(false);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'commission-report.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setShowCommissionModal(false);
+      setToastMessage('✅ Commission report PDF generated!');
+      setTimeout(() => setToastMessage(''), 4000);
+    } catch (err: any) {
+      console.error('Commission generate exception:', err);
+      setCommissionError('❌ ' + (err?.message || String(err)));
+    } finally {
+      setGeneratingCommission(false);
+    }
+  }
+
   // ---- HELPERS ----
 
   function formatDateShort(iso: string): string {
@@ -471,22 +612,30 @@ export default function BrokerReportsPage() {
             </button>
           </div>
 
-          <div style={mockCard}>
+          {/* RENEWAL PIPELINE — SAMPLE */}
+          <div style={liveCard}>
+            <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>🎯</div>
             <h3 style={mockCardTitle}>Renewal Pipeline</h3>
             <p style={mockCardDesc}>
               Clients with renewals in the next 30, 60, or 90 days, sorted by group size
             </p>
-            <button style={secondaryBtnDisabled} disabled>Generate</button>
+            <button style={liveBtn} onClick={openRenewalModal}>
+              Generate
+            </button>
           </div>
 
-          <div style={mockCard}>
+          {/* COMMISSION REPORT — SAMPLE */}
+          <div style={liveCard}>
+            <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>💰</div>
             <h3 style={mockCardTitle}>Commission Report</h3>
             <p style={mockCardDesc}>
               Track commissions by carrier, broker, and group across the agency book of business
             </p>
-            <button style={secondaryBtnDisabled} disabled>Generate</button>
+            <button style={liveBtn} onClick={openCommissionModal}>
+              Generate
+            </button>
           </div>
 
           <div style={mockCard}>
@@ -751,6 +900,134 @@ export default function BrokerReportsPage() {
         </div>
       )}
 
+      {/* RENEWAL PIPELINE MODAL */}
+      {showRenewalModal && (
+        <div style={modalOverlay} onClick={closeRenewalModal}>
+          <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>🎯 Generate Renewal Pipeline PDF</h2>
+              <button
+                style={modalCloseBtn}
+                onClick={closeRenewalModal}
+                disabled={generatingRenewal}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={modalBody}>
+              <div style={sampleNotice}>
+                <strong>⚠ Sample report:</strong> This report uses real client
+                names with synthesized renewal dates. Once you set real renewal
+                dates on your clients, this report will use those automatically.
+              </div>
+
+              <div style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5 }}>
+                Generates a PDF showing your clients bucketed by renewal window:
+                <ul style={{ marginTop: 8, paddingLeft: 18 }}>
+                  <li>🚨 Urgent — Renewing in 30 days</li>
+                  <li>⚠️ Renewing in 31–60 days</li>
+                  <li>📅 Renewing in 61–90 days</li>
+                </ul>
+                Each row includes carrier, group size, renewal date, and estimated
+                annual premium.
+              </div>
+
+              {renewalError && (
+                <div style={modalErrorBox}>{renewalError}</div>
+              )}
+            </div>
+
+            <div style={modalFooter}>
+              <button
+                style={modalCancelBtn}
+                onClick={closeRenewalModal}
+                disabled={generatingRenewal}
+              >
+                Cancel
+              </button>
+              <button
+                style={
+                  !generatingRenewal
+                    ? modalGenerateBtn
+                    : modalGenerateBtnDisabled
+                }
+                onClick={handleGenerateRenewal}
+                disabled={generatingRenewal}
+              >
+                {generatingRenewal ? '⏳ Generating PDF...' : '🎯 Generate PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COMMISSION REPORT MODAL */}
+      {showCommissionModal && (
+        <div style={modalOverlay} onClick={closeCommissionModal}>
+          <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>💰 Generate Commission Report</h2>
+              <button
+                style={modalCloseBtn}
+                onClick={closeCommissionModal}
+                disabled={generatingCommission}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={modalBody}>
+              <div style={sampleNotice}>
+                <strong>⚠ Sample report:</strong> Commission tracking is not yet
+                wired to real carrier statements. This report uses your real
+                client roster with simulated commission figures based on standard
+                industry rates.
+              </div>
+
+              <div style={modalField}>
+                <label style={modalLabel}>Reporting period</label>
+                <select
+                  value={commissionPeriod}
+                  onChange={(e) => setCommissionPeriod(e.target.value)}
+                  style={modalSelect}
+                  disabled={generatingCommission}
+                >
+                  <option value="ytd">Year-to-date</option>
+                  <option value="last12">Last 12 months</option>
+                  <option value="q1">Q1 only</option>
+                </select>
+              </div>
+
+              {commissionError && (
+                <div style={modalErrorBox}>{commissionError}</div>
+              )}
+            </div>
+
+            <div style={modalFooter}>
+              <button
+                style={modalCancelBtn}
+                onClick={closeCommissionModal}
+                disabled={generatingCommission}
+              >
+                Cancel
+              </button>
+              <button
+                style={
+                  !generatingCommission
+                    ? modalGenerateBtn
+                    : modalGenerateBtnDisabled
+                }
+                onClick={handleGenerateCommission}
+                disabled={generatingCommission}
+              >
+                {generatingCommission ? '⏳ Generating PDF...' : '💰 Generate PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TOAST */}
       {toastMessage && (
         <div style={toastStyle}>
@@ -928,6 +1205,20 @@ const liveCard: React.CSSProperties = {
   position: 'relative',
 };
 
+const sampleBadge: React.CSSProperties = {
+  position: 'absolute',
+  top: 10,
+  right: 10,
+  background: '#fff8e8',
+  color: '#7a6500',
+  border: '1px solid #e0c46a',
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: 0.5,
+  padding: '3px 8px',
+  borderRadius: 4,
+};
+
 const cardIconWrap: React.CSSProperties = {
   fontSize: 32,
   marginBottom: 10,
@@ -1070,6 +1361,17 @@ const checkboxRow: React.CSSProperties = {
   fontSize: 13,
   color: '#3a4d68',
   cursor: 'pointer',
+};
+
+const sampleNotice: React.CSSProperties = {
+  background: '#fff8e8',
+  border: '1px solid #e0c46a',
+  borderRadius: 6,
+  padding: '10px 12px',
+  fontSize: 12,
+  color: '#7a6500',
+  marginBottom: 14,
+  lineHeight: 1.5,
 };
 
 const modalErrorBox: React.CSSProperties = {
