@@ -180,11 +180,11 @@ export async function POST(req: NextRequest) {
     let totalActionNeeded = 0;
     let totalOverdue = 0;
 
-    function tally(status: ComplianceStatus) {
-      if (status === 'on_track') totalOnTrack++;
-      else if (status === 'action_needed') totalActionNeeded++;
-      else totalOverdue++;
-    }
+    const tally = (status: ComplianceStatus) => {
+        if (status === 'on_track') totalOnTrack++;
+        else if (status === 'action_needed') totalActionNeeded++;
+        else totalOverdue++;
+      };
 
     for (const group of groups) {
       const groupSeed = hashStr(group.id + agencyId);
