@@ -72,6 +72,12 @@ export default function BrokerReportsPage() {
   const [retentionError, setRetentionError] = useState<string>('');
   const [generatingRetention, setGeneratingRetention] = useState(false);
 
+  // Compliance Summary modal state (Session 21 Push 3)
+  const [showComplianceModal, setShowComplianceModal] = useState(false);
+  const [compliancePeriod, setCompliancePeriod] = useState('current');
+  const [complianceError, setComplianceError] = useState<string>('');
+  const [generatingCompliance, setGeneratingCompliance] = useState(false);
+
   // Toast for successful generation
   const [toastMessage, setToastMessage] = useState<string>('');
 
@@ -566,6 +572,73 @@ export default function BrokerReportsPage() {
     }
   }
 
+  // ---- COMPLIANCE SUMMARY MODAL (Session 21 Push 3) ----
+
+  function openComplianceModal() {
+    setShowComplianceModal(true);
+    setCompliancePeriod('current');
+    setComplianceError('');
+  }
+
+  function closeComplianceModal() {
+    if (generatingCompliance) return;
+    setShowComplianceModal(false);
+  }
+
+  async function handleGenerateCompliance() {
+    if (!userId) {
+      setComplianceError('Not logged in.');
+      return;
+    }
+
+    setGeneratingCompliance(true);
+    setComplianceError('');
+
+    try {
+      const res = await fetch('/api/reports/compliance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          periodKey: compliancePeriod,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Compliance PDF error response:', errText);
+        let errMsg = `Failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error) errMsg = errJson.error;
+          if (errJson.details) errMsg += ' — ' + errJson.details;
+        } catch {}
+        setComplianceError('❌ ' + errMsg);
+        setGeneratingCompliance(false);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `compliance-summary-${compliancePeriod}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setShowComplianceModal(false);
+      setToastMessage('✅ Compliance summary PDF generated!');
+      setTimeout(() => setToastMessage(''), 4000);
+    } catch (err: any) {
+      console.error('Compliance generate exception:', err);
+      setComplianceError('❌ ' + (err?.message || String(err)));
+    } finally {
+      setGeneratingCompliance(false);
+    }
+  }
+
   // ---- HELPERS ----
 
   function formatDateShort(iso: string): string {
@@ -724,13 +797,17 @@ export default function BrokerReportsPage() {
             </button>
           </div>
 
-          <div style={mockCard}>
+          {/* COMPLIANCE SUMMARY — SAMPLE (Session 21 Push 3) */}
+          <div style={liveCard}>
+            <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>📋</div>
             <h3 style={mockCardTitle}>Compliance Summary</h3>
             <p style={mockCardDesc}>
               ACA reporting status, SBC distribution log, and 5500 filing tracker by group
             </p>
-            <button style={secondaryBtnDisabled} disabled>Generate</button>
+            <button style={liveBtn} onClick={openComplianceModal}>
+              Generate
+            </button>
           </div>
         </div>
 
@@ -1177,6 +1254,82 @@ export default function BrokerReportsPage() {
                 disabled={generatingRetention}
               >
                 {generatingRetention ? '⏳ Generating PDF...' : '📈 Generate PDF'}
+              </button>
+              </div>
+          </div>
+        </div>
+      )}
+
+      {/* COMPLIANCE SUMMARY MODAL (Session 21 Push 3) */}
+      {showComplianceModal && (
+        <div style={modalOverlay} onClick={closeComplianceModal}>
+          <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>📋 Generate Compliance Summary</h2>
+              <button
+                style={modalCloseBtn}
+                onClick={closeComplianceModal}
+                disabled={generatingCompliance}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={modalBody}>
+              <div style={sampleNotice}>
+                <strong>⚠ Sample report:</strong> Real compliance tracking
+                requires direct integrations with carrier portals, IRS filing
+                confirmations, and SBC distribution logs. This report uses your
+                real client roster with simulated compliance statuses.
+              </div>
+
+              <div style={modalField}>
+                <label style={modalLabel}>Reporting period</label>
+                <select
+                  value={compliancePeriod}
+                  onChange={(e) => setCompliancePeriod(e.target.value)}
+                  style={modalSelect}
+                  disabled={generatingCompliance}
+                >
+                  <option value="current">Current Plan Year</option>
+                  <option value="last">Last Plan Year</option>
+                  <option value="forward">Looking Forward</option>
+                </select>
+              </div>
+
+              <div style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5 }}>
+                The report includes:
+                <ul style={{ marginTop: 8, paddingLeft: 18 }}>
+                  <li>On Track / Action Needed / Overdue summary</li>
+                  <li>ACA Reporting Status (Form 1095-C)</li>
+                  <li>SBC Distribution Log</li>
+                  <li>Form 5500 Filing Tracker</li>
+                </ul>
+              </div>
+
+              {complianceError && (
+                <div style={modalErrorBox}>{complianceError}</div>
+              )}
+            </div>
+
+            <div style={modalFooter}>
+              <button
+                style={modalCancelBtn}
+                onClick={closeComplianceModal}
+                disabled={generatingCompliance}
+              >
+                Cancel
+              </button>
+              <button
+                style={
+                  !generatingCompliance
+                    ? modalGenerateBtn
+                    : modalGenerateBtnDisabled
+                }
+                onClick={handleGenerateCompliance}
+                disabled={generatingCompliance}
+              >
+                {generatingCompliance ? '⏳ Generating PDF...' : '📋 Generate PDF'}
               </button>
             </div>
           </div>
