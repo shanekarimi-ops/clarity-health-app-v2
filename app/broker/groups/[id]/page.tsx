@@ -34,12 +34,24 @@ type ActivityEvent = {
   metadata: any;
 };
 
+type GroupNote = {
+  id: string;
+  group_id: string;
+  agency_id: string;
+  author_user_id: string;
+  author_name: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export default function GroupDetailPage() {
   const router = useRouter();
   const params = useParams();
   const groupId = params?.id as string;
 
   const [loading, setLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [agencyName, setAgencyName] = useState('');
@@ -47,6 +59,7 @@ export default function GroupDetailPage() {
   const [group, setGroup] = useState<Group | null>(null);
   const [clients, setClients] = useState<ClientLite[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [notes, setNotes] = useState<GroupNote[]>([]);
   const [notFound, setNotFound] = useState(false);
 
   // Edit modal state
@@ -59,17 +72,21 @@ export default function GroupDetailPage() {
   const [editStatus, setEditStatus] = useState<'Active' | 'Renewal' | 'Prospect' | 'Lost'>('Active');
   const [editRenewalDate, setEditRenewalDate] = useState('');
   const [editClientId, setEditClientId] = useState('');
-  const [editNotes, setEditNotes] = useState('');
+  const [editNotesField, setEditNotesField] = useState('');
   const [editError, setEditError] = useState('');
 
   // Delete confirm
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // Inline notes editing
-  const [editingNotes, setEditingNotes] = useState(false);
-  const [notesDraft, setNotesDraft] = useState('');
-  const [savingNotes, setSavingNotes] = useState(false);
+  // Notes journal
+  const [addingNote, setAddingNote] = useState(false);
+  const [newNoteBody, setNewNoteBody] = useState('');
+  const [savingNewNote, setSavingNewNote] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteBody, setEditingNoteBody] = useState('');
+  const [savingEditNote, setSavingEditNote] = useState(false);
+  const [confirmDeleteNoteId, setConfirmDeleteNoteId] = useState<string | null>(null);
 
   useEffect(() => {
     loadAll();
@@ -84,10 +101,14 @@ export default function GroupDetailPage() {
       router.push('/login');
       return;
     }
+    setCurrentUserId(user.id);
 
     const meta = user.user_metadata || {};
-    setFirstName(meta.first_name || '');
-    setLastName(meta.last_name || '');
+    const fname = meta.first_name || '';
+    const lname = meta.last_name || '';
+    setFirstName(fname);
+    setLastName(lname);
+    const fullName = `${fname} ${lname}`.trim() || user.email || 'Broker';
 
     const { data: brokerRow } = await supabase
       .from('brokers')
@@ -122,6 +143,41 @@ export default function GroupDetailPage() {
 
     setGroup(groupData as Group);
 
+    // ============= AUTO-MIGRATION =============
+    // If groups.notes has content AND no group_notes exist yet for this group,
+    // migrate the legacy text into a single journal entry then clear groups.notes.
+    if (groupData.notes && groupData.notes.trim()) {
+      const { data: existingNotes } = await supabase
+        .from('group_notes')
+        .select('id')
+        .eq('group_id', groupId)
+        .limit(1);
+
+      if (!existingNotes || existingNotes.length === 0) {
+        await supabase.from('group_notes').insert({
+          group_id: groupId,
+          agency_id: brokerRow.agency_id,
+          author_user_id: user.id,
+          author_name: fullName,
+          body: groupData.notes,
+          // Use the group's updated_at so it preserves rough timing
+          created_at: groupData.updated_at || groupData.created_at,
+        });
+        // Clear the legacy column
+        await supabase.from('groups').update({ notes: null }).eq('id', groupId);
+        // Reflect the cleared notes in local state
+        setGroup({ ...(groupData as Group), notes: null });
+      }
+    }
+
+    // Load notes for this group (newest first)
+    const { data: notesData } = await supabase
+      .from('group_notes')
+      .select('*')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false });
+    setNotes((notesData as GroupNote[]) || []);
+
     // Load clients for the optional link dropdown
     const { data: clientsData } = await supabase
       .from('clients')
@@ -130,7 +186,8 @@ export default function GroupDetailPage() {
       .order('first_name', { ascending: true });
     setClients((clientsData as ClientLite[]) || []);
 
-    // Load activity log entries for this group (server-side filter on JSONB metadata)
+    // Load activity log entries for this group
+    // Use server-side JSONB filter
     const { data: activityData } = await supabase
       .from('activity_log')
       .select('id, event_type, event_summary, created_at, metadata')
@@ -149,6 +206,12 @@ export default function GroupDetailPage() {
     router.push('/login');
   }
 
+  function getCurrentUserFullName(): string {
+    return `${firstName} ${lastName}`.trim() || 'Broker';
+  }
+
+  // ============= GROUP EDIT/DELETE =============
+
   function openEditModal() {
     if (!group) return;
     setEditName(group.name);
@@ -158,7 +221,7 @@ export default function GroupDetailPage() {
     setEditStatus(group.status);
     setEditRenewalDate(group.renewal_date || '');
     setEditClientId(group.client_id || '');
-    setEditNotes(group.notes || '');
+    setEditNotesField(''); // No longer used after migration
     setEditError('');
     setShowEditModal(true);
   }
@@ -187,7 +250,6 @@ export default function GroupDetailPage() {
       status: editStatus,
       renewal_date: newRenewal,
       client_id: editClientId || null,
-      notes: editNotes.trim() || null,
     };
 
     const { error } = await supabase
@@ -201,75 +263,31 @@ export default function GroupDetailPage() {
       return;
     }
 
-    // Smart activity logging
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      let summary = `Edited group: ${editName.trim()}`;
-      let eventType = 'group_edited';
-
-      if (oldRenewal !== newRenewal) {
-        if (newRenewal && !oldRenewal) {
-          summary = `Set renewal date for ${editName.trim()}`;
-          eventType = 'renewal_date_set';
-        } else if (!newRenewal && oldRenewal) {
-          summary = `Cleared renewal date for ${editName.trim()}`;
-          eventType = 'renewal_date_cleared';
-        } else {
-          summary = `Updated renewal date for ${editName.trim()}`;
-          eventType = 'renewal_date_set';
-        }
+    let summary = `Edited group: ${editName.trim()}`;
+    let eventType = 'group_edited';
+    if (oldRenewal !== newRenewal) {
+      if (newRenewal && !oldRenewal) {
+        summary = `Set renewal date for ${editName.trim()}`;
+        eventType = 'renewal_date_set';
+      } else if (!newRenewal && oldRenewal) {
+        summary = `Cleared renewal date for ${editName.trim()}`;
+        eventType = 'renewal_date_cleared';
+      } else {
+        summary = `Updated renewal date for ${editName.trim()}`;
+        eventType = 'renewal_date_set';
       }
-
-      await supabase.from('activity_log').insert({
-        agency_id: agencyId,
-        broker_user_id: user.id,
-        event_type: eventType,
-        event_summary: summary,
-        metadata: { group_id: group.id, group_name: editName.trim() },
-      });
     }
+
+    await supabase.from('activity_log').insert({
+      agency_id: agencyId,
+      broker_user_id: currentUserId,
+      event_type: eventType,
+      event_summary: summary,
+      metadata: { group_id: group.id, group_name: editName.trim() },
+    });
 
     setShowEditModal(false);
     setSaving(false);
-    await loadAll();
-  }
-
-  function startEditNotes() {
-    if (!group) return;
-    setNotesDraft(group.notes || '');
-    setEditingNotes(true);
-  }
-
-  async function handleSaveNotes() {
-    if (!group) return;
-    setSavingNotes(true);
-
-    const newNotes = notesDraft.trim() || null;
-
-    const { error } = await supabase
-      .from('groups')
-      .update({ notes: newNotes })
-      .eq('id', group.id);
-
-    if (error) {
-      alert(error.message || 'Could not save notes.');
-      setSavingNotes(false);
-      return;
-    }
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      await supabase.from('activity_log').insert({
-        agency_id: agencyId,
-        broker_user_id: user.id,
-        event_type: 'group_notes_updated',
-        event_summary: `Updated notes on ${group.name}`,
-        metadata: { group_id: group.id, group_name: group.name },
-      });
-    }
-
-    setEditingNotes(false);
-    setSavingNotes(false);
     await loadAll();
   }
 
@@ -286,20 +304,124 @@ export default function GroupDetailPage() {
       return;
     }
 
-    // Activity log
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      await supabase.from('activity_log').insert({
-        agency_id: agencyId,
-        broker_user_id: user.id,
-        event_type: 'group_deleted',
-        event_summary: `Deleted group: ${groupName}`,
-        metadata: { group_name: groupName },
-      });
-    }
+    await supabase.from('activity_log').insert({
+      agency_id: agencyId,
+      broker_user_id: currentUserId,
+      event_type: 'group_deleted',
+      event_summary: `Deleted group: ${groupName}`,
+      metadata: { group_name: groupName },
+    });
 
     router.push('/broker/groups');
   }
+
+  // ============= NOTES JOURNAL =============
+
+  function openAddNote() {
+    setNewNoteBody('');
+    setAddingNote(true);
+  }
+
+  async function handleSaveNewNote() {
+    if (!group || !newNoteBody.trim()) return;
+    setSavingNewNote(true);
+
+    const fullName = getCurrentUserFullName();
+
+    const { data: inserted, error } = await supabase
+      .from('group_notes')
+      .insert({
+        group_id: group.id,
+        agency_id: agencyId,
+        author_user_id: currentUserId,
+        author_name: fullName,
+        body: newNoteBody.trim(),
+      })
+      .select()
+      .single();
+
+    if (error) {
+      alert(error.message || 'Could not save note.');
+      setSavingNewNote(false);
+      return;
+    }
+
+    if (inserted) {
+      await supabase.from('activity_log').insert({
+        agency_id: agencyId,
+        broker_user_id: currentUserId,
+        event_type: 'group_note_added',
+        event_summary: `Added a note on ${group.name}`,
+        metadata: { group_id: group.id, group_name: group.name, note_id: inserted.id },
+      });
+    }
+
+    setAddingNote(false);
+    setNewNoteBody('');
+    setSavingNewNote(false);
+    await loadAll();
+  }
+
+  function startEditNote(note: GroupNote) {
+    setEditingNoteId(note.id);
+    setEditingNoteBody(note.body);
+  }
+
+  async function handleSaveEditNote() {
+    if (!editingNoteId || !editingNoteBody.trim() || !group) return;
+    setSavingEditNote(true);
+
+    const { error } = await supabase
+      .from('group_notes')
+      .update({ body: editingNoteBody.trim() })
+      .eq('id', editingNoteId);
+
+    if (error) {
+      alert(error.message || 'Could not edit note.');
+      setSavingEditNote(false);
+      return;
+    }
+
+    await supabase.from('activity_log').insert({
+      agency_id: agencyId,
+      broker_user_id: currentUserId,
+      event_type: 'group_note_edited',
+      event_summary: `Edited a note on ${group.name}`,
+      metadata: { group_id: group.id, group_name: group.name, note_id: editingNoteId },
+    });
+
+    setEditingNoteId(null);
+    setEditingNoteBody('');
+    setSavingEditNote(false);
+    await loadAll();
+  }
+
+  async function handleDeleteNote(noteId: string) {
+    if (!group) return;
+
+    const { error } = await supabase
+      .from('group_notes')
+      .delete()
+      .eq('id', noteId);
+
+    if (error) {
+      alert(error.message || 'Could not delete note.');
+      return;
+    }
+
+    await supabase.from('activity_log').insert({
+      agency_id: agencyId,
+      broker_user_id: currentUserId,
+      event_type: 'group_note_deleted',
+      event_summary: `Deleted a note on ${group.name}`,
+      metadata: { group_id: group.id, group_name: group.name, note_id: noteId },
+    });
+
+    setConfirmDeleteNoteId(null);
+    await loadAll();
+  }
+
+  // ============= HELPERS =============
 
   function getClientName(clientId: string | null): string | null {
     if (!clientId) return null;
@@ -380,6 +502,9 @@ export default function GroupDetailPage() {
       group_added: '🏢',
       group_edited: '✏️',
       group_deleted: '🗑️',
+      group_note_added: '📝',
+      group_note_edited: '✏️',
+      group_note_deleted: '🗑️',
       renewal_date_set: '📅',
       renewal_date_cleared: '📅',
     };
@@ -475,9 +600,9 @@ export default function GroupDetailPage() {
           </div>
         </div>
 
-        {/* 2-column layout: info + activity */}
+        {/* 2-column layout */}
         <div style={twoColGrid}>
-          {/* Left column: info */}
+          {/* Left column */}
           <div>
             <div style={infoCard}>
               <h2 style={cardTitle}>Group Info</h2>
@@ -524,52 +649,154 @@ export default function GroupDetailPage() {
               </div>
             </div>
 
+            {/* Notes Journal */}
             <div style={{ ...infoCard, marginTop: 16 }}>
               <div style={notesHeader}>
                 <h2 style={cardTitle}>Notes</h2>
-                {!editingNotes && (
-                  <button
-                    style={iconBtn}
-                    onClick={startEditNotes}
-                    title={group.notes ? 'Edit notes' : 'Add notes'}
-                  >
-                    {group.notes ? '✏️ Edit' : '+ Add'}
+                {!addingNote && (
+                  <button style={iconBtn} onClick={openAddNote}>
+                    + Add Note
                   </button>
                 )}
               </div>
 
-              {editingNotes ? (
-                <>
+              {addingNote && (
+                <div style={newNoteCard}>
                   <textarea
-                    value={notesDraft}
-                    onChange={(e) => setNotesDraft(e.target.value)}
-                    style={{ ...formInput, minHeight: 100, resize: 'vertical' as const }}
-                    placeholder="Add notes about this group..."
+                    value={newNoteBody}
+                    onChange={(e) => setNewNoteBody(e.target.value)}
+                    style={{ ...formInput, minHeight: 90, resize: 'vertical' as const }}
+                    placeholder="Write a note..."
                     autoFocus
                   />
                   <div style={notesEditFooter}>
                     <button
                       style={secondaryBtn}
-                      onClick={() => setEditingNotes(false)}
-                      disabled={savingNotes}
+                      onClick={() => {
+                        setAddingNote(false);
+                        setNewNoteBody('');
+                      }}
+                      disabled={savingNewNote}
                     >
                       Cancel
                     </button>
                     <button
                       style={primaryBtn}
-                      onClick={handleSaveNotes}
-                      disabled={savingNotes}
+                      onClick={handleSaveNewNote}
+                      disabled={savingNewNote || !newNoteBody.trim()}
                     >
-                      {savingNotes ? 'Saving...' : 'Save Notes'}
+                      {savingNewNote ? 'Saving...' : 'Save Note'}
                     </button>
                   </div>
-                </>
-              ) : group.notes ? (
-                <p style={notesText}>{group.notes}</p>
-              ) : (
+                </div>
+              )}
+
+              {notes.length === 0 && !addingNote ? (
                 <p style={{ color: '#7a8a9b', fontSize: 14, fontStyle: 'italic', margin: 0 }}>
-                  No notes yet. Click "+ Add" to add some.
+                  No notes yet. Click "+ Add Note" to start a journal for this group.
                 </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {notes.map((note) => {
+                    const isAuthor = note.author_user_id === currentUserId;
+                    const isEditing = editingNoteId === note.id;
+                    const isConfirming = confirmDeleteNoteId === note.id;
+
+                    return (
+                      <div key={note.id} style={noteEntry}>
+                        <div style={noteMeta}>
+                          <span style={noteAuthor}>
+                            {note.author_name || 'Unknown author'}
+                          </span>
+                          <span style={noteTime}>
+                            {formatDate(note.created_at, true)}
+                            {note.updated_at && note.updated_at !== note.created_at && (
+                              <span style={{ marginLeft: 6, fontStyle: 'italic' }}>
+                                · edited
+                              </span>
+                            )}
+                          </span>
+                        </div>
+
+                        {isEditing ? (
+                          <>
+                            <textarea
+                              value={editingNoteBody}
+                              onChange={(e) => setEditingNoteBody(e.target.value)}
+                              style={{
+                                ...formInput,
+                                minHeight: 80,
+                                resize: 'vertical' as const,
+                                marginTop: 8,
+                              }}
+                              autoFocus
+                            />
+                            <div style={notesEditFooter}>
+                              <button
+                                style={secondaryBtn}
+                                onClick={() => {
+                                  setEditingNoteId(null);
+                                  setEditingNoteBody('');
+                                }}
+                                disabled={savingEditNote}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                style={primaryBtn}
+                                onClick={handleSaveEditNote}
+                                disabled={savingEditNote || !editingNoteBody.trim()}
+                              >
+                                {savingEditNote ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p style={noteBody}>{note.body}</p>
+                            {isAuthor && !isConfirming && (
+                              <div style={noteActions}>
+                                <button
+                                  style={noteActionBtn}
+                                  onClick={() => startEditNote(note)}
+                                  title="Edit note"
+                                >
+                                  ✏️ Edit
+                                </button>
+                                <button
+                                  style={noteActionBtnDanger}
+                                  onClick={() => setConfirmDeleteNoteId(note.id)}
+                                  title="Delete note"
+                                >
+                                  🗑️ Delete
+                                </button>
+                              </div>
+                            )}
+                            {isConfirming && (
+                              <div style={confirmRow}>
+                                <span style={{ fontSize: 13, color: '#8a3a3a' }}>
+                                  Delete this note?
+                                </span>
+                                <button
+                                  style={noteActionBtn}
+                                  onClick={() => setConfirmDeleteNoteId(null)}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  style={noteActionBtnDanger}
+                                  onClick={() => handleDeleteNote(note.id)}
+                                >
+                                  Yes, delete
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
@@ -578,7 +805,7 @@ export default function GroupDetailPage() {
               <h2 style={cardTitle}>Census</h2>
               <div style={placeholderBox}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
-                <strong style={{ color: '#1e3a5f' }}>Census upload coming in Push 3</strong>
+                <strong style={{ color: '#1e3a5f' }}>Census upload coming in Push 4</strong>
                 <p style={{ color: '#3a4d68', fontSize: 13, margin: '8px 0 0' }}>
                   Upload CSV or Excel files to parse member data, track ages, and generate carrier recommendations.
                 </p>
@@ -610,7 +837,7 @@ export default function GroupDetailPage() {
         </div>
       </main>
 
-      {/* Edit Group Modal */}
+      {/* Edit Group Modal (notes field removed) */}
       {showEditModal && (
         <div style={modalOverlay} onClick={() => !saving && setShowEditModal(false)}>
           <div style={modalCard} onClick={(e) => e.stopPropagation()}>
@@ -700,14 +927,9 @@ export default function GroupDetailPage() {
               </div>
             </div>
 
-            <div style={formRow}>
-              <label style={formLabel}>Notes</label>
-              <textarea
-                value={editNotes}
-                onChange={(e) => setEditNotes(e.target.value)}
-                style={{ ...formInput, minHeight: 80, resize: 'vertical' as const }}
-              />
-            </div>
+            <p style={{ fontSize: 12, color: '#7a8a9b', fontStyle: 'italic', margin: '0 0 16px' }}>
+              💡 Notes are now managed as a journal in the Notes section below.
+            </p>
 
             {editError && <div style={errorBox}>{editError}</div>}
 
@@ -723,13 +945,13 @@ export default function GroupDetailPage() {
         </div>
       )}
 
-      {/* Delete Confirm Modal */}
+      {/* Delete Group Confirm Modal */}
       {showDeleteConfirm && (
         <div style={modalOverlay} onClick={() => !deleting && setShowDeleteConfirm(false)}>
           <div style={{ ...modalCard, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
             <h2 style={modalTitle}>Delete this group?</h2>
             <p style={{ color: '#3a4d68', fontSize: 14, lineHeight: 1.6, marginBottom: 18 }}>
-              You are about to permanently delete <strong>{group.name}</strong>. This cannot be undone.
+              You are about to permanently delete <strong>{group.name}</strong>. This will also delete all notes, census data, and activity for this group. This cannot be undone.
             </p>
             <div style={modalFooter}>
               <button style={secondaryBtn} onClick={() => setShowDeleteConfirm(false)} disabled={deleting}>
@@ -873,14 +1095,6 @@ const infoValue: React.CSSProperties = {
   textAlign: 'right',
 };
 
-const notesText: React.CSSProperties = {
-  color: '#3a4d68',
-  fontSize: 14,
-  lineHeight: 1.6,
-  margin: 0,
-  whiteSpace: 'pre-wrap',
-};
-
 const placeholderBox: React.CSSProperties = {
   background: 'linear-gradient(135deg, #faf7f2 0%, #eef1f4 100%)',
   border: '1px dashed #cbd5e0',
@@ -1020,34 +1234,120 @@ const errorBox: React.CSSProperties = {
 };
 
 const modalFooter: React.CSSProperties = {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 8,
-  };
-  
-  const notesHeader: React.CSSProperties = {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
-  };
-  
-  const iconBtn: React.CSSProperties = {
-    background: '#fff',
-    color: '#7a9b76',
-    border: '1px solid #d4dae2',
-    padding: '6px 12px',
-    borderRadius: 6,
-    fontFamily: 'Figtree, sans-serif',
-    fontWeight: 600,
-    fontSize: 12,
-    cursor: 'pointer',
-  };
-  
-  const notesEditFooter: React.CSSProperties = {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 12,
-  };
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: 10,
+  marginTop: 8,
+};
+
+const notesHeader: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 14,
+};
+
+const iconBtn: React.CSSProperties = {
+  background: '#fff',
+  color: '#7a9b76',
+  border: '1px solid #d4dae2',
+  padding: '6px 12px',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontWeight: 600,
+  fontSize: 12,
+  cursor: 'pointer',
+};
+
+const notesEditFooter: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: 10,
+  marginTop: 12,
+};
+
+const newNoteCard: React.CSSProperties = {
+  background: '#faf7f2',
+  border: '1px solid #e2e8f0',
+  borderRadius: 8,
+  padding: 14,
+  marginBottom: 14,
+};
+
+const noteEntry: React.CSSProperties = {
+  background: '#fff',
+  border: '1px solid #eef1f4',
+  borderRadius: 8,
+  padding: 14,
+  fontFamily: 'Figtree, sans-serif',
+};
+
+const noteMeta: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 8,
+  flexWrap: 'wrap',
+  gap: 6,
+};
+
+const noteAuthor: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: '#1e3a5f',
+};
+
+const noteTime: React.CSSProperties = {
+  fontSize: 11,
+  color: '#7a8a9b',
+};
+
+const noteBody: React.CSSProperties = {
+  fontSize: 14,
+  color: '#3a4d68',
+  lineHeight: 1.6,
+  margin: 0,
+  whiteSpace: 'pre-wrap',
+};
+
+const noteActions: React.CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  marginTop: 10,
+  paddingTop: 10,
+  borderTop: '1px solid #eef1f4',
+};
+
+const noteActionBtn: React.CSSProperties = {
+  background: 'transparent',
+  color: '#7a8a9b',
+  border: '1px solid #e2e8f0',
+  padding: '4px 10px',
+  borderRadius: 5,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const noteActionBtnDanger: React.CSSProperties = {
+  background: 'transparent',
+  color: '#8a3a3a',
+  border: '1px solid #d4a5a5',
+  padding: '4px 10px',
+  borderRadius: 5,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const confirmRow: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginTop: 10,
+  paddingTop: 10,
+  borderTop: '1px solid #f1e6e6',
+  flexWrap: 'wrap',
+};
