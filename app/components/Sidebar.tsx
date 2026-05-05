@@ -2,7 +2,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 type SidebarProps = {
-  active: 'dashboard' | 'find-plans' | 'household' | 'claims-profile' | 'uploaded-files' | 'settings' | 'help' | 'billing' | 'my-plans' | 'compare-plans' | 'employer-benefits';
+  active: 'dashboard' | 'find-plans' | 'household' | 'claims' | 'uploaded-files' | 'settings' | 'help' | 'billing' | 'my-plans' | 'compare-plans' | 'employer-benefits';
   firstName: string;
   lastName: string;
   role: string;
@@ -56,9 +56,9 @@ export default function Sidebar({ active, firstName, lastName, role, onLogout }:
         </div>
       </Link>
       <div className="dash-section-label">My Data</div>
-      <Link href="/claims-profile" style={linkReset}>
-        <div className={`dash-nav-item ${active === 'claims-profile' ? 'active' : ''}`}>
-          <div className="dash-nav-icon">📄</div> Claims & Profile
+      <Link href="/claims" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'claims' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">📄</div> Claims
         </div>
       </Link>
       <Link href="/uploaded-files" style={linkReset}>

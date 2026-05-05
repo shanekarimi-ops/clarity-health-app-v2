@@ -33,7 +33,7 @@ export default function HelpPage() {
   const faqs = [
     {
       q: 'How do I upload my claims?',
-      a: 'Go to your Dashboard and use the upload widget, or visit the Claims & Profile page. You can drag and drop multiple PDFs or images at once. We accept PDF, JPG, and PNG files up to 10MB each.',
+      a: 'Go to your Dashboard and use the upload widget, or visit the Claims or Uploaded Files page from the sidebar. You can drag and drop multiple PDFs or images at once. We accept PDF, JPG, and PNG files up to 10MB each.',
     },
     {
       q: 'Is my health data secure?',
@@ -41,7 +41,7 @@ export default function HelpPage() {
     },
     {
       q: 'How does the AI recommendation engine work?',
-      a: 'Once you upload claims and complete your health profile, our AI analyzes your usage patterns, medications, and priorities to rank insurance plans by fit and projected cost. The recommendation engine is currently in development and will be available soon.',
+      a: 'Once you upload claims and complete your Household profile, our AI analyzes your usage patterns, medications, and household composition to rank insurance plans by fit and projected cost.',
     },
     {
       q: 'Can I delete my uploaded files?',
@@ -57,7 +57,7 @@ export default function HelpPage() {
     },
     {
       q: 'Why am I seeing — on my dashboard stat cards?',
-      a: 'The Top Match Score and Estimated Savings cards activate once the AI recommendation engine analyzes your data. Make sure you\'ve uploaded claims and completed your health profile, and these will populate when the engine launches.',
+      a: 'The Top Match Score and Estimated Savings cards activate once the AI recommendation engine analyzes your data. Make sure you\'ve completed your Household details and uploaded claims, and these will populate when the engine launches.',
     },
     {
       q: 'How do I delete my account?',
@@ -101,10 +101,10 @@ export default function HelpPage() {
             <div className="dash-card-title">Getting Started</div>
           </div>
           <ol style={{ color: '#3a4d68', lineHeight: '1.8', paddingLeft: '20px', margin: 0 }}>
-            <li>Complete your <Link href="/claims-profile" style={{ color: '#7a9b76', textDecoration: 'underline' }}>health profile</Link> with age, household size, and ZIP code.</li>
-            <li>Upload your recent claims (PDF or image) — we accept files up to 10MB.</li>
-            <li>Set your priorities — low deductible, mental health coverage, dental/vision, network size.</li>
-            <li>Review AI-ranked plan recommendations once the recommendation engine launches.</li>
+            <li>Complete your <Link href="/household" style={{ color: '#7a9b76', textDecoration: 'underline' }}>Household</Link> with ZIP code, household size, member ages, and coverage scope.</li>
+            <li>Upload your recent claims (PDF or image) on the <Link href="/claims" style={{ color: '#7a9b76', textDecoration: 'underline' }}>Claims</Link> page — files up to 10MB.</li>
+            <li>Set your priorities — low deductible, mental health coverage, dental/vision, network size — on the Household page.</li>
+            <li>Review AI-ranked plan recommendations from Find Plans, Compare Plans, or Employer Benefits.</li>
           </ol>
         </div>
 
