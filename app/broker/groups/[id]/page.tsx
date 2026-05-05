@@ -290,7 +290,7 @@ export default function GroupDetailPage() {
 
     await supabase.from('activity_log').insert({
       agency_id: agencyId,
-      broker_user_id: currentUserId,
+      actor_user_id: currentUserId,
       event_type: eventType,
       event_summary: summary,
       metadata: { group_id: group.id, group_name: editName.trim() },
@@ -316,7 +316,7 @@ export default function GroupDetailPage() {
 
     await supabase.from('activity_log').insert({
       agency_id: agencyId,
-      broker_user_id: currentUserId,
+      actor_user_id: currentUserId,
       event_type: 'group_deleted',
       event_summary: `Deleted group: ${groupName}`,
       metadata: { group_name: groupName },
@@ -359,7 +359,7 @@ export default function GroupDetailPage() {
     if (inserted) {
       await supabase.from('activity_log').insert({
         agency_id: agencyId,
-        broker_user_id: currentUserId,
+        actor_user_id: currentUserId,
         event_type: 'group_note_added',
         event_summary: `Added a note on ${group.name}`,
         metadata: { group_id: group.id, group_name: group.name, note_id: inserted.id },
@@ -394,7 +394,7 @@ export default function GroupDetailPage() {
 
     await supabase.from('activity_log').insert({
       agency_id: agencyId,
-      broker_user_id: currentUserId,
+      actor_user_id: currentUserId,
       event_type: 'group_note_edited',
       event_summary: `Edited a note on ${group.name}`,
       metadata: { group_id: group.id, group_name: group.name, note_id: editingNoteId },
@@ -421,7 +421,7 @@ export default function GroupDetailPage() {
 
     await supabase.from('activity_log').insert({
       agency_id: agencyId,
-      broker_user_id: currentUserId,
+      actor_user_id: currentUserId,
       event_type: 'group_note_deleted',
       event_summary: `Deleted a note on ${group.name}`,
       metadata: { group_id: group.id, group_name: group.name, note_id: noteId },
