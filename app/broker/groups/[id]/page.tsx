@@ -962,14 +962,21 @@ export default function GroupDetailPage() {
                             </td>
                           </tr>
                         ) : (
-                          displayedMembers.map((m) => (
-                            <tr key={m.id}>
-                              <td style={td}>
-                                {(m.first_name || '') + ' ' + (m.last_name || '')}
-                                {m.email && (
-                                  <div style={{ fontSize: 11, color: '#7a8a9b' }}>{m.email}</div>
-                                )}
-                              </td>
+                            displayedMembers.map((m) => (
+                                <tr key={m.id}>
+                                  <td style={td}>
+                                    <span
+                                      onClick={() => router.push(`/broker/groups/${group.id}/members/${m.id}`)}
+                                      style={memberNameLink}
+                                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = 'underline'; }}
+                                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = 'none'; }}
+                                    >
+                                      {(m.first_name || '') + ' ' + (m.last_name || '')}
+                                    </span>
+                                    {m.email && (
+                                      <div style={{ fontSize: 11, color: '#7a8a9b' }}>{m.email}</div>
+                                    )}
+                                  </td>
                               <td style={td}>{m.age ?? '—'}</td>
                               <td style={td}>{m.gender || '—'}</td>
                               <td style={td}>{m.relationship || '—'}</td>
@@ -1645,12 +1652,18 @@ const th: React.CSSProperties = {
 };
 
 const td: React.CSSProperties = {
-  padding: '10px 12px',
-  borderBottom: '1px solid #eef1f4',
-  color: '#1e3a5f',
-  fontSize: 13,
-  verticalAlign: 'top',
-};
+    padding: '10px 12px',
+    borderBottom: '1px solid #eef1f4',
+    color: '#1e3a5f',
+    fontSize: 13,
+    verticalAlign: 'top',
+  };
+  
+  const memberNameLink: React.CSSProperties = {
+    color: '#1e3a5f',
+    fontWeight: 600,
+    cursor: 'pointer',
+  };
 
 const paginationRow: React.CSSProperties = {
   display: 'flex',
