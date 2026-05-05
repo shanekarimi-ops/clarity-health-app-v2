@@ -44,6 +44,26 @@ export default function MemberDetailPage() {
   const [member, setMember] = useState<Member | null>(null);
   const [group, setGroup] = useState<GroupLite | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [agencyId, setAgencyId] = useState('');
+  const [currentUserId, setCurrentUserId] = useState('');
+
+  // Edit mode
+  const [editMode, setEditMode] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editDob, setEditDob] = useState('');
+  const [editAge, setEditAge] = useState('');
+  const [editGender, setEditGender] = useState('');
+  const [editRelationship, setEditRelationship] = useState('');
+  const [editSalary, setEditSalary] = useState('');
+  const [editTier, setEditTier] = useState('');
+  const [editZip, setEditZip] = useState('');
+  const [editState, setEditState] = useState('');
+  const [editCoverageType, setEditCoverageType] = useState('');
+  const [editCurrentPlan, setEditCurrentPlan] = useState('');
 
   useEffect(() => {
     loadMember();
@@ -58,6 +78,7 @@ export default function MemberDetailPage() {
       router.push('/login');
       return;
     }
+    setCurrentUserId(user.id);
 
     const meta = user.user_metadata || {};
     setFirstName(meta.first_name || '');
@@ -78,6 +99,7 @@ export default function MemberDetailPage() {
       ? brokerRow.agencies[0]
       : brokerRow.agencies;
     setAgencyName(agency?.name || '');
+    setAgencyId(brokerRow.agency_id);
 
     // Load member (RLS handles access control)
     const { data: memberData, error: memberError } = await supabase
@@ -126,6 +148,122 @@ export default function MemberDetailPage() {
   function formatSalary(amt: number | null): string {
     if (amt === null || amt === undefined) return '—';
     return `$${amt.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  }
+
+  // ============= EDIT HANDLERS =============
+
+  function startEdit() {
+    if (!member) return;
+    setEditFirstName(member.first_name || '');
+    setEditLastName(member.last_name || '');
+    setEditEmail(member.email || '');
+    setEditDob(member.date_of_birth || '');
+    setEditAge(member.age !== null ? String(member.age) : '');
+    setEditGender(member.gender || '');
+    setEditRelationship(member.relationship || '');
+    setEditSalary(member.salary_amount !== null ? String(member.salary_amount) : '');
+    setEditTier(member.tier || '');
+    setEditZip(member.zip_code || '');
+    setEditState(member.state || '');
+    setEditCoverageType(member.coverage_type || '');
+    setEditCurrentPlan(member.current_plan || '');
+    setEditError('');
+    setEditMode(true);
+  }
+
+  function cancelEdit() {
+    setEditMode(false);
+    setEditError('');
+  }
+
+  async function handleSave() {
+    if (!member) return;
+    setEditError('');
+    setSaving(true);
+
+    // Coerce values
+    const ageNum = editAge.trim() ? parseInt(editAge.trim(), 10) : null;
+    const salaryNum = editSalary.trim()
+      ? parseFloat(editSalary.replace(/[\$,\s]/g, ''))
+      : null;
+
+    const payload = {
+      first_name: editFirstName.trim() || null,
+      last_name: editLastName.trim() || null,
+      email: editEmail.trim() || null,
+      date_of_birth: editDob.trim() || null,
+      age: ageNum !== null && !isNaN(ageNum) ? ageNum : null,
+      gender: editGender.trim() || null,
+      relationship: editRelationship.trim() || null,
+      salary_amount: salaryNum !== null && !isNaN(salaryNum) ? salaryNum : null,
+      tier: editTier.trim() || null,
+      zip_code: editZip.trim() || null,
+      state: editState.trim() || null,
+      coverage_type: editCoverageType.trim() || null,
+      current_plan: editCurrentPlan.trim() || null,
+    };
+
+    // Detect changed fields for activity log summary
+    const fieldLabels: Record<string, string> = {
+      first_name: 'first name',
+      last_name: 'last name',
+      email: 'email',
+      date_of_birth: 'date of birth',
+      age: 'age',
+      gender: 'gender',
+      relationship: 'relationship',
+      salary_amount: 'salary',
+      tier: 'tier',
+      zip_code: 'zip code',
+      state: 'state',
+      coverage_type: 'coverage type',
+      current_plan: 'current plan',
+    };
+
+    const changed: string[] = [];
+    for (const key of Object.keys(payload) as (keyof typeof payload)[]) {
+      const before = (member as any)[key];
+      const after = (payload as any)[key];
+      // Treat null/empty as equivalent
+      const a = before === null || before === undefined || before === '' ? null : before;
+      const b = after === null || after === undefined || after === '' ? null : after;
+      if (a !== b) changed.push(fieldLabels[key as string] || key);
+    }
+
+    const { error } = await supabase
+      .from('group_members')
+      .update(payload)
+      .eq('id', member.id);
+
+    if (error) {
+      setEditError(error.message || 'Could not save changes.');
+      setSaving(false);
+      return;
+    }
+
+    // Activity log entry — only if something actually changed
+    if (changed.length > 0) {
+      const memberName = `${editFirstName.trim()} ${editLastName.trim()}`.trim() || 'a member';
+      const fieldsList = changed.length <= 3
+        ? changed.join(', ')
+        : `${changed.slice(0, 2).join(', ')} and ${changed.length - 2} more`;
+
+      await supabase.from('activity_log').insert({
+        agency_id: agencyId,
+        actor_user_id: currentUserId,
+        event_type: 'member_edited',
+        event_summary: `Updated ${memberName}: ${fieldsList}`,
+        metadata: {
+          group_id: groupId,
+          member_id: member.id,
+          changed_fields: changed,
+        },
+      });
+    }
+
+    setEditMode(false);
+    setSaving(false);
+    await loadMember();
   }
 
   function relationshipBadgeStyle(rel: string | null): React.CSSProperties {
@@ -220,87 +358,177 @@ export default function MemberDetailPage() {
             </div>
           )}
           <div style={headerActions}>
-            <button style={primaryBtn} disabled title="Coming in next push">
-              Edit Member
-            </button>
-            <button style={dangerBtn} disabled title="Coming in next push">
-              Delete
-            </button>
+            {!editMode ? (
+              <>
+                <button style={primaryBtnEnabled} onClick={startEdit}>
+                  Edit Member
+                </button>
+                <button style={dangerBtn} disabled title="Coming in next push">
+                  Delete
+                </button>
+              </>
+            ) : null}
           </div>
-          <p style={{ fontSize: 11, color: '#7a8a9b', fontStyle: 'italic', margin: '12px 0 0' }}>
-            💡 Edit and delete are read-only in this view — coming in the next push.
-          </p>
+          {!editMode && (
+            <p style={{ fontSize: 11, color: '#7a8a9b', fontStyle: 'italic', margin: '12px 0 0' }}>
+              💡 Delete coming in the next push.
+            </p>
+          )}
         </div>
 
         {/* Info card */}
         <div style={infoCard}>
           <h2 style={cardTitle}>Member Details</h2>
 
-          <div style={infoGrid}>
-            <div style={infoBlock}>
-              <h3 style={infoBlockTitle}>Personal</h3>
-              <div style={infoRow}>
-                <span style={infoLabel}>First Name</span>
-                <span style={infoValue}>{member.first_name || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Last Name</span>
-                <span style={infoValue}>{member.last_name || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Email</span>
-                <span style={infoValue}>{member.email || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Date of Birth</span>
-                <span style={infoValue}>{formatDate(member.date_of_birth)}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Age</span>
-                <span style={infoValue}>{member.age ?? '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Gender</span>
-                <span style={infoValue}>{member.gender || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Relationship</span>
-                <span style={infoValue}>{member.relationship || '—'}</span>
-              </div>
-            </div>
+          {editError && <div style={errorBox}>{editError}</div>}
 
-            <div style={infoBlock}>
-              <h3 style={infoBlockTitle}>Coverage & Location</h3>
-              <div style={infoRow}>
-                <span style={infoLabel}>Salary</span>
-                <span style={infoValue}>{formatSalary(member.salary_amount)}</span>
+          {!editMode ? (
+            <div style={infoGrid}>
+              <div style={infoBlock}>
+                <h3 style={infoBlockTitle}>Personal</h3>
+                <div style={infoRow}>
+                  <span style={infoLabel}>First Name</span>
+                  <span style={infoValue}>{member.first_name || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Last Name</span>
+                  <span style={infoValue}>{member.last_name || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Email</span>
+                  <span style={infoValue}>{member.email || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Date of Birth</span>
+                  <span style={infoValue}>{formatDate(member.date_of_birth)}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Age</span>
+                  <span style={infoValue}>{member.age ?? '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Gender</span>
+                  <span style={infoValue}>{member.gender || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Relationship</span>
+                  <span style={infoValue}>{member.relationship || '—'}</span>
+                </div>
               </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Coverage Tier</span>
-                <span style={infoValue}>{member.tier || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Coverage Type</span>
-                <span style={infoValue}>{member.coverage_type || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Current Plan</span>
-                <span style={infoValue}>{member.current_plan || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Zip Code</span>
-                <span style={infoValue}>{member.zip_code || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>State</span>
-                <span style={infoValue}>{member.state || '—'}</span>
-              </div>
-              <div style={infoRow}>
-                <span style={infoLabel}>Added</span>
-                <span style={infoValue}>{formatDate(member.created_at)}</span>
+
+              <div style={infoBlock}>
+                <h3 style={infoBlockTitle}>Coverage & Location</h3>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Salary</span>
+                  <span style={infoValue}>{formatSalary(member.salary_amount)}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Coverage Tier</span>
+                  <span style={infoValue}>{member.tier || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Coverage Type</span>
+                  <span style={infoValue}>{member.coverage_type || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Current Plan</span>
+                  <span style={infoValue}>{member.current_plan || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Zip Code</span>
+                  <span style={infoValue}>{member.zip_code || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>State</span>
+                  <span style={infoValue}>{member.state || '—'}</span>
+                </div>
+                <div style={infoRow}>
+                  <span style={infoLabel}>Added</span>
+                  <span style={infoValue}>{formatDate(member.created_at)}</span>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <>
+              <div style={infoGrid}>
+                <div style={infoBlock}>
+                  <h3 style={infoBlockTitle}>Personal</h3>
+                  <div style={editRow}>
+                    <label style={editLabel}>First Name</label>
+                    <input type="text" value={editFirstName} onChange={(e) => setEditFirstName(e.target.value)} style={editInput} />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Last Name</label>
+                    <input type="text" value={editLastName} onChange={(e) => setEditLastName(e.target.value)} style={editInput} />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Email</label>
+                    <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={editInput} />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Date of Birth</label>
+                    <input type="date" value={editDob} onChange={(e) => setEditDob(e.target.value)} style={editInput} />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Age</label>
+                    <input type="number" value={editAge} onChange={(e) => setEditAge(e.target.value)} style={editInput} min="0" max="130" />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Gender</label>
+                    <input type="text" value={editGender} onChange={(e) => setEditGender(e.target.value)} style={editInput} placeholder="M / F / Other" />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Relationship</label>
+                    <select value={editRelationship} onChange={(e) => setEditRelationship(e.target.value)} style={editInput}>
+                      <option value="">— Select —</option>
+                      <option value="Employee">Employee</option>
+                      <option value="Spouse">Spouse</option>
+                      <option value="Domestic Partner">Domestic Partner</option>
+                      <option value="Child">Child</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div style={infoBlock}>
+                  <h3 style={infoBlockTitle}>Coverage & Location</h3>
+                  <div style={editRow}>
+                    <label style={editLabel}>Salary</label>
+                    <input type="text" value={editSalary} onChange={(e) => setEditSalary(e.target.value)} style={editInput} placeholder="75000" />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Coverage Tier</label>
+                    <input type="text" value={editTier} onChange={(e) => setEditTier(e.target.value)} style={editInput} placeholder="EE Only / EE+Spouse / Family" />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Coverage Type</label>
+                    <input type="text" value={editCoverageType} onChange={(e) => setEditCoverageType(e.target.value)} style={editInput} placeholder="Medical / Dental / Vision" />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Current Plan</label>
+                    <input type="text" value={editCurrentPlan} onChange={(e) => setEditCurrentPlan(e.target.value)} style={editInput} />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>Zip Code</label>
+                    <input type="text" value={editZip} onChange={(e) => setEditZip(e.target.value)} style={editInput} />
+                  </div>
+                  <div style={editRow}>
+                    <label style={editLabel}>State</label>
+                    <input type="text" value={editState} onChange={(e) => setEditState(e.target.value)} style={editInput} placeholder="AZ" maxLength={2} />
+                  </div>
+                </div>
+              </div>
+
+              <div style={editFooter}>
+                <button style={secondaryBtn} onClick={cancelEdit} disabled={saving}>
+                  Cancel
+                </button>
+                <button style={primaryBtnEnabled} onClick={handleSave} disabled={saving}>
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </main>
     </div>
@@ -433,7 +661,75 @@ const infoLabel: React.CSSProperties = {
 };
 
 const infoValue: React.CSSProperties = {
-  color: '#1e3a5f',
-  textAlign: 'right',
-  wordBreak: 'break-word',
-};
+    color: '#1e3a5f',
+    textAlign: 'right',
+    wordBreak: 'break-word',
+  };
+  
+  const primaryBtnEnabled: React.CSSProperties = {
+    background: '#7a9b76',
+    color: '#fff',
+    border: 'none',
+    padding: '12px 22px',
+    borderRadius: 8,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: 'pointer',
+  };
+  
+  const secondaryBtn: React.CSSProperties = {
+    background: '#fff',
+    color: '#3a4d68',
+    border: '1px solid #cbd5e0',
+    padding: '12px 22px',
+    borderRadius: 8,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: 'pointer',
+  };
+  
+  const editRow: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    padding: '8px 0',
+    borderBottom: '1px solid #eef1f4',
+  };
+  
+  const editLabel: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#7a8a9b',
+  };
+  
+  const editInput: React.CSSProperties = {
+    width: '100%',
+    padding: '8px 10px',
+    border: '1px solid #cbd5e0',
+    borderRadius: 6,
+    fontSize: 14,
+    fontFamily: 'Figtree, sans-serif',
+    color: '#1e3a5f',
+    boxSizing: 'border-box',
+  };
+  
+  const editFooter: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 20,
+    paddingTop: 16,
+    borderTop: '1px solid #e2e8f0',
+  };
+  
+  const errorBox: React.CSSProperties = {
+    background: '#fef2f2',
+    border: '1px solid #fecaca',
+    color: '#991b1b',
+    padding: '10px 12px',
+    borderRadius: 6,
+    fontSize: 13,
+    marginBottom: 16,
+  };
