@@ -43,6 +43,7 @@ type Packet = {
   parse_error: string | null;
   parsed_at: string | null;
   summary_text: string | null;
+  is_spouse_packet: boolean;
 };
 
 const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
@@ -62,13 +63,16 @@ export default function EmployerBenefitsPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [coverageScope, setCoverageScope] = useState<CoverageScope>(null);
+  const [hasSpousePacket, setHasSpousePacket] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async (userId: string) => {
+    // Only show NON-spouse packets on this page (spouse packets live on /coordinate)
     const { data: packetData, error: packetErr } = await supabase
       .from('employer_benefits_packets')
       .select('*')
       .eq('user_id', userId)
+      .eq('is_spouse_packet', false)
       .order('uploaded_at', { ascending: false });
 
     if (packetErr) {
@@ -94,7 +98,16 @@ export default function EmployerBenefitsPage() {
       setPlansByPacket(grouped);
     }
 
-    // Load household coverage scope (for tier highlighting)
+    // Check if a spouse packet exists (for the coordinate card state)
+    const { count: spouseCount } = await supabase
+      .from('employer_benefits_packets')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('is_spouse_packet', true)
+      .eq('parse_status', 'success');
+    setHasSpousePacket((spouseCount ?? 0) > 0);
+
+    // Coverage scope from household
     const { data: hh } = await supabase
       .from('households')
       .select('coverage_scope')
@@ -119,7 +132,6 @@ export default function EmployerBenefitsPage() {
     init();
   }, [router, loadData]);
 
-  // Auto-refresh while a parse is pending (server is processing in background)
   useEffect(() => {
     if (!user) return;
     const anyPending = packets.some((p) => p.parse_status === 'pending');
@@ -172,6 +184,7 @@ export default function EmployerBenefitsPage() {
         file_size: file.size,
         file_type: file.type,
         parse_status: 'pending',
+        is_spouse_packet: false,
       })
       .select()
       .single();
@@ -262,8 +275,8 @@ export default function EmployerBenefitsPage() {
   const currentPlans = currentPacket ? plansByPacket[currentPacket.id] || [] : [];
   const canCompareEmployerOnly = currentPlans.length >= 2;
   const canCompareVsMarketplace = currentPlans.length >= 1;
+  const canCoordinateSpouse = currentPlans.length >= 1;
 
-  // Family-tier highlight for users covering more than themselves
   const highlightFamilyTier = coverageScope && coverageScope !== 'individual';
 
   return (
@@ -283,7 +296,6 @@ export default function EmployerBenefitsPage() {
           </div>
         </div>
 
-        {/* Coverage scope context banner */}
         {coverageScope && currentPlans.length > 0 && (
           <div
             style={{
@@ -374,7 +386,7 @@ export default function EmployerBenefitsPage() {
                 No packet uploaded yet
               </h3>
               <p style={{ fontSize: '14px', color: '#6b7785', maxWidth: '440px', margin: '0 auto' }}>
-                Once you upload your benefits packet, we'll extract the medical plans your employer offers and let you compare them — against each other or against the federal Marketplace.
+                Once you upload your benefits packet, we'll extract the medical plans your employer offers and let you compare them — against each other, against the federal Marketplace, or coordinated with your spouse's plan.
               </p>
             </div>
           </div>
@@ -445,7 +457,7 @@ export default function EmployerBenefitsPage() {
                 <p style={{ color: '#6b7785', fontSize: '0.9rem', margin: '0 0 1rem 0' }}>
                   Pick how you want to use this data. Your choice changes which plans are being compared.
                 </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
                   <ComparisonChoiceCard
                     icon="🏢"
                     title="Compare my employer's plans"
@@ -463,6 +475,16 @@ export default function EmployerBenefitsPage() {
                     href="/employer-benefits/compare?mode=employer-vs-marketplace"
                     enabled={canCompareVsMarketplace}
                     disabledReason={!canCompareVsMarketplace ? 'Need at least 1 employer plan.' : ''}
+                  />
+                  <ComparisonChoiceCard
+                    icon="💑"
+                    title="Coordinate with spouse"
+                    scope={`Already have your spouse's plan options? Find the optimal combination for your whole family.${hasSpousePacket ? ' Spouse packet ready.' : ''}`}
+                    cta={hasSpousePacket ? 'View coordination →' : 'Coordinate plans →'}
+                    href="/employer-benefits/coordinate"
+                    enabled={canCoordinateSpouse}
+                    disabledReason={!canCoordinateSpouse ? 'Need at least 1 employer plan.' : ''}
+                    isNew
                   />
                 </div>
               </div>
@@ -574,7 +596,6 @@ function PlanCard({ plan, highlightFamilyTier }: { plan: EmployerPlan; highlight
         </div>
       </div>
 
-      {/* PREMIUM TIERS */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: hasFamilyPremium ? '1fr 1fr' : '1fr',
@@ -603,7 +624,6 @@ function PlanCard({ plan, highlightFamilyTier }: { plan: EmployerPlan; highlight
         </p>
       )}
 
-      {/* DETAIL ROW: Deductible / OOP / Copays */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
@@ -704,9 +724,9 @@ function SimpleStat({ label, value }: { label: string; value: string }) {
 }
 
 function ComparisonChoiceCard({
-  icon, title, scope, cta, href, enabled, disabledReason,
+  icon, title, scope, cta, href, enabled, disabledReason, isNew,
 }: {
-  icon: string; title: string; scope: string; cta: string; href: string; enabled: boolean; disabledReason: string;
+  icon: string; title: string; scope: string; cta: string; href: string; enabled: boolean; disabledReason: string; isNew?: boolean;
 }) {
   const inner = (
     <div style={{
@@ -721,7 +741,24 @@ function ComparisonChoiceCard({
       flexDirection: 'column',
       gap: '0.5rem',
       height: '100%',
+      position: 'relative',
     }}>
+      {isNew && enabled && (
+        <span style={{
+          position: 'absolute',
+          top: '0.5rem',
+          right: '0.5rem',
+          fontSize: '0.6rem',
+          padding: '0.15rem 0.5rem',
+          borderRadius: '999px',
+          backgroundColor: '#7a9b76',
+          color: '#fff',
+          fontWeight: 700,
+          letterSpacing: '0.5px',
+        }}>
+          NEW
+        </span>
+      )}
       <div style={{ fontSize: '1.75rem' }}>{icon}</div>
       <div style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.1rem', fontWeight: 700, color: '#1e3a5f' }}>
         {title}
