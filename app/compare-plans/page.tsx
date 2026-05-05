@@ -40,11 +40,14 @@ type Recommendation = {
   expected_annual_medical_spend?: number | null;
 };
 
+type HouseholdStatus = 'missing' | 'incomplete' | 'complete';
+
 export default function ComparePlansPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
+  const [householdStatus, setHouseholdStatus] = useState<HouseholdStatus>('missing');
 
   useEffect(() => {
     async function loadData() {
@@ -54,6 +57,35 @@ export default function ComparePlansPage() {
         return;
       }
       setUser(user);
+
+      // Load household status
+      const { data: hh } = await supabase
+        .from('households')
+        .select('id, zip_code, household_size, annual_income')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!hh) {
+        setHouseholdStatus('missing');
+      } else {
+        const { data: memberRows } = await supabase
+          .from('household_members')
+          .select('age')
+          .eq('household_id', hh.id);
+
+        const memberCount = memberRows?.length ?? 0;
+        const membersWithAge = (memberRows || []).filter((m: any) => m.age != null).length;
+        const expectedSize = hh.household_size ?? 1;
+
+        const isComplete =
+          !!hh.zip_code &&
+          !!hh.annual_income &&
+          !!hh.household_size &&
+          memberCount >= expectedSize &&
+          membersWithAge >= expectedSize;
+
+        setHouseholdStatus(isComplete ? 'complete' : 'incomplete');
+      }
 
       const { data: recs } = await supabase
         .from('recommendations')
@@ -88,18 +120,14 @@ export default function ComparePlansPage() {
   const lastName = user?.user_metadata?.last_name || '';
   const role = user?.user_metadata?.role || 'Individual';
 
-  // Get top 3 plans for the comparison view
   const topPlans = recommendation?.plans?.slice(0, 3) || [];
 
-  // Has the new P6 projection data on at least the first plan?
   const hasProjections =
     !!topPlans[0]?.expectedAnnualCost && !!topPlans[0]?.worstCaseAnnualCost;
   const hasCostRank = !!topPlans[0]?.costRank;
 
-  // Build the rows array dynamically based on what data is available
   const rows: Array<{ label: string; render: (p: RankedPlan) => string; highlight?: boolean }> = [];
 
-  // Projections come first (most important if available)
   if (hasProjections) {
     rows.push({
       label: 'Expected annual cost',
@@ -138,6 +166,17 @@ export default function ComparePlansPage() {
     rows.push({ label: 'Cost rank', render: (p) => p.costRank ? `#${p.costRank}` : '—' });
   }
 
+  // ===== Determine which empty state to show, in priority order =====
+  // 1. No household at all → set up household
+  // 2. Household incomplete → finish household
+  // 3. Household complete but no recommendation → run Find Plans
+  // 4. Has recommendation → show the comparison
+
+  let emptyState: 'no_household' | 'incomplete_household' | 'no_recommendation' | null = null;
+  if (householdStatus === 'missing') emptyState = 'no_household';
+  else if (householdStatus === 'incomplete') emptyState = 'incomplete_household';
+  else if (topPlans.length === 0) emptyState = 'no_recommendation';
+
   return (
     <div className="dash-layout">
       <Sidebar
@@ -156,8 +195,42 @@ export default function ComparePlansPage() {
           </div>
         </div>
 
-        {topPlans.length === 0 ? (
-          /* ===== EMPTY STATE ===== */
+        {/* ===== EMPTY STATES ===== */}
+        {emptyState === 'no_household' && (
+          <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
+            <div style={{ padding: '60px 24px', textAlign: 'center', color: '#3a4d68' }}>
+              <div style={{ fontSize: '56px', marginBottom: '16px' }}>👨‍👩‍👧</div>
+              <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '26px', color: '#1e3a5f', margin: '0 0 12px 0' }}>
+                Set up your household first
+              </h2>
+              <p style={{ fontSize: '15px', lineHeight: '1.7', maxWidth: '480px', margin: '0 auto 24px auto', color: '#3a4d68' }}>
+                We need to know who you&apos;re covering and where you live before we can compare Marketplace plans for your household.
+              </p>
+              <Link href="/household" style={{ textDecoration: 'none' }}>
+                <button className="btn-sm btn-accent">Set up Household →</button>
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {emptyState === 'incomplete_household' && (
+          <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
+            <div style={{ padding: '60px 24px', textAlign: 'center', color: '#3a4d68' }}>
+              <div style={{ fontSize: '56px', marginBottom: '16px' }}>👨‍👩‍👧</div>
+              <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '26px', color: '#1e3a5f', margin: '0 0 12px 0' }}>
+                Finish your household
+              </h2>
+              <p style={{ fontSize: '15px', lineHeight: '1.7', maxWidth: '480px', margin: '0 auto 24px auto', color: '#3a4d68' }}>
+                You&apos;ve started your Household but a few details are missing. Complete it to unlock Marketplace plan comparisons.
+              </p>
+              <Link href="/household" style={{ textDecoration: 'none' }}>
+                <button className="btn-sm btn-accent">Complete Household →</button>
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {emptyState === 'no_recommendation' && (
           <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
             <div style={{ padding: '60px 24px', textAlign: 'center', color: '#3a4d68' }}>
               <div style={{ fontSize: '56px', marginBottom: '16px' }}>⚖️</div>
@@ -165,14 +238,17 @@ export default function ComparePlansPage() {
                 Nothing to compare yet
               </h2>
               <p style={{ fontSize: '15px', lineHeight: '1.7', maxWidth: '480px', margin: '0 auto 24px auto', color: '#3a4d68' }}>
-                Run a recommendation from Find Plans and your top 3 matches will appear here side-by-side.
+                Your household is ready. Run a recommendation from Find Plans and your top 3 matches will appear here side-by-side.
               </p>
               <Link href="/find-plans" style={{ textDecoration: 'none' }}>
                 <button className="btn-sm btn-accent">Find Plans →</button>
               </Link>
             </div>
           </div>
-        ) : (
+        )}
+
+        {/* ===== RESULTS ===== */}
+        {emptyState === null && topPlans.length > 0 && (
           <>
             {/* P6: Household-aware banner */}
             {recommendation?.coverage_scope && recommendation?.utilization_level && (
@@ -280,7 +356,6 @@ export default function ComparePlansPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Summary row from Claude */}
                   <tr>
                     <td style={{
                       padding: '14px 16px',
@@ -311,7 +386,6 @@ export default function ComparePlansPage() {
                     })}
                   </tr>
 
-                  {/* Standard rows */}
                   {rows.map((row) => (
                     <tr key={row.label}>
                       <td style={{
@@ -345,7 +419,6 @@ export default function ComparePlansPage() {
                     </tr>
                   ))}
 
-                  {/* Action row */}
                   <tr>
                     <td style={{ padding: '14px 16px' }}></td>
                     {topPlans.map((plan) => {

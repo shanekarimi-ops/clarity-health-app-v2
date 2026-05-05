@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useState, Suspense, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../supabase';
@@ -22,7 +22,6 @@ type RankedEmployerPlan = {
   pros: string[];
   cons: string[];
   claimsInsight: string | null;
-  // P5 additions: tier-resolved values + projections
   tier_label: 'Single coverage' | 'Family coverage';
   tier_premium: number | null;
   tier_deductible: number | null;
@@ -48,6 +47,57 @@ type Verdict = {
   claimsInsight: string | null;
 };
 
+// Cache version — bump when result shape changes
+const CACHE_VERSION = 'v2';
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+type CachedResult = {
+  version: string;
+  cachedAt: number;
+  data: any;
+};
+
+function cacheKey(userId: string, mode: CompareMode): string {
+  return `clarity-compare-${userId}-${mode}`;
+}
+
+function readCache(userId: string, mode: CompareMode): any | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(cacheKey(userId, mode));
+    if (!raw) return null;
+    const parsed: CachedResult = JSON.parse(raw);
+    if (parsed.version !== CACHE_VERSION) return null;
+    if (Date.now() - parsed.cachedAt > CACHE_TTL_MS) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(userId: string, mode: CompareMode, data: any) {
+  if (typeof window === 'undefined') return;
+  try {
+    const payload: CachedResult = {
+      version: CACHE_VERSION,
+      cachedAt: Date.now(),
+      data,
+    };
+    sessionStorage.setItem(cacheKey(userId, mode), JSON.stringify(payload));
+  } catch {
+    // sessionStorage full or unavailable — silent failure is fine
+  }
+}
+
+function clearCache(userId: string, mode: CompareMode) {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(cacheKey(userId, mode));
+  } catch {
+    // ignore
+  }
+}
+
 function CompareInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -60,6 +110,7 @@ function CompareInner() {
   const [errorMsg, setErrorMsg] = useState('');
   const [requiresMarketplaceRun, setRequiresMarketplaceRun] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [resultFromCache, setResultFromCache] = useState(false);
 
   useEffect(() => {
     async function init() {
@@ -69,17 +120,28 @@ function CompareInner() {
         return;
       }
       setUser(user);
+
+      // Try cache before showing loading state
+      const cached = readCache(user.id, mode);
+      if (cached) {
+        setResult(cached);
+        setResultFromCache(true);
+      }
       setLoading(false);
     }
     init();
-  }, [router]);
+  }, [router, mode]);
 
-  async function runComparison() {
+  const runComparison = useCallback(async (force = false) => {
     if (!user) return;
     setComparing(true);
     setErrorMsg('');
     setRequiresMarketplaceRun(false);
-    setResult(null);
+    if (force) {
+      setResult(null);
+      setResultFromCache(false);
+      clearCache(user.id, mode);
+    }
     setStatusMsg(
       mode === 'employer-only'
         ? 'Ranking your employer plans for your household...'
@@ -104,6 +166,8 @@ function CompareInner() {
       }
 
       setResult(data);
+      setResultFromCache(false);
+      writeCache(user.id, mode, data);
       setComparing(false);
       setStatusMsg('');
     } catch (e: any) {
@@ -111,12 +175,12 @@ function CompareInner() {
       setComparing(false);
       setStatusMsg('');
     }
-  }
+  }, [user, mode]);
 
-  // Auto-run comparison once user is loaded
+  // Auto-run comparison once user is loaded — but ONLY if we don't have a cached result already
   useEffect(() => {
     if (user && !result && !comparing && !errorMsg) {
-      runComparison();
+      runComparison(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -165,6 +229,18 @@ function CompareInner() {
               </Link>
             </div>
           </div>
+          {/* Re-run button — only shown when we have a result */}
+          {result && !comparing && (
+            <div className="dash-header-actions">
+              <button
+                onClick={() => runComparison(true)}
+                className="btn-sm btn-ghost-sm"
+                title="Re-run with the latest household data"
+              >
+                ↻ Re-run
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ===== HOUSEHOLD-AWARE BANNER ===== */}
@@ -175,6 +251,25 @@ function CompareInner() {
             utilizationLevel={result.utilization_level}
             expectedSpend={result.expected_annual_medical_spend}
           />
+        )}
+
+        {/* Cached result hint */}
+        {resultFromCache && !comparing && (
+          <div style={{
+            marginBottom: '1rem',
+            padding: '0.5rem 0.85rem',
+            background: '#faf7f2',
+            border: '1px solid #eef1f4',
+            borderRadius: '6px',
+            fontSize: '0.75rem',
+            color: '#6b7785',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+          }}>
+            <span>💾</span>
+            <span>Showing cached result. If you updated your household, click <strong style={{ color: '#1e3a5f' }}>↻ Re-run</strong> for fresh recommendations.</span>
+          </div>
         )}
 
         {/* ===== LOADING STATE ===== */}
@@ -211,7 +306,7 @@ function CompareInner() {
                   <button className="btn-sm btn-accent">Run Find Plans first →</button>
                 </Link>
               ) : (
-                <button onClick={runComparison} className="btn-sm btn-accent">Try again</button>
+                <button onClick={() => runComparison(true)} className="btn-sm btn-accent">Try again</button>
               )}
             </div>
           </div>
@@ -345,7 +440,6 @@ function RankedEmployerPlanCard({ plan }: { plan: RankedEmployerPlan }) {
           <p style={{ fontSize: '0.9rem', color: '#3a4d68', margin: '0 0 0.75rem 0', lineHeight: 1.5 }}>{plan.summary}</p>
         </div>
         <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '160px' }}>
-          {/* DUAL RANK: AI score + cost rank */}
           <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginBottom: '0.75rem' }}>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem' }}>Match score</div>
@@ -378,7 +472,6 @@ function RankedEmployerPlanCard({ plan }: { plan: RankedEmployerPlan }) {
         </div>
       </div>
 
-      {/* ANNUAL COST PROJECTIONS — headline metrics */}
       {plan.expected_annual_cost != null && plan.worst_case_annual_cost != null && (
         <div style={{
           display: 'grid',
@@ -402,7 +495,6 @@ function RankedEmployerPlanCard({ plan }: { plan: RankedEmployerPlan }) {
         </div>
       )}
 
-      {/* DETAIL ROW: Deductible, OOP max, copays */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',

@@ -34,6 +34,18 @@ type Recommendation = {
   plans: RankedPlan[];
 };
 
+type HouseholdSummary = {
+  id: string;
+  zip_code: string | null;
+  household_size: number | null;
+  annual_income: number | null;
+  coverage_scope: string | null;
+  conditions: string[] | null;
+  isComplete: boolean;
+  memberCount: number;
+  membersWithAge: number;
+};
+
 export default function ProfilePage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -41,6 +53,7 @@ export default function ProfilePage() {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [claimsLoading, setClaimsLoading] = useState(false);
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
+  const [household, setHousehold] = useState<HouseholdSummary | null>(null);
 
   useEffect(() => {
     async function getUser() {
@@ -84,12 +97,50 @@ export default function ProfilePage() {
     }
   }, [user]);
 
+  const fetchHousehold = useCallback(async () => {
+    if (!user) return;
+    const { data: hh } = await supabase
+      .from('households')
+      .select('id, zip_code, household_size, annual_income, coverage_scope, conditions')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (!hh) {
+      setHousehold(null);
+      return;
+    }
+
+    const { data: memberRows } = await supabase
+      .from('household_members')
+      .select('age')
+      .eq('household_id', hh.id);
+
+    const memberCount = memberRows?.length ?? 0;
+    const membersWithAge = (memberRows || []).filter((m: any) => m.age != null).length;
+    const expectedSize = hh.household_size ?? 1;
+
+    const isComplete =
+      !!hh.zip_code &&
+      !!hh.annual_income &&
+      !!hh.household_size &&
+      memberCount >= expectedSize &&
+      membersWithAge >= expectedSize;
+
+    setHousehold({
+      ...hh,
+      isComplete,
+      memberCount,
+      membersWithAge,
+    });
+  }, [user]);
+
   useEffect(() => {
     if (user) {
       fetchClaims();
       fetchRecommendation();
+      fetchHousehold();
     }
-  }, [user, fetchClaims, fetchRecommendation]);
+  }, [user, fetchClaims, fetchRecommendation, fetchHousehold]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -168,6 +219,15 @@ export default function ProfilePage() {
       ? Math.max(0, Math.round(topPlan.premium - topPlan.premiumWithCredit))
       : null;
   const hasRecommendation = !!recommendation;
+  const householdComplete = household?.isComplete ?? false;
+
+  // Coverage scope pretty-print
+  const coverageScopeLabel: Record<string, string> = {
+    individual: 'Just you',
+    employee_plus_spouse: 'You + spouse',
+    employee_plus_children: 'You + child(ren)',
+    family: 'Whole family',
+  };
 
   return (
     <div className="dash-layout">
@@ -191,6 +251,7 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        {/* Welcome banner — priority order: rec > complete household > claims > new user */}
         {hasRecommendation ? (
           <div className="welcome-banner" style={{ background: '#ebf3ea', borderColor: '#7a9b76' }}>
             <div className="welcome-banner-icon">🎯</div>
@@ -206,15 +267,28 @@ export default function ProfilePage() {
               </div>
             </div>
           </div>
+        ) : householdComplete ? (
+          <div className="welcome-banner" style={{ background: '#ebf3ea', borderColor: '#7a9b76' }}>
+            <div className="welcome-banner-icon">✨</div>
+            <div style={{ flex: 1 }}>
+              <div className="welcome-banner-title">Household is ready</div>
+              <div className="welcome-banner-desc">
+                You&apos;re set up to find Marketplace plans.{' '}
+                <Link href="/find-plans" style={{ color: '#5a7857', fontWeight: 600 }}>
+                  Get my recommendations →
+                </Link>
+              </div>
+            </div>
+          </div>
         ) : claimsCount === 0 ? (
           <div className="welcome-banner">
             <div className="welcome-banner-icon">✨</div>
             <div style={{ flex: 1 }}>
               <div className="welcome-banner-title">You&apos;re all set up!</div>
               <div className="welcome-banner-desc">
-                Run your first plan recommendation from{' '}
-                <Link href="/find-plans" style={{ color: '#1e3a5f', fontWeight: 600 }}>Find Plans</Link>
-                {' '}or upload your claims below to get started.
+                Start by setting up your{' '}
+                <Link href="/household" style={{ color: '#1e3a5f', fontWeight: 600 }}>Household</Link>
+                {' '}or upload your claims below.
               </div>
             </div>
           </div>
@@ -225,7 +299,7 @@ export default function ProfilePage() {
               <div className="welcome-banner-title">{claimsCount} claim{claimsCount !== 1 ? 's' : ''} uploaded</div>
               <div className="welcome-banner-desc">
                 Your data is securely stored.{' '}
-                <Link href="/find-plans" style={{ color: '#5a7857', fontWeight: 600 }}>Get your plan recommendations →</Link>
+                <Link href="/household" style={{ color: '#5a7857', fontWeight: 600 }}>Set up your Household to get recommendations →</Link>
               </div>
             </div>
           </div>
@@ -308,6 +382,67 @@ export default function ProfilePage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            {/* Household Status card — new in P7 */}
+            <div className="dash-card">
+              <div className="dash-card-header">
+                <div className="dash-card-title">Household</div>
+                <Link href="/household" style={{ fontSize: '0.8rem', color: '#7a9b76', textDecoration: 'none', fontWeight: 600 }}>
+                  {householdComplete ? 'Edit →' : 'Set up →'}
+                </Link>
+              </div>
+              {!household ? (
+                <div className="empty-state" style={{ padding: '1.25rem 0' }}>
+                  <div className="empty-state-icon">👨‍👩‍👧</div>
+                  <div className="empty-state-title">No household set up yet</div>
+                  <div className="empty-state-desc" style={{ marginBottom: '1rem' }}>
+                    Tell us who you&apos;re covering — we use this for every recommendation.
+                  </div>
+                  <Link href="/household" style={{ textDecoration: 'none' }}>
+                    <button className="btn-sm btn-accent">Set up Household →</button>
+                  </Link>
+                </div>
+              ) : householdComplete ? (
+                <div className="account-list">
+                  <div className="account-row">
+                    <div className="account-label">Coverage</div>
+                    <div className="account-value">
+                      {coverageScopeLabel[household.coverage_scope || 'individual'] || household.coverage_scope}
+                    </div>
+                  </div>
+                  <div className="account-row">
+                    <div className="account-label">ZIP Code</div>
+                    <div className="account-value">{household.zip_code}</div>
+                  </div>
+                  <div className="account-row">
+                    <div className="account-label">Members</div>
+                    <div className="account-value">{household.household_size}</div>
+                  </div>
+                  <div className="account-row">
+                    <div className="account-label">Income</div>
+                    <div className="account-value">${(household.annual_income ?? 0).toLocaleString()}</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '1rem 0' }}>
+                  <div style={{
+                    backgroundColor: '#fff8e6',
+                    borderLeft: '3px solid #d4a83c',
+                    borderRadius: '6px',
+                    padding: '0.75rem 1rem',
+                    fontSize: '0.875rem',
+                    color: '#3a4d68',
+                    marginBottom: '1rem',
+                  }}>
+                    <strong style={{ color: '#1e3a5f' }}>Almost there!</strong>{' '}
+                    Your household is missing some details. Finish it to unlock Marketplace recommendations.
+                  </div>
+                  <Link href="/household" style={{ textDecoration: 'none' }}>
+                    <button className="btn-sm btn-accent">Complete Household →</button>
+                  </Link>
+                </div>
+              )}
+            </div>
+
             <div className="dash-card">
               <div className="dash-card-header">
                 <div className="dash-card-title">Account</div>
@@ -344,18 +479,24 @@ export default function ProfilePage() {
                     <div className="checklist-desc">Done — welcome to Clarity Health</div>
                   </div>
                 </div>
+                <div className={`checklist-item ${householdComplete ? 'done' : ''}`}>
+                  <div className={`checklist-check ${householdComplete ? '' : 'empty'}`}>{householdComplete ? '✓' : '2'}</div>
+                  <div>
+                    <div className="checklist-title">Set up your Household</div>
+                    <div className="checklist-desc">
+                      {householdComplete
+                        ? `${coverageScopeLabel[household?.coverage_scope || 'individual'] || 'Set'} · ${household?.household_size} member${household?.household_size === 1 ? '' : 's'}`
+                        : household
+                          ? 'Almost done — finish a few more fields'
+                          : 'ZIP, household size, members, conditions'}
+                    </div>
+                  </div>
+                </div>
                 <div className={`checklist-item ${claimsCount > 0 ? 'done' : ''}`}>
-                  <div className={`checklist-check ${claimsCount > 0 ? '' : 'empty'}`}>{claimsCount > 0 ? '✓' : '2'}</div>
+                  <div className={`checklist-check ${claimsCount > 0 ? '' : 'empty'}`}>{claimsCount > 0 ? '✓' : '3'}</div>
                   <div>
                     <div className="checklist-title">Upload your claims</div>
                     <div className="checklist-desc">{claimsCount > 0 ? `${claimsCount} file${claimsCount !== 1 ? 's' : ''} uploaded` : 'Drag & drop above to get started'}</div>
-                  </div>
-                </div>
-                <div className="checklist-item">
-                  <div className="checklist-check empty">3</div>
-                  <div>
-                    <div className="checklist-title">Set your preferences</div>
-                    <div className="checklist-desc">Conditions, family size, budget</div>
                   </div>
                 </div>
                 <div className={`checklist-item ${hasRecommendation ? 'done' : ''}`}>
