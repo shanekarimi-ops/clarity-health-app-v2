@@ -12,9 +12,6 @@ type RankedEmployerPlan = {
   id: string;
   plan_name: string;
   plan_type: string | null;
-  monthly_premium_employee: number | null;
-  deductible_individual: number | null;
-  out_of_pocket_max_individual: number | null;
   primary_care_copay: string | null;
   specialist_copay: string | null;
   hsa_eligible: boolean;
@@ -25,6 +22,16 @@ type RankedEmployerPlan = {
   pros: string[];
   cons: string[];
   claimsInsight: string | null;
+  // P5 additions: tier-resolved values + projections
+  tier_label: 'Single coverage' | 'Family coverage';
+  tier_premium: number | null;
+  tier_deductible: number | null;
+  tier_oop_max: number | null;
+  annual_premium: number | null;
+  expected_annual_cost: number | null;
+  worst_case_annual_cost: number | null;
+  cost_rank: number;
+  utilization_level: 'low' | 'moderate' | 'high';
 };
 
 type Verdict = {
@@ -35,8 +42,8 @@ type Verdict = {
   summary: string;
   tradeoffs: string[];
   annualCostComparison: {
-    employerBestPlan: { id: string; name: string; estimatedAnnualCost: number };
-    marketplaceBestPlan: { id: string; name: string; estimatedAnnualCost: number };
+    employerBestPlan: { id: string; name: string; estimatedAnnualCost: number; worstCaseAnnualCost?: number };
+    marketplaceBestPlan: { id: string; name: string; estimatedAnnualCost: number; worstCaseAnnualCost?: number };
   };
   claimsInsight: string | null;
 };
@@ -75,7 +82,7 @@ function CompareInner() {
     setResult(null);
     setStatusMsg(
       mode === 'employer-only'
-        ? 'Ranking your employer plans against each other...'
+        ? 'Ranking your employer plans for your household...'
         : 'Comparing your employer plan against the federal Marketplace...'
     );
 
@@ -160,6 +167,16 @@ function CompareInner() {
           </div>
         </div>
 
+        {/* ===== HOUSEHOLD-AWARE BANNER ===== */}
+        {result && (
+          <HouseholdContextBanner
+            coverageScopeLabel={result.coverage_scope_label}
+            householdSize={result.household_size}
+            utilizationLevel={result.utilization_level}
+            expectedSpend={result.expected_annual_medical_spend}
+          />
+        )}
+
         {/* ===== LOADING STATE ===== */}
         {comparing && (
           <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
@@ -242,6 +259,55 @@ function CompareInner() {
   );
 }
 
+function HouseholdContextBanner({ coverageScopeLabel, householdSize, utilizationLevel, expectedSpend }: {
+  coverageScopeLabel: string;
+  householdSize: number;
+  utilizationLevel: 'low' | 'moderate' | 'high';
+  expectedSpend: number;
+}) {
+  const utilColor = utilizationLevel === 'high' ? '#d4863c' : utilizationLevel === 'moderate' ? '#5b7a99' : '#7a9b76';
+  const utilLabel = utilizationLevel === 'high' ? 'High usage' : utilizationLevel === 'moderate' ? 'Moderate usage' : 'Low usage';
+  return (
+    <div
+      style={{
+        marginBottom: '1.5rem',
+        padding: '0.85rem 1.1rem',
+        backgroundColor: '#ebf3ea',
+        borderLeft: '3px solid #7a9b76',
+        borderRadius: '6px',
+        fontSize: '0.875rem',
+        color: '#3a4d68',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '0.75rem',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <strong style={{ color: '#1e3a5f' }}>Coverage:</strong> {coverageScopeLabel}
+        </div>
+        <div style={{ width: '1px', height: '14px', backgroundColor: '#c7d9c5' }} />
+        <div>
+          <strong style={{ color: '#1e3a5f' }}>Household:</strong> {householdSize} {householdSize === 1 ? 'person' : 'people'}
+        </div>
+        <div style={{ width: '1px', height: '14px', backgroundColor: '#c7d9c5' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <strong style={{ color: '#1e3a5f' }}>Expected use:</strong>
+          <span style={{ padding: '0.1rem 0.5rem', backgroundColor: utilColor, color: '#fff', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600 }}>
+            {utilLabel}
+          </span>
+          <span style={{ fontSize: '0.8rem', color: '#6b7785' }}>(~${expectedSpend.toLocaleString()}/yr in medical spend)</span>
+        </div>
+      </div>
+      <Link href="/household" style={{ color: '#7a9b76', textDecoration: 'underline', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+        Edit household
+      </Link>
+    </div>
+  );
+}
+
 function RankedEmployerPlanCard({ plan }: { plan: RankedEmployerPlan }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -272,29 +338,71 @@ function RankedEmployerPlanCard({ plan }: { plan: RankedEmployerPlan }) {
             {plan.hsa_eligible && (
               <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem', borderRadius: '4px', backgroundColor: '#ebf3ea', color: '#5a7857', fontWeight: 600 }}>HSA</span>
             )}
+            <span style={{ fontSize: '0.65rem', padding: '0.15rem 0.5rem', borderRadius: '4px', backgroundColor: '#fff8e6', color: '#806c1e', fontWeight: 600 }}>
+              {plan.tier_label}
+            </span>
           </div>
           <p style={{ fontSize: '0.9rem', color: '#3a4d68', margin: '0 0 0.75rem 0', lineHeight: 1.5 }}>{plan.summary}</p>
         </div>
-        <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '140px' }}>
-          <div style={{ fontSize: '0.7rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>Match Score</div>
-          <div style={{
-            fontSize: '1.75rem',
-            fontWeight: 700,
-            color: plan.matchScore >= 80 ? '#7a9b76' : plan.matchScore >= 60 ? '#5b7a99' : '#9ca3af',
-            lineHeight: 1,
-            marginBottom: '0.75rem',
-          }}>{plan.matchScore}</div>
-          {plan.monthly_premium_employee != null && (
+        <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '160px' }}>
+          {/* DUAL RANK: AI score + cost rank */}
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginBottom: '0.75rem' }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem' }}>Match score</div>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: 700,
+                color: plan.matchScore >= 80 ? '#7a9b76' : plan.matchScore >= 60 ? '#5b7a99' : '#9ca3af',
+                lineHeight: 1,
+              }}>{plan.matchScore}</div>
+            </div>
+            <div style={{ width: '1px', backgroundColor: '#eef1f4' }} />
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem' }}>Cost rank</div>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: 700,
+                color: plan.cost_rank === 1 ? '#7a9b76' : '#5b7a99',
+                lineHeight: 1,
+              }}>#{plan.cost_rank}</div>
+            </div>
+          </div>
+          {plan.tier_premium != null && (
             <>
               <div style={{ fontSize: '0.7rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px' }}>You pay</div>
               <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#1e3a5f' }}>
-                ${Math.round(plan.monthly_premium_employee).toLocaleString()}<span style={{ fontSize: '0.7rem', fontWeight: 400, color: '#6b7785' }}> /mo</span>
+                ${Math.round(plan.tier_premium).toLocaleString()}<span style={{ fontSize: '0.7rem', fontWeight: 400, color: '#6b7785' }}> /mo</span>
               </div>
             </>
           )}
         </div>
       </div>
 
+      {/* ANNUAL COST PROJECTIONS — headline metrics */}
+      {plan.expected_annual_cost != null && plan.worst_case_annual_cost != null && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: '0.75rem',
+          marginTop: '1rem',
+          paddingTop: '1rem',
+          borderTop: '1px solid #eef1f4',
+        }}>
+          <ProjectionStat
+            label="Expected annual cost"
+            value={`$${Math.round(plan.expected_annual_cost).toLocaleString()}`}
+            sublabel="Premium + typical OOP"
+            highlighted
+          />
+          <ProjectionStat
+            label="Worst-case annual cost"
+            value={`$${Math.round(plan.worst_case_annual_cost).toLocaleString()}`}
+            sublabel="Premium + OOP max hit"
+          />
+        </div>
+      )}
+
+      {/* DETAIL ROW: Deductible, OOP max, copays */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
@@ -303,8 +411,8 @@ function RankedEmployerPlanCard({ plan }: { plan: RankedEmployerPlan }) {
         paddingTop: '1rem',
         borderTop: '1px solid #eef1f4',
       }}>
-        <SmallStat label="Deductible" value={plan.deductible_individual != null ? `$${plan.deductible_individual.toLocaleString()}` : '—'} />
-        <SmallStat label="Out-of-pocket max" value={plan.out_of_pocket_max_individual != null ? `$${plan.out_of_pocket_max_individual.toLocaleString()}` : '—'} />
+        <SmallStat label={`Deductible (${plan.tier_label === 'Family coverage' ? 'family' : 'indv'})`} value={plan.tier_deductible != null ? `$${plan.tier_deductible.toLocaleString()}` : '—'} />
+        <SmallStat label={`OOP max (${plan.tier_label === 'Family coverage' ? 'family' : 'indv'})`} value={plan.tier_oop_max != null ? `$${plan.tier_oop_max.toLocaleString()}` : '—'} />
         <SmallStat label="Primary care" value={plan.primary_care_copay || '—'} />
         <SmallStat label="Specialist" value={plan.specialist_copay || '—'} />
       </div>
@@ -374,7 +482,7 @@ function VsMarketplaceResults({ result }: { result: any }) {
           textAlign: 'center',
         }}>
           <div style={{ fontSize: '0.75rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.4rem' }}>
-            Better deal for you
+            Better deal for your household
           </div>
           <div style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.4rem', color: winnerColor, fontWeight: 700, marginBottom: '0.25rem' }}>
             {winnerLabel}
@@ -396,25 +504,41 @@ function VsMarketplaceResults({ result }: { result: any }) {
             <div style={{ fontSize: '0.7rem', color: '#7a9b76', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.4rem' }}>
               🏢 Best employer plan
             </div>
-            <div style={{ fontSize: '0.95rem', color: '#1e3a5f', fontWeight: 600, marginBottom: '0.25rem' }}>
+            <div style={{ fontSize: '0.95rem', color: '#1e3a5f', fontWeight: 600, marginBottom: '0.5rem' }}>
               {verdict.annualCostComparison.employerBestPlan.name}
             </div>
-            <div style={{ fontSize: '0.8rem', color: '#6b7785' }}>Estimated annual cost</div>
-            <div style={{ fontSize: '1.5rem', color: '#1e3a5f', fontWeight: 700 }}>
+            <div style={{ fontSize: '0.75rem', color: '#6b7785' }}>Expected annual cost</div>
+            <div style={{ fontSize: '1.3rem', color: '#1e3a5f', fontWeight: 700, marginBottom: '0.4rem' }}>
               ${Math.round(verdict.annualCostComparison.employerBestPlan.estimatedAnnualCost).toLocaleString()}
             </div>
+            {verdict.annualCostComparison.employerBestPlan.worstCaseAnnualCost != null && (
+              <>
+                <div style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Worst case</div>
+                <div style={{ fontSize: '0.95rem', color: '#6b7785', fontWeight: 600 }}>
+                  ${Math.round(verdict.annualCostComparison.employerBestPlan.worstCaseAnnualCost).toLocaleString()}
+                </div>
+              </>
+            )}
           </div>
           <div style={{ padding: '1rem 1.25rem', background: verdict.winnerSource === 'marketplace' ? '#f0f4f7' : '#fff', border: `1px solid ${verdict.winnerSource === 'marketplace' ? '#c5d3df' : '#eef1f4'}`, borderRadius: '8px' }}>
             <div style={{ fontSize: '0.7rem', color: '#5b7a99', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.4rem' }}>
               🌐 Best Marketplace plan
             </div>
-            <div style={{ fontSize: '0.95rem', color: '#1e3a5f', fontWeight: 600, marginBottom: '0.25rem' }}>
+            <div style={{ fontSize: '0.95rem', color: '#1e3a5f', fontWeight: 600, marginBottom: '0.5rem' }}>
               {verdict.annualCostComparison.marketplaceBestPlan.name}
             </div>
-            <div style={{ fontSize: '0.8rem', color: '#6b7785' }}>Estimated annual cost</div>
-            <div style={{ fontSize: '1.5rem', color: '#1e3a5f', fontWeight: 700 }}>
+            <div style={{ fontSize: '0.75rem', color: '#6b7785' }}>Expected annual cost</div>
+            <div style={{ fontSize: '1.3rem', color: '#1e3a5f', fontWeight: 700, marginBottom: '0.4rem' }}>
               ${Math.round(verdict.annualCostComparison.marketplaceBestPlan.estimatedAnnualCost).toLocaleString()}
             </div>
+            {verdict.annualCostComparison.marketplaceBestPlan.worstCaseAnnualCost != null && (
+              <>
+                <div style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Worst case</div>
+                <div style={{ fontSize: '0.95rem', color: '#6b7785', fontWeight: 600 }}>
+                  ${Math.round(verdict.annualCostComparison.marketplaceBestPlan.worstCaseAnnualCost).toLocaleString()}
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -452,6 +576,27 @@ function VsMarketplaceResults({ result }: { result: any }) {
         </div>
       )}
     </>
+  );
+}
+
+function ProjectionStat({ label, value, sublabel, highlighted }: { label: string; value: string; sublabel: string; highlighted?: boolean }) {
+  return (
+    <div style={{
+      padding: '0.85rem 1rem',
+      backgroundColor: highlighted ? '#ebf3ea' : '#fafbfc',
+      border: `1px solid ${highlighted ? '#c7d9c5' : '#eef1f4'}`,
+      borderRadius: '8px',
+    }}>
+      <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600, marginBottom: '0.25rem' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#1e3a5f', lineHeight: 1.1 }}>
+        {value}
+      </div>
+      <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '0.2rem' }}>
+        {sublabel}
+      </div>
+    </div>
   );
 }
 
