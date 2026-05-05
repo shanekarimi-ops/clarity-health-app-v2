@@ -23,6 +23,11 @@ type RankedPlan = {
   pros: string[];
   cons: string[];
   claimsInsight?: string | null;
+  // P6 additions
+  annualPremium?: number | null;
+  expectedAnnualCost?: number | null;
+  worstCaseAnnualCost?: number | null;
+  costRank?: number | null;
 };
 
 type Recommendation = {
@@ -36,6 +41,10 @@ type Recommendation = {
   total_plans_available: number;
   overall_advice: string;
   plans: RankedPlan[];
+  // P6 additions
+  coverage_scope?: string | null;
+  utilization_level?: 'low' | 'moderate' | 'high' | null;
+  expected_annual_medical_spend?: number | null;
 };
 
 export default function MyPlansPage() {
@@ -54,7 +63,6 @@ export default function MyPlansPage() {
       }
       setUser(user);
 
-      // Load most recent recommendation
       const { data: recs } = await supabase
         .from('recommendations')
         .select('*')
@@ -88,10 +96,14 @@ export default function MyPlansPage() {
   const lastName = user?.user_metadata?.last_name || '';
   const role = user?.user_metadata?.role || 'Individual';
 
-  // Derive whether any of the ranked plans have claims insights (means claims were used)
   const hasClaimsInsights = !!recommendation?.plans?.some(
     (p) => p.claimsInsight && p.claimsInsight.trim().length > 0
   );
+
+  // Has the new P6 projection data on at least the first plan?
+  const hasProjections =
+    !!recommendation?.plans?.[0]?.expectedAnnualCost &&
+    !!recommendation?.plans?.[0]?.worstCaseAnnualCost;
 
   return (
     <div className="dash-layout">
@@ -130,6 +142,16 @@ export default function MyPlansPage() {
         ) : (
           /* ===== RESULTS VIEW ===== */
           <>
+            {/* P6: Household-aware banner — only shown for newer recs that have the data */}
+            {recommendation.coverage_scope && recommendation.utilization_level && (
+              <HouseholdContextBanner
+                coverageScope={recommendation.coverage_scope}
+                householdSize={recommendation.household_size}
+                utilizationLevel={recommendation.utilization_level}
+                expectedSpend={recommendation.expected_annual_medical_spend ?? 0}
+              />
+            )}
+
             {/* Summary card */}
             <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
               <div className="dash-card-header">
@@ -146,7 +168,6 @@ export default function MyPlansPage() {
                 </Link>
               </div>
 
-              {/* Claims-aware ranking banner — shown only when claims insights are present */}
               {hasClaimsInsights && (
                 <div style={{
                   background: '#ebf3ea',
@@ -191,6 +212,8 @@ export default function MyPlansPage() {
             {recommendation.plans.map((plan) => {
               const isExpanded = expandedPlanId === plan.id;
               const planHasClaimsInsight = plan.claimsInsight && plan.claimsInsight.trim().length > 0;
+              const planHasProjections =
+                plan.expectedAnnualCost != null && plan.worstCaseAnnualCost != null;
               return (
                 <div key={plan.id} className="dash-card" style={{ marginBottom: '1rem' }}>
                   <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -241,19 +264,46 @@ export default function MyPlansPage() {
                     </div>
 
                     {/* Match score + price (right side) */}
-                    <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '140px' }}>
-                      <div style={{ fontSize: '0.7rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>
-                        Match Score
-                      </div>
-                      <div style={{
-                        fontSize: '1.75rem',
-                        fontWeight: 700,
-                        color: plan.matchScore >= 80 ? '#7a9b76' : plan.matchScore >= 60 ? '#5b7a99' : '#9ca3af',
-                        lineHeight: 1,
-                        marginBottom: '0.75rem',
-                      }}>
-                        {plan.matchScore}
-                      </div>
+                    <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '160px' }}>
+                      {/* P6: Dual rank if cost rank exists */}
+                      {plan.costRank ? (
+                        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginBottom: '0.75rem' }}>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem' }}>Match score</div>
+                            <div style={{
+                              fontSize: '1.5rem',
+                              fontWeight: 700,
+                              color: plan.matchScore >= 80 ? '#7a9b76' : plan.matchScore >= 60 ? '#5b7a99' : '#9ca3af',
+                              lineHeight: 1,
+                            }}>{plan.matchScore}</div>
+                          </div>
+                          <div style={{ width: '1px', backgroundColor: '#eef1f4' }} />
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem' }}>Cost rank</div>
+                            <div style={{
+                              fontSize: '1.5rem',
+                              fontWeight: 700,
+                              color: plan.costRank === 1 ? '#7a9b76' : '#5b7a99',
+                              lineHeight: 1,
+                            }}>#{plan.costRank}</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: '0.7rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>
+                            Match Score
+                          </div>
+                          <div style={{
+                            fontSize: '1.75rem',
+                            fontWeight: 700,
+                            color: plan.matchScore >= 80 ? '#7a9b76' : plan.matchScore >= 60 ? '#5b7a99' : '#9ca3af',
+                            lineHeight: 1,
+                            marginBottom: '0.75rem',
+                          }}>
+                            {plan.matchScore}
+                          </div>
+                        </>
+                      )}
                       <div style={{ fontSize: '0.7rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                         Monthly
                       </div>
@@ -267,6 +317,30 @@ export default function MyPlansPage() {
                       )}
                     </div>
                   </div>
+
+                  {/* P6: Annual cost projections — headline metrics */}
+                  {planHasProjections && (
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                      gap: '0.75rem',
+                      marginTop: '1rem',
+                      paddingTop: '1rem',
+                      borderTop: '1px solid #eef1f4',
+                    }}>
+                      <ProjectionStat
+                        label="Expected annual cost"
+                        value={`$${Math.round(plan.expectedAnnualCost!).toLocaleString()}`}
+                        sublabel="Premium + typical OOP"
+                        highlighted
+                      />
+                      <ProjectionStat
+                        label="Worst-case annual cost"
+                        value={`$${Math.round(plan.worstCaseAnnualCost!).toLocaleString()}`}
+                        sublabel="Premium + OOP max hit"
+                      />
+                    </div>
+                  )}
 
                   {/* Quick stats row */}
                   <div style={{
@@ -325,7 +399,6 @@ export default function MyPlansPage() {
                         </div>
                       </div>
 
-                      {/* Per-plan claims insight */}
                       {planHasClaimsInsight && (
                         <div style={{
                           marginTop: '1rem',
@@ -361,6 +434,85 @@ export default function MyPlansPage() {
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+function HouseholdContextBanner({ coverageScope, householdSize, utilizationLevel, expectedSpend }: {
+  coverageScope: string;
+  householdSize: number;
+  utilizationLevel: 'low' | 'moderate' | 'high';
+  expectedSpend: number;
+}) {
+  const utilColor = utilizationLevel === 'high' ? '#d4863c' : utilizationLevel === 'moderate' ? '#5b7a99' : '#7a9b76';
+  const utilLabel = utilizationLevel === 'high' ? 'High usage' : utilizationLevel === 'moderate' ? 'Moderate usage' : 'Low usage';
+  const scopeLabelMap: Record<string, string> = {
+    individual: 'Just you (employee-only)',
+    employee_plus_spouse: 'You + spouse',
+    employee_plus_children: 'You + child(ren)',
+    family: 'Whole family',
+  };
+  const scopeLabel = scopeLabelMap[coverageScope] || coverageScope;
+  return (
+    <div
+      style={{
+        marginBottom: '1.5rem',
+        padding: '0.85rem 1.1rem',
+        backgroundColor: '#ebf3ea',
+        borderLeft: '3px solid #7a9b76',
+        borderRadius: '6px',
+        fontSize: '0.875rem',
+        color: '#3a4d68',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '0.75rem',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <strong style={{ color: '#1e3a5f' }}>Coverage:</strong> {scopeLabel}
+        </div>
+        <div style={{ width: '1px', height: '14px', backgroundColor: '#c7d9c5' }} />
+        <div>
+          <strong style={{ color: '#1e3a5f' }}>Household:</strong> {householdSize} {householdSize === 1 ? 'person' : 'people'}
+        </div>
+        <div style={{ width: '1px', height: '14px', backgroundColor: '#c7d9c5' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <strong style={{ color: '#1e3a5f' }}>Expected use:</strong>
+          <span style={{ padding: '0.1rem 0.5rem', backgroundColor: utilColor, color: '#fff', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600 }}>
+            {utilLabel}
+          </span>
+          {expectedSpend > 0 && (
+            <span style={{ fontSize: '0.8rem', color: '#6b7785' }}>(~${expectedSpend.toLocaleString()}/yr in medical spend)</span>
+          )}
+        </div>
+      </div>
+      <Link href="/household" style={{ color: '#7a9b76', textDecoration: 'underline', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+        Edit household
+      </Link>
+    </div>
+  );
+}
+
+function ProjectionStat({ label, value, sublabel, highlighted }: { label: string; value: string; sublabel: string; highlighted?: boolean }) {
+  return (
+    <div style={{
+      padding: '0.85rem 1rem',
+      backgroundColor: highlighted ? '#ebf3ea' : '#fafbfc',
+      border: `1px solid ${highlighted ? '#c7d9c5' : '#eef1f4'}`,
+      borderRadius: '8px',
+    }}>
+      <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600, marginBottom: '0.25rem' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#1e3a5f', lineHeight: 1.1 }}>
+        {value}
+      </div>
+      <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '0.2rem' }}>
+        {sublabel}
+      </div>
     </div>
   );
 }

@@ -20,6 +20,10 @@ type RankedPlan = {
   rank: number;
   matchScore: number;
   summary: string;
+  // P6 additions
+  expectedAnnualCost?: number | null;
+  worstCaseAnnualCost?: number | null;
+  costRank?: number | null;
 };
 
 type Recommendation = {
@@ -28,7 +32,12 @@ type Recommendation = {
   zip_code: string;
   county_name: string;
   state: string;
+  household_size: number;
   plans: RankedPlan[];
+  // P6 additions
+  coverage_scope?: string | null;
+  utilization_level?: 'low' | 'moderate' | 'high' | null;
+  expected_annual_medical_spend?: number | null;
 };
 
 export default function ComparePlansPage() {
@@ -82,29 +91,52 @@ export default function ComparePlansPage() {
   // Get top 3 plans for the comparison view
   const topPlans = recommendation?.plans?.slice(0, 3) || [];
 
-  const rows = [
-    { label: 'Issuer', render: (p: RankedPlan) => p.issuer || '—' },
-    { label: 'Plan Type', render: (p: RankedPlan) => p.type || '—' },
-    { label: 'Metal Level', render: (p: RankedPlan) => p.metalLevel || '—' },
-    {
-      label: 'Monthly Premium',
-      render: (p: RankedPlan) => `$${Math.round(p.premiumWithCredit ?? p.premium).toLocaleString()}/mo`,
-    },
-    {
-      label: 'Premium (no subsidy)',
-      render: (p: RankedPlan) => `$${Math.round(p.premium).toLocaleString()}/mo`,
-    },
-    {
-      label: 'Deductible',
-      render: (p: RankedPlan) => (p.deductible != null ? `$${p.deductible.toLocaleString()}` : '—'),
-    },
-    {
-      label: 'Max Out-of-Pocket',
-      render: (p: RankedPlan) => (p.maxOutOfPocket != null ? `$${p.maxOutOfPocket.toLocaleString()}` : '—'),
-    },
-    { label: 'HSA Eligible', render: (p: RankedPlan) => (p.hsaEligible ? 'Yes' : 'No') },
-    { label: 'Match Score', render: (p: RankedPlan) => `${p.matchScore} / 100` },
-  ];
+  // Has the new P6 projection data on at least the first plan?
+  const hasProjections =
+    !!topPlans[0]?.expectedAnnualCost && !!topPlans[0]?.worstCaseAnnualCost;
+  const hasCostRank = !!topPlans[0]?.costRank;
+
+  // Build the rows array dynamically based on what data is available
+  const rows: Array<{ label: string; render: (p: RankedPlan) => string; highlight?: boolean }> = [];
+
+  // Projections come first (most important if available)
+  if (hasProjections) {
+    rows.push({
+      label: 'Expected annual cost',
+      render: (p) => p.expectedAnnualCost != null ? `$${Math.round(p.expectedAnnualCost).toLocaleString()}` : '—',
+      highlight: true,
+    });
+    rows.push({
+      label: 'Worst-case annual cost',
+      render: (p) => p.worstCaseAnnualCost != null ? `$${Math.round(p.worstCaseAnnualCost).toLocaleString()}` : '—',
+    });
+  }
+
+  rows.push({ label: 'Issuer', render: (p) => p.issuer || '—' });
+  rows.push({ label: 'Plan Type', render: (p) => p.type || '—' });
+  rows.push({ label: 'Metal Level', render: (p) => p.metalLevel || '—' });
+  rows.push({
+    label: 'Monthly Premium',
+    render: (p) => `$${Math.round(p.premiumWithCredit ?? p.premium).toLocaleString()}/mo`,
+  });
+  rows.push({
+    label: 'Premium (no subsidy)',
+    render: (p) => `$${Math.round(p.premium).toLocaleString()}/mo`,
+  });
+  rows.push({
+    label: 'Deductible',
+    render: (p) => (p.deductible != null ? `$${p.deductible.toLocaleString()}` : '—'),
+  });
+  rows.push({
+    label: 'Max Out-of-Pocket',
+    render: (p) => (p.maxOutOfPocket != null ? `$${p.maxOutOfPocket.toLocaleString()}` : '—'),
+  });
+  rows.push({ label: 'HSA Eligible', render: (p) => (p.hsaEligible ? 'Yes' : 'No') });
+  rows.push({ label: 'AI Match Score', render: (p) => `${p.matchScore} / 100` });
+
+  if (hasCostRank) {
+    rows.push({ label: 'Cost rank', render: (p) => p.costRank ? `#${p.costRank}` : '—' });
+  }
 
   return (
     <div className="dash-layout">
@@ -142,6 +174,16 @@ export default function ComparePlansPage() {
           </div>
         ) : (
           <>
+            {/* P6: Household-aware banner */}
+            {recommendation?.coverage_scope && recommendation?.utilization_level && (
+              <HouseholdContextBanner
+                coverageScope={recommendation.coverage_scope}
+                householdSize={recommendation.household_size}
+                utilizationLevel={recommendation.utilization_level}
+                expectedSpend={recommendation.expected_annual_medical_spend ?? 0}
+              />
+            )}
+
             {/* Context banner */}
             <div style={{
               background: '#eef1f4',
@@ -186,7 +228,7 @@ export default function ComparePlansPage() {
                     }}>
                       Feature
                     </th>
-                    {topPlans.map((plan, idx) => {
+                    {topPlans.map((plan) => {
                       const isBestFit = plan.rank === 1;
                       return (
                         <th key={plan.id} style={{
@@ -275,9 +317,10 @@ export default function ComparePlansPage() {
                       <td style={{
                         padding: '14px 16px',
                         borderBottom: '1px solid #eef1f4',
-                        color: '#3a4d68',
+                        color: row.highlight ? '#1e3a5f' : '#3a4d68',
                         fontSize: '14px',
-                        fontWeight: 500,
+                        fontWeight: row.highlight ? 700 : 500,
+                        backgroundColor: row.highlight ? '#ebf3ea' : 'transparent',
                       }}>
                         {row.label}
                       </td>
@@ -288,9 +331,12 @@ export default function ComparePlansPage() {
                             padding: '14px 16px',
                             borderBottom: '1px solid #eef1f4',
                             textAlign: 'center',
-                            background: isBestFit ? '#faf7f2' : 'transparent',
+                            background: row.highlight
+                              ? (isBestFit ? '#dcebda' : '#ebf3ea')
+                              : (isBestFit ? '#faf7f2' : 'transparent'),
                             color: '#1e3a5f',
                             fontSize: '14px',
+                            fontWeight: row.highlight ? 700 : 400,
                           }}>
                             {row.render(plan)}
                           </td>
@@ -346,6 +392,64 @@ export default function ComparePlansPage() {
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+function HouseholdContextBanner({ coverageScope, householdSize, utilizationLevel, expectedSpend }: {
+  coverageScope: string;
+  householdSize: number;
+  utilizationLevel: 'low' | 'moderate' | 'high';
+  expectedSpend: number;
+}) {
+  const utilColor = utilizationLevel === 'high' ? '#d4863c' : utilizationLevel === 'moderate' ? '#5b7a99' : '#7a9b76';
+  const utilLabel = utilizationLevel === 'high' ? 'High usage' : utilizationLevel === 'moderate' ? 'Moderate usage' : 'Low usage';
+  const scopeLabelMap: Record<string, string> = {
+    individual: 'Just you (employee-only)',
+    employee_plus_spouse: 'You + spouse',
+    employee_plus_children: 'You + child(ren)',
+    family: 'Whole family',
+  };
+  const scopeLabel = scopeLabelMap[coverageScope] || coverageScope;
+  return (
+    <div
+      style={{
+        marginBottom: '1.5rem',
+        padding: '0.85rem 1.1rem',
+        backgroundColor: '#ebf3ea',
+        borderLeft: '3px solid #7a9b76',
+        borderRadius: '6px',
+        fontSize: '0.875rem',
+        color: '#3a4d68',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '0.75rem',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <strong style={{ color: '#1e3a5f' }}>Coverage:</strong> {scopeLabel}
+        </div>
+        <div style={{ width: '1px', height: '14px', backgroundColor: '#c7d9c5' }} />
+        <div>
+          <strong style={{ color: '#1e3a5f' }}>Household:</strong> {householdSize} {householdSize === 1 ? 'person' : 'people'}
+        </div>
+        <div style={{ width: '1px', height: '14px', backgroundColor: '#c7d9c5' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <strong style={{ color: '#1e3a5f' }}>Expected use:</strong>
+          <span style={{ padding: '0.1rem 0.5rem', backgroundColor: utilColor, color: '#fff', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600 }}>
+            {utilLabel}
+          </span>
+          {expectedSpend > 0 && (
+            <span style={{ fontSize: '0.8rem', color: '#6b7785' }}>(~${expectedSpend.toLocaleString()}/yr in medical spend)</span>
+          )}
+        </div>
+      </div>
+      <Link href="/household" style={{ color: '#7a9b76', textDecoration: 'underline', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+        Edit household
+      </Link>
     </div>
   );
 }
