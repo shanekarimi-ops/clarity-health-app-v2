@@ -101,6 +101,7 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
   const [aiBadges, setAiBadges] = useState<Set<string>>(new Set());
   const [aiWarnings, setAiWarnings] = useState<string[]>([]);
   const [aiError, setAiError] = useState('');
+  const [usedAi, setUsedAi] = useState(false);
 
   function handleFileSelected(f: File) {
     setError('');
@@ -251,6 +252,7 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
       setMapping(newMapping);
       setAiBadges(changed);
       setAiWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setUsedAi(true);
     } catch (err: any) {
       setAiError(err.message || 'AI mapping failed. You can still map columns manually.');
     } finally {
@@ -346,7 +348,11 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
           file_size_bytes: file.size,
           row_count: rows.length,
           parse_status: 'parsed',
-          column_mapping: mapping,
+          column_mapping: {
+            mapping,
+            used_ai: usedAi,
+            ai_warnings: usedAi ? aiWarnings : [],
+          },
         })
         .select()
         .single();
@@ -412,7 +418,7 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
         .update({ member_count: memberRows.length })
         .eq('id', groupId);
 
-      // 7. Activity log entry
+      // 7. Activity log entries
       await supabase.from('activity_log').insert({
         agency_id: agencyId,
         actor_user_id: userId,
@@ -422,8 +428,25 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
           group_id: groupId,
           row_count: memberRows.length,
           filename: file.name,
+          used_ai: usedAi,
         },
       });
+
+      // Separate event when AI mapping was used (for visibility in activity feed)
+      if (usedAi) {
+        await supabase.from('activity_log').insert({
+          agency_id: agencyId,
+          actor_user_id: userId,
+          event_type: 'census_ai_mapped',
+          event_summary: `AI mapped ${aiBadges.size} column${aiBadges.size === 1 ? '' : 's'} for census upload`,
+          metadata: {
+            group_id: groupId,
+            filename: file.name,
+            ai_changed_columns: Array.from(aiBadges),
+            ai_warnings: aiWarnings,
+          },
+        });
+      }
 
       onSuccess();
     } catch (err: any) {

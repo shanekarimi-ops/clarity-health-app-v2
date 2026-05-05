@@ -633,7 +633,8 @@ export default function GroupDetailPage() {
       renewal_date_cleared: '📅',
       census_uploaded: '📋',
       census_cleared: '🗑️',
-    };
+      census_ai_mapped: '✨',
+  };
     return map[type] || '•';
   }
 
