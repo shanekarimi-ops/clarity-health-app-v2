@@ -147,21 +147,23 @@ export default function BrokerGroupsPage() {
       .select()
       .single();
 
-    if (error) {
-      setAddError(error.message || 'Could not save group.');
-      setSaving(false);
-      return;
-    }
-
-    if (user && inserted) {
-      await supabase.from('activity_log').insert({
-        agency_id: agencyId,
-        actor_user_id: user.id,
-        event_type: 'group_added',
-        event_summary: `Added group: ${inserted.name}`,
-        metadata: { group_id: inserted.id, group_name: inserted.name },
-      });
-    }
+      if (error) {
+        setAddError(error.message || 'Could not save group.');
+        setSaving(false);
+        return;
+      }
+  
+      // Activity log entry
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && inserted) {
+        await supabase.from('activity_log').insert({
+          agency_id: agencyId,
+          actor_user_id: user.id,
+          event_type: 'group_added',
+          event_summary: `Added group: ${inserted.name}`,
+          metadata: { group_id: inserted.id, group_name: inserted.name },
+        });
+      }
 
     setShowAddModal(false);
     setSaving(false);
