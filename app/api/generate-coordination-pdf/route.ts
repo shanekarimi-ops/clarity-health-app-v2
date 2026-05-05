@@ -60,6 +60,12 @@ function fmtMoney(n: number | null | undefined): string {
   return '$' + Math.round(n).toLocaleString();
 }
 
+// Combines style objects, filtering out falsy entries. The `any` cast keeps
+// react-pdf's strict SVGPresentationAttributes types from rejecting our usage.
+function combine(...styleObjs: any[]): any {
+  return styleObjs.filter(Boolean);
+}
+
 const scopeLabelMap: Record<string, string> = {
   individual: 'Just you (employee-only)',
   employee_plus_spouse: 'You + spouse',
@@ -94,7 +100,7 @@ const COLORS = {
   border: '#eef1f4',
 };
 
-const styles = StyleSheet.create({
+const styles: any = StyleSheet.create({
   page: {
     paddingTop: 50,
     paddingBottom: 50,
@@ -403,15 +409,12 @@ function GotchaRowEl({ gotcha }: { gotcha: Gotcha }) {
   return React.createElement(
     View,
     {
-      style: [
-        styles.gotchaRow,
-        { backgroundColor: palette.bg, borderColor: palette.border },
-      ],
+      style: combine(styles.gotchaRow, { backgroundColor: palette.bg, borderColor: palette.border }),
     },
-    React.createElement(Text, { style: [styles.gotchaIcon, { color: palette.color }] }, palette.icon),
+    React.createElement(Text, { style: combine(styles.gotchaIcon, { color: palette.color }) }, palette.icon),
     React.createElement(
       Text,
-      { style: [styles.gotchaText, { color: palette.color }] },
+      { style: combine(styles.gotchaText, { color: palette.color }) },
       React.createElement(Text, { style: { fontFamily: 'Helvetica-Bold' } }, gotcha.tag + ': '),
       gotcha.message
     )
@@ -430,7 +433,7 @@ function ScenarioCardEl({ scenario }: { scenario: Scenario }) {
       Text,
       {
         key: 'rank',
-        style: [styles.rankPill, !isTop && styles.rankPillSecondary],
+        style: combine(styles.rankPill, !isTop ? styles.rankPillSecondary : null),
       },
       '#' + scenario.rank
     )
@@ -448,7 +451,7 @@ function ScenarioCardEl({ scenario }: { scenario: Scenario }) {
 
   return React.createElement(
     View,
-    { wrap: false, style: [styles.scenarioCard, isTop && styles.scenarioCardTop] },
+    { wrap: false, style: combine(styles.scenarioCard, isTop ? styles.scenarioCardTop : null) },
     React.createElement(View, { style: styles.scenarioHeader }, ...headerChildren),
     React.createElement(Text, { style: styles.whoIsOnRow }, whoLine),
     React.createElement(
@@ -468,13 +471,13 @@ function ScenarioCardEl({ scenario }: { scenario: Scenario }) {
       ),
       React.createElement(
         View,
-        { style: [styles.costBox, styles.costBoxHighlight] },
+        { style: combine(styles.costBox, styles.costBoxHighlight) },
         React.createElement(Text, { style: styles.costLabel }, 'Expected total'),
         React.createElement(Text, { style: styles.costValue }, fmtMoney(scenario.expectedAnnualCost))
       ),
       React.createElement(
         View,
-        { style: [styles.costBox, styles.costBoxSubtle, styles.costBoxLast] },
+        { style: combine(styles.costBox, styles.costBoxSubtle, styles.costBoxLast) },
         React.createElement(Text, { style: styles.costLabel }, 'Worst-case'),
         React.createElement(Text, { style: styles.costValue }, fmtMoney(scenario.worstCaseAnnualCost))
       )
@@ -610,7 +613,7 @@ function buildPdfDocument(result: CoordinationResult, generatedDate: string) {
     React.createElement(Text, { style: styles.pageTitle }, 'Top ' + result.top_scenarios.length + ' Scenarios'),
     React.createElement(
       Text,
-      { style: [styles.bodyText, { marginBottom: 12 }] },
+      { style: combine(styles.bodyText, { marginBottom: 12 }) },
       'Each scenario is ranked by expected total annual cost. Numbers reflect your household profile and expected utilization.'
     ),
     ...result.top_scenarios.map((s) => React.createElement(ScenarioCardEl, { key: s.id, scenario: s })),
@@ -627,7 +630,7 @@ function buildPdfDocument(result: CoordinationResult, generatedDate: string) {
         React.createElement(Text, { style: styles.pageTitle }, 'Key Trade-offs'),
         React.createElement(
           Text,
-          { style: [styles.bodyText, { marginBottom: 14 }] },
+          { style: combine(styles.bodyText, { marginBottom: 14 }) },
           'These are the higher-level decisions to weigh as you choose between scenarios.'
         ),
         ...result.ai_key_tradeoffs.map((t, i) =>
