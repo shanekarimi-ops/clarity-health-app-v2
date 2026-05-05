@@ -152,6 +152,10 @@ export default function CoordinatePage() {
   const [coordError, setCoordError] = useState('');
   const [result, setResult] = useState<CoordinationResult | null>(null);
 
+  // PDF download state
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState('');
+
   const loadData = useCallback(async (userId: string) => {
     // Self packet (latest non-spouse, success)
     const { data: selfRows } = await supabase
@@ -478,6 +482,53 @@ export default function CoordinatePage() {
     clearCache(user.id);
     setResult(null);
     handleRunCoordination();
+  }
+
+  async function handleDownloadPdf() {
+    if (!result) return;
+    setPdfError('');
+    setDownloadingPdf(true);
+    try {
+      const res = await fetch('/api/generate-coordination-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ result }),
+      });
+
+      if (!res.ok) {
+        let msg = 'PDF generation failed';
+        try {
+          const err = await res.json();
+          if (err?.error) msg = err.error;
+        } catch {
+          // body wasn't JSON
+        }
+        setPdfError(msg);
+        setDownloadingPdf(false);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+
+      const today = new Date();
+      const yyyy = today.getFullYear();
+      const mm = String(today.getMonth() + 1).padStart(2, '0');
+      const dd = String(today.getDate()).padStart(2, '0');
+      a.download = `clarity-coordination-${yyyy}-${mm}-${dd}.pdf`;
+
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Free the blob URL after a moment
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      setPdfError(`Network error: ${e.message}`);
+    } finally {
+      setDownloadingPdf(false);
+    }
   }
 
   if (loading) {
@@ -817,7 +868,14 @@ export default function CoordinatePage() {
         {/* Coordination results */}
         {result && (
           <div id="coordination-results">
-            <ResultsSection result={result} onRerun={handleRerun} running={running} />
+            <ResultsSection
+              result={result}
+              onRerun={handleRerun}
+              running={running}
+              onDownloadPdf={handleDownloadPdf}
+              downloadingPdf={downloadingPdf}
+              pdfError={pdfError}
+            />
           </div>
         )}
       </main>
@@ -865,7 +923,21 @@ function ChecklistRow({ done, title, detail, cta }: { done: boolean; title: stri
   );
 }
 
-function ResultsSection({ result, onRerun, running }: { result: CoordinationResult; onRerun: () => void; running: boolean }) {
+function ResultsSection({
+  result,
+  onRerun,
+  running,
+  onDownloadPdf,
+  downloadingPdf,
+  pdfError,
+}: {
+  result: CoordinationResult;
+  onRerun: () => void;
+  running: boolean;
+  onDownloadPdf: () => void;
+  downloadingPdf: boolean;
+  pdfError: string;
+}) {
   const recommended = result.top_scenarios.find(s => s.rank === 1);
   const cachedAgo = result.cached_at ? Math.round((Date.now() - result.cached_at) / 60000) : 0;
 
@@ -880,8 +952,8 @@ function ResultsSection({ result, onRerun, running }: { result: CoordinationResu
           borderLeft: '3px solid #7a9b76',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ flex: 1, minWidth: '240px' }}>
             <div style={{ fontSize: '0.7rem', color: '#5a7857', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>
               Coordination analysis
             </div>
@@ -900,15 +972,30 @@ function ResultsSection({ result, onRerun, running }: { result: CoordinationResu
               </div>
             )}
           </div>
-          <button
-            className="btn-sm btn-ghost-sm"
-            onClick={onRerun}
-            disabled={running}
-            style={{ whiteSpace: 'nowrap' }}
-          >
-            {running ? 'Running...' : '↻ Re-run'}
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              className="btn-sm btn-accent"
+              onClick={onDownloadPdf}
+              disabled={downloadingPdf || running}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {downloadingPdf ? 'Generating...' : '⬇ Download PDF'}
+            </button>
+            <button
+              className="btn-sm btn-ghost-sm"
+              onClick={onRerun}
+              disabled={running || downloadingPdf}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {running ? 'Running...' : '↻ Re-run'}
+            </button>
+          </div>
         </div>
+        {pdfError && (
+          <div style={{ marginTop: '0.75rem', padding: '0.6rem 0.85rem', background: '#fde8e8', border: '1px solid #f5b8b8', borderRadius: '6px', fontSize: '0.8rem', color: '#8a3030' }}>
+            ⚠ {pdfError}
+          </div>
+        )}
       </div>
 
       {/* AI overall recommendation */}
