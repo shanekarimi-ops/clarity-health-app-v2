@@ -49,6 +49,8 @@ const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'
 const MAX_SIZE_MB = 25;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
+type CoverageScope = 'individual' | 'employee_plus_spouse' | 'employee_plus_children' | 'family' | null;
+
 export default function EmployerBenefitsPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -59,6 +61,7 @@ export default function EmployerBenefitsPage() {
   const [uploadStatus, setUploadStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [coverageScope, setCoverageScope] = useState<CoverageScope>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async (userId: string) => {
@@ -90,6 +93,16 @@ export default function EmployerBenefitsPage() {
       });
       setPlansByPacket(grouped);
     }
+
+    // Load household coverage scope (for tier highlighting)
+    const { data: hh } = await supabase
+      .from('households')
+      .select('coverage_scope')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (hh?.coverage_scope) {
+      setCoverageScope(hh.coverage_scope as CoverageScope);
+    }
   }, []);
 
   useEffect(() => {
@@ -119,7 +132,7 @@ export default function EmployerBenefitsPage() {
     setErrorMsg('');
     const fileArray = Array.from(files);
     if (fileArray.length === 0) return;
-    const file = fileArray[0]; // Only handle first file — one packet per upload
+    const file = fileArray[0];
 
     if (!ALLOWED_TYPES.includes(file.type)) {
       setErrorMsg(`"${file.name}" is not a supported file type. PDF, JPG, or PNG only.`);
@@ -172,7 +185,6 @@ export default function EmployerBenefitsPage() {
 
     setUploadStatus('Analyzing your benefits packet...');
 
-    // Trigger parse — this one we DO await so we can show success or error inline
     try {
       const res = await fetch('/api/parse-employer-benefits', {
         method: 'POST',
@@ -219,9 +231,7 @@ export default function EmployerBenefitsPage() {
 
   async function handleDeletePacket(packet: Packet) {
     if (!confirm(`Delete "${packet.file_name}"? All extracted plans from this packet will also be removed.`)) return;
-    // Storage delete
     await supabase.storage.from('employer-benefits').remove([packet.file_path]);
-    // DB cascade handles plans
     const { error } = await supabase.from('employer_benefits_packets').delete().eq('id', packet.id);
     if (error) {
       setErrorMsg(`Delete failed: ${error.message}`);
@@ -247,11 +257,14 @@ export default function EmployerBenefitsPage() {
   const lastName = user?.user_metadata?.last_name || '';
   const role = user?.user_metadata?.role || 'Individual';
 
-  const currentPacket = packets[0] || null; // Most recent
+  const currentPacket = packets[0] || null;
   const historicalPackets = packets.slice(1);
   const currentPlans = currentPacket ? plansByPacket[currentPacket.id] || [] : [];
   const canCompareEmployerOnly = currentPlans.length >= 2;
   const canCompareVsMarketplace = currentPlans.length >= 1;
+
+  // Family-tier highlight for users covering more than themselves
+  const highlightFamilyTier = coverageScope && coverageScope !== 'individual';
 
   return (
     <div className="dash-layout">
@@ -269,6 +282,35 @@ export default function EmployerBenefitsPage() {
             <div className="dash-date">Upload your employer's benefits packet to compare your options.</div>
           </div>
         </div>
+
+        {/* Coverage scope context banner */}
+        {coverageScope && currentPlans.length > 0 && (
+          <div
+            style={{
+              marginBottom: '1.5rem',
+              padding: '0.85rem 1.1rem',
+              backgroundColor: '#ebf3ea',
+              borderLeft: '3px solid #7a9b76',
+              borderRadius: '6px',
+              fontSize: '0.875rem',
+              color: '#3a4d68',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '0.75rem',
+            }}
+          >
+            <div>
+              <strong style={{ color: '#1e3a5f' }}>Showing pricing for:</strong>{' '}
+              {coverageScopeLabel(coverageScope)}
+              {highlightFamilyTier && ' — family tier prices are highlighted in each plan.'}
+            </div>
+            <Link href="/household" style={{ color: '#7a9b76', textDecoration: 'underline', fontSize: '0.85rem' }}>
+              Change coverage scope
+            </Link>
+          </div>
+        )}
 
         {/* ===== UPLOAD ZONE ===== */}
         <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
@@ -387,7 +429,9 @@ export default function EmployerBenefitsPage() {
                   <div className="dash-card-title">Plans we found ({currentPlans.length})</div>
                 </div>
                 <div style={{ display: 'grid', gap: '1rem', marginTop: '1rem' }}>
-                  {currentPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
+                  {currentPlans.map((plan) => (
+                    <PlanCard key={plan.id} plan={plan} highlightFamilyTier={!!highlightFamilyTier} />
+                  ))}
                 </div>
               </div>
             )}
@@ -405,7 +449,7 @@ export default function EmployerBenefitsPage() {
                   <ComparisonChoiceCard
                     icon="🏢"
                     title="Compare my employer's plans"
-                    scope={`Ranks the ${currentPlans.length} plans from ${currentPacket.employer_name || 'your employer'} against each other, weighted by your claims.`}
+                    scope={`Ranks the ${currentPlans.length} plans from ${currentPacket.employer_name || 'your employer'} against each other, weighted by your claims and household.`}
                     cta="Compare employer plans →"
                     href="/employer-benefits/compare?mode=employer-only"
                     enabled={canCompareEmployerOnly}
@@ -458,6 +502,17 @@ export default function EmployerBenefitsPage() {
   );
 }
 
+function coverageScopeLabel(scope: CoverageScope): string {
+  if (!scope) return '—';
+  const map: Record<string, string> = {
+    individual: 'Just you (employee-only)',
+    employee_plus_spouse: 'You + spouse',
+    employee_plus_children: 'You + child(ren)',
+    family: 'Whole family',
+  };
+  return map[scope] || scope;
+}
+
 function ParseStatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; bg: string; fg: string }> = {
     success: { label: 'Ready', bg: '#ebf3ea', fg: '#5a7857' },
@@ -482,7 +537,11 @@ function ParseStatusBadge({ status }: { status: string }) {
   );
 }
 
-function PlanCard({ plan }: { plan: EmployerPlan }) {
+function PlanCard({ plan, highlightFamilyTier }: { plan: EmployerPlan; highlightFamilyTier: boolean }) {
+  const hasFamilyPremium = plan.monthly_premium_employee_plus_family != null;
+  const hasFamilyDeductible = plan.deductible_family != null;
+  const hasFamilyOOP = plan.out_of_pocket_max_family != null;
+
   return (
     <div style={{
       border: '1px solid #eef1f4',
@@ -490,7 +549,7 @@ function PlanCard({ plan }: { plan: EmployerPlan }) {
       padding: '1rem 1.25rem',
       background: '#fff',
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.75rem' }}>
         <div style={{ flex: 1, minWidth: '200px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0, color: '#1e3a5f', fontSize: '1.05rem', fontWeight: 700 }}>
@@ -508,19 +567,33 @@ function PlanCard({ plan }: { plan: EmployerPlan }) {
             )}
           </div>
           {plan.network_description && (
-            <div style={{ fontSize: '0.8rem', color: '#6b7785', marginTop: '0.2rem' }}>
+            <div style={{ fontSize: '0.8rem', color: '#6b7785', marginTop: '0.25rem' }}>
               {plan.network_description}
             </div>
           )}
         </div>
-        {plan.monthly_premium_employee != null && (
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '0.7rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px' }}>You pay</div>
-            <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#1e3a5f' }}>
-              ${Math.round(plan.monthly_premium_employee).toLocaleString()}
-              <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#6b7785' }}> /mo</span>
-            </div>
-          </div>
+      </div>
+
+      {/* PREMIUM TIERS */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: hasFamilyPremium ? '1fr 1fr' : '1fr',
+        gap: '0.5rem',
+        marginBottom: plan.highlights ? '0.75rem' : '0.75rem',
+      }}>
+        <TierStat
+          label="Single coverage"
+          value={plan.monthly_premium_employee != null ? `$${Math.round(plan.monthly_premium_employee).toLocaleString()}/mo` : '—'}
+          highlighted={!highlightFamilyTier}
+          isPremium
+        />
+        {hasFamilyPremium && (
+          <TierStat
+            label="Family coverage"
+            value={`$${Math.round(plan.monthly_premium_employee_plus_family!).toLocaleString()}/mo`}
+            highlighted={highlightFamilyTier}
+            isPremium
+          />
         )}
       </div>
 
@@ -530,26 +603,97 @@ function PlanCard({ plan }: { plan: EmployerPlan }) {
         </p>
       )}
 
+      {/* DETAIL ROW: Deductible / OOP / Copays */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-        gap: '0.5rem',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+        gap: '0.6rem',
         paddingTop: '0.75rem',
         borderTop: '1px solid #eef1f4',
       }}>
-        <Stat label="Deductible" value={plan.deductible_individual != null ? `$${plan.deductible_individual.toLocaleString()}` : '—'} />
-        <Stat label="Out-of-pocket max" value={plan.out_of_pocket_max_individual != null ? `$${plan.out_of_pocket_max_individual.toLocaleString()}` : '—'} />
-        <Stat label="Primary care" value={plan.primary_care_copay || '—'} />
-        <Stat label="Specialist" value={plan.specialist_copay || '—'} />
+        <DualTierStat
+          label="Deductible"
+          individualValue={plan.deductible_individual != null ? `$${plan.deductible_individual.toLocaleString()}` : '—'}
+          familyValue={hasFamilyDeductible ? `$${plan.deductible_family!.toLocaleString()}` : null}
+          highlightFamilyTier={highlightFamilyTier}
+        />
+        <DualTierStat
+          label="Out-of-pocket max"
+          individualValue={plan.out_of_pocket_max_individual != null ? `$${plan.out_of_pocket_max_individual.toLocaleString()}` : '—'}
+          familyValue={hasFamilyOOP ? `$${plan.out_of_pocket_max_family!.toLocaleString()}` : null}
+          highlightFamilyTier={highlightFamilyTier}
+        />
+        <SimpleStat label="Primary care" value={plan.primary_care_copay || '—'} />
+        <SimpleStat label="Specialist" value={plan.specialist_copay || '—'} />
       </div>
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function TierStat({ label, value, highlighted, isPremium }: { label: string; value: string; highlighted: boolean; isPremium?: boolean }) {
+  return (
+    <div
+      style={{
+        padding: '0.65rem 0.85rem',
+        border: highlighted ? '2px solid #7a9b76' : '1px solid #e1e6eb',
+        borderRadius: '6px',
+        backgroundColor: highlighted ? '#ebf3ea' : '#fafbfc',
+      }}
+    >
+      <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.2rem', fontWeight: 600 }}>
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: isPremium ? '1.15rem' : '0.9rem',
+          fontWeight: 700,
+          color: highlighted ? '#1e3a5f' : '#3a4d68',
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function DualTierStat({
+  label,
+  individualValue,
+  familyValue,
+  highlightFamilyTier,
+}: {
+  label: string;
+  individualValue: string;
+  familyValue: string | null;
+  highlightFamilyTier: boolean;
+}) {
   return (
     <div>
-      <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem' }}>
+      <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.2rem', fontWeight: 600 }}>
+        {label}
+      </div>
+      {familyValue ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+          <div style={{ fontSize: '0.8rem', color: highlightFamilyTier ? '#6b7785' : '#1e3a5f', fontWeight: highlightFamilyTier ? 500 : 700 }}>
+            <span style={{ fontSize: '0.65rem', color: '#9ca3af', marginRight: '0.3rem' }}>indv:</span>
+            {individualValue}
+          </div>
+          <div style={{ fontSize: '0.8rem', color: highlightFamilyTier ? '#1e3a5f' : '#6b7785', fontWeight: highlightFamilyTier ? 700 : 500 }}>
+            <span style={{ fontSize: '0.65rem', color: '#9ca3af', marginRight: '0.3rem' }}>fam:</span>
+            {familyValue}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1e3a5f' }}>{individualValue}</div>
+      )}
+    </div>
+  );
+}
+
+function SimpleStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: '0.65rem', color: '#6b7785', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.15rem', fontWeight: 600 }}>
         {label}
       </div>
       <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1e3a5f' }}>
