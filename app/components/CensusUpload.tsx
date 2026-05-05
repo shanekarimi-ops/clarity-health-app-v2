@@ -64,16 +64,26 @@ const FIELD_LABEL_MAP: Record<FieldKey, string> = FIELD_DEFS.reduce(
 // ============= AUTO-DETECT =============
 
 function autoDetectField(header: string): FieldKey {
-  const normalized = header.toLowerCase().trim().replace(/[_\-\.]/g, ' ');
-  for (const def of FIELD_DEFS) {
-    for (const alias of def.aliases) {
-      if (normalized === alias || normalized.includes(alias)) {
-        return def.key;
+    const normalized = header.toLowerCase().trim().replace(/[_\-\.]/g, ' ');
+  
+    // Pass 1: exact-match aliases (highest priority)
+    for (const def of FIELD_DEFS) {
+      for (const alias of def.aliases) {
+        if (normalized === alias) return def.key;
       }
     }
+  
+    // Pass 2: word-boundary substring match (avoids "age" matching inside "coverage type")
+    for (const def of FIELD_DEFS) {
+      for (const alias of def.aliases) {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const wordBoundaryRe = new RegExp(`\\b${escaped}\\b`);
+        if (wordBoundaryRe.test(normalized)) return def.key;
+      }
+    }
+  
+    return 'ignore';
   }
-  return 'ignore';
-}
 
 // ============= COMPONENT =============
 

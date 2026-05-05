@@ -36,42 +36,42 @@ type ActivityEvent = {
 };
 
 type GroupNote = {
-    id: string;
-    group_id: string;
-    agency_id: string;
-    author_user_id: string;
-    author_name: string | null;
-    body: string;
-    created_at: string;
-    updated_at: string;
-  };
-  
-  type GroupMember = {
-    id: string;
-    first_name: string | null;
-    last_name: string | null;
-    email: string | null;
-    date_of_birth: string | null;
-    age: number | null;
-    gender: string | null;
-    relationship: string | null;
-    salary_amount: number | null;
-    tier: string | null;
-    zip_code: string | null;
-    state: string | null;
-    coverage_type: string | null;
-    current_plan: string | null;
-  };
-  
-  type CensusUploadRow = {
-    id: string;
-    original_filename: string;
-    file_size_bytes: number | null;
-    row_count: number;
-    parse_status: string;
-    file_path: string;
-    created_at: string;
-  };
+  id: string;
+  group_id: string;
+  agency_id: string;
+  author_user_id: string;
+  author_name: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type GroupMember = {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  date_of_birth: string | null;
+  age: number | null;
+  gender: string | null;
+  relationship: string | null;
+  salary_amount: number | null;
+  tier: string | null;
+  zip_code: string | null;
+  state: string | null;
+  coverage_type: string | null;
+  current_plan: string | null;
+};
+
+type CensusUploadRow = {
+  id: string;
+  original_filename: string;
+  file_size_bytes: number | null;
+  row_count: number;
+  parse_status: string;
+  file_path: string;
+  created_at: string;
+};
 
 export default function GroupDetailPage() {
   const router = useRouter();
@@ -123,7 +123,9 @@ export default function GroupDetailPage() {
   const [showClearCensusConfirm, setShowClearCensusConfirm] = useState(false);
   const [memberSearch, setMemberSearch] = useState('');
   const [memberPage, setMemberPage] = useState(0);
-  const MEMBERS_PER_PAGE = 25;
+  const [censusExpanded, setCensusExpanded] = useState(false);
+  const COLLAPSED_PREVIEW_COUNT = 5;
+  const MEMBERS_PER_PAGE = 15;
 
   useEffect(() => {
     loadAll();
@@ -164,7 +166,6 @@ export default function GroupDetailPage() {
     setAgencyName(agency?.name || '');
     setAgencyId(brokerRow.agency_id);
 
-    // Load this group
     const { data: groupData, error: groupError } = await supabase
       .from('groups')
       .select('*')
@@ -180,9 +181,7 @@ export default function GroupDetailPage() {
 
     setGroup(groupData as Group);
 
-    // ============= AUTO-MIGRATION =============
-    // If groups.notes has content AND no group_notes exist yet for this group,
-    // migrate the legacy text into a single journal entry then clear groups.notes.
+    // Auto-migration of legacy notes
     if (groupData.notes && groupData.notes.trim()) {
       const { data: existingNotes } = await supabase
         .from('group_notes')
@@ -197,17 +196,13 @@ export default function GroupDetailPage() {
           author_user_id: user.id,
           author_name: fullName,
           body: groupData.notes,
-          // Use the group's updated_at so it preserves rough timing
           created_at: groupData.updated_at || groupData.created_at,
         });
-        // Clear the legacy column
         await supabase.from('groups').update({ notes: null }).eq('id', groupId);
-        // Reflect the cleared notes in local state
         setGroup({ ...(groupData as Group), notes: null });
       }
     }
 
-    // Load notes for this group (newest first)
     const { data: notesData } = await supabase
       .from('group_notes')
       .select('*')
@@ -215,7 +210,6 @@ export default function GroupDetailPage() {
       .order('created_at', { ascending: false });
     setNotes((notesData as GroupNote[]) || []);
 
-    // Load clients for the optional link dropdown
     const { data: clientsData } = await supabase
       .from('clients')
       .select('id, first_name, last_name')
@@ -223,9 +217,6 @@ export default function GroupDetailPage() {
       .order('first_name', { ascending: true });
     setClients((clientsData as ClientLite[]) || []);
 
-    // Load activity log entries for this group
-    // Pull recent activity then filter client-side (more reliable than JSONB operators
-    // which behave inconsistently across PostgREST versions)
     const { data: activityData } = await supabase
       .from('activity_log')
       .select('id, event_type, event_summary, created_at, metadata')
@@ -235,7 +226,6 @@ export default function GroupDetailPage() {
 
     const filtered = ((activityData as ActivityEvent[]) || []).filter((e) => {
       if (!e.metadata) return false;
-      // metadata might be a JSON string OR an object depending on driver/version
       let meta: any = e.metadata;
       if (typeof meta === 'string') {
         try { meta = JSON.parse(meta); } catch { return false; }
@@ -245,7 +235,6 @@ export default function GroupDetailPage() {
 
     setActivity(filtered);
 
-    // Load most recent census upload for this group
     const { data: censusData } = await supabase
       .from('census_uploads')
       .select('*')
@@ -256,7 +245,6 @@ export default function GroupDetailPage() {
     const latestCensus = censusData && censusData.length > 0 ? censusData[0] : null;
     setCensus(latestCensus as CensusUploadRow | null);
 
-    // Load members for this group
     const { data: membersData } = await supabase
       .from('group_members')
       .select('id, first_name, last_name, email, date_of_birth, age, gender, relationship, salary_amount, tier, zip_code, state, coverage_type, current_plan')
@@ -271,7 +259,7 @@ export default function GroupDetailPage() {
 
   function handleCensusSuccess() {
     setShowCensusUpload(false);
-    loadAll(); // refresh everything (members, census row, group member_count, activity)
+    loadAll();
   }
 
   async function handleDownloadCensus() {
@@ -289,19 +277,11 @@ export default function GroupDetailPage() {
   async function handleClearCensus() {
     if (!group || !census) return;
 
-    // Delete file from storage (best-effort)
     await supabase.storage.from('census-uploads').remove([census.file_path]);
-
-    // Delete members
     await supabase.from('group_members').delete().eq('group_id', group.id);
-
-    // Delete census_uploads row(s) for this group
     await supabase.from('census_uploads').delete().eq('group_id', group.id);
-
-    // Reset member_count
     await supabase.from('groups').update({ member_count: 0 }).eq('id', group.id);
 
-    // Activity log
     await supabase.from('activity_log').insert({
       agency_id: agencyId,
       actor_user_id: currentUserId,
@@ -311,6 +291,9 @@ export default function GroupDetailPage() {
     });
 
     setShowClearCensusConfirm(false);
+    setCensusExpanded(false);
+    setMemberSearch('');
+    setMemberPage(0);
     await loadAll();
   }
 
@@ -326,7 +309,7 @@ export default function GroupDetailPage() {
     return `$${amt.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   }
 
-  // Filtered + paginated members
+  // Filtered + paginated members (with collapsed preview)
   const filteredMembers = members.filter((m) => {
     if (!memberSearch.trim()) return true;
     const q = memberSearch.toLowerCase().trim();
@@ -338,10 +321,9 @@ export default function GroupDetailPage() {
     );
   });
   const totalPages = Math.ceil(filteredMembers.length / MEMBERS_PER_PAGE);
-  const paginatedMembers = filteredMembers.slice(
-    memberPage * MEMBERS_PER_PAGE,
-    (memberPage + 1) * MEMBERS_PER_PAGE,
-  );
+  const displayedMembers = censusExpanded
+    ? filteredMembers.slice(memberPage * MEMBERS_PER_PAGE, (memberPage + 1) * MEMBERS_PER_PAGE)
+    : filteredMembers.slice(0, COLLAPSED_PREVIEW_COUNT);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -363,7 +345,7 @@ export default function GroupDetailPage() {
     setEditStatus(group.status);
     setEditRenewalDate(group.renewal_date || '');
     setEditClientId(group.client_id || '');
-    setEditNotesField(''); // No longer used after migration
+    setEditNotesField('');
     setEditError('');
     setShowEditModal(true);
   }
@@ -649,6 +631,8 @@ export default function GroupDetailPage() {
       group_note_deleted: '🗑️',
       renewal_date_set: '📅',
       renewal_date_cleared: '📅',
+      census_uploaded: '📋',
+      census_cleared: '🗑️',
     };
     return map[type] || '•';
   }
@@ -742,7 +726,6 @@ export default function GroupDetailPage() {
           </div>
         </div>
 
-        {/* 2-column layout */}
         <div style={twoColGrid}>
           {/* Left column */}
           <div>
@@ -814,10 +797,7 @@ export default function GroupDetailPage() {
                   <div style={notesEditFooter}>
                     <button
                       style={secondaryBtn}
-                      onClick={() => {
-                        setAddingNote(false);
-                        setNewNoteBody('');
-                      }}
+                      onClick={() => { setAddingNote(false); setNewNoteBody(''); }}
                       disabled={savingNewNote}
                     >
                       Cancel
@@ -853,9 +833,7 @@ export default function GroupDetailPage() {
                           <span style={noteTime}>
                             {formatDate(note.created_at, true)}
                             {note.updated_at && note.updated_at !== note.created_at && (
-                              <span style={{ marginLeft: 6, fontStyle: 'italic' }}>
-                                · edited
-                              </span>
+                              <span style={{ marginLeft: 6, fontStyle: 'italic' }}>· edited</span>
                             )}
                           </span>
                         </div>
@@ -865,21 +843,13 @@ export default function GroupDetailPage() {
                             <textarea
                               value={editingNoteBody}
                               onChange={(e) => setEditingNoteBody(e.target.value)}
-                              style={{
-                                ...formInput,
-                                minHeight: 80,
-                                resize: 'vertical' as const,
-                                marginTop: 8,
-                              }}
+                              style={{ ...formInput, minHeight: 80, resize: 'vertical' as const, marginTop: 8 }}
                               autoFocus
                             />
                             <div style={notesEditFooter}>
                               <button
                                 style={secondaryBtn}
-                                onClick={() => {
-                                  setEditingNoteId(null);
-                                  setEditingNoteBody('');
-                                }}
+                                onClick={() => { setEditingNoteId(null); setEditingNoteBody(''); }}
                                 disabled={savingEditNote}
                               >
                                 Cancel
@@ -898,39 +868,19 @@ export default function GroupDetailPage() {
                             <p style={noteBody}>{note.body}</p>
                             {isAuthor && !isConfirming && (
                               <div style={noteActions}>
-                                <button
-                                  style={noteActionBtn}
-                                  onClick={() => startEditNote(note)}
-                                  title="Edit note"
-                                >
+                                <button style={noteActionBtn} onClick={() => startEditNote(note)} title="Edit note">
                                   ✏️ Edit
                                 </button>
-                                <button
-                                  style={noteActionBtnDanger}
-                                  onClick={() => setConfirmDeleteNoteId(note.id)}
-                                  title="Delete note"
-                                >
+                                <button style={noteActionBtnDanger} onClick={() => setConfirmDeleteNoteId(note.id)} title="Delete note">
                                   🗑️ Delete
                                 </button>
                               </div>
                             )}
                             {isConfirming && (
                               <div style={confirmRow}>
-                                <span style={{ fontSize: 13, color: '#8a3a3a' }}>
-                                  Delete this note?
-                                </span>
-                                <button
-                                  style={noteActionBtn}
-                                  onClick={() => setConfirmDeleteNoteId(null)}
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  style={noteActionBtnDanger}
-                                  onClick={() => handleDeleteNote(note.id)}
-                                >
-                                  Yes, delete
-                                </button>
+                                <span style={{ fontSize: 13, color: '#8a3a3a' }}>Delete this note?</span>
+                                <button style={noteActionBtn} onClick={() => setConfirmDeleteNoteId(null)}>Cancel</button>
+                                <button style={noteActionBtnDanger} onClick={() => handleDeleteNote(note.id)}>Yes, delete</button>
                               </div>
                             )}
                           </>
@@ -949,12 +899,8 @@ export default function GroupDetailPage() {
                 <div style={{ display: 'flex', gap: 8 }}>
                   {census && (
                     <>
-                      <button style={iconBtn} onClick={handleDownloadCensus}>
-                        ⬇ Download
-                      </button>
-                      <button style={iconBtnDanger} onClick={() => setShowClearCensusConfirm(true)}>
-                        🗑️ Clear
-                      </button>
+                      <button style={iconBtn} onClick={handleDownloadCensus}>⬇ Download</button>
+                      <button style={iconBtnDanger} onClick={() => setShowClearCensusConfirm(true)}>🗑️ Clear</button>
                     </>
                   )}
                   <button style={iconBtn} onClick={() => setShowCensusUpload(true)}>
@@ -982,16 +928,16 @@ export default function GroupDetailPage() {
                     </div>
                   </div>
 
-                  {/* Search */}
-                  <input
-                    type="text"
-                    placeholder="Search members by name, email, or zip..."
-                    value={memberSearch}
-                    onChange={(e) => { setMemberSearch(e.target.value); setMemberPage(0); }}
-                    style={searchInput}
-                  />
+                  {censusExpanded && (
+                    <input
+                      type="text"
+                      placeholder="Search members by name, email, or zip..."
+                      value={memberSearch}
+                      onChange={(e) => { setMemberSearch(e.target.value); setMemberPage(0); }}
+                      style={searchInput}
+                    />
+                  )}
 
-                  {/* Members table */}
                   <div style={tableScroll}>
                     <table style={memberTable}>
                       <thead>
@@ -1008,14 +954,14 @@ export default function GroupDetailPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {paginatedMembers.length === 0 ? (
+                        {displayedMembers.length === 0 ? (
                           <tr>
                             <td colSpan={9} style={{ ...td, textAlign: 'center', color: '#7a8a9b', padding: 20 }}>
                               {memberSearch ? 'No matches.' : 'No members found.'}
                             </td>
                           </tr>
                         ) : (
-                          paginatedMembers.map((m) => (
+                          displayedMembers.map((m) => (
                             <tr key={m.id}>
                               <td style={td}>
                                 {(m.first_name || '') + ' ' + (m.last_name || '')}
@@ -1038,31 +984,55 @@ export default function GroupDetailPage() {
                     </table>
                   </div>
 
-                  {/* Pagination */}
-                  {totalPages > 1 && (
+                  {/* Expand/Collapse + Pagination */}
+                  {!censusExpanded && filteredMembers.length > COLLAPSED_PREVIEW_COUNT ? (
                     <div style={paginationRow}>
                       <span style={{ fontSize: 12, color: '#7a8a9b' }}>
-                        Showing {memberPage * MEMBERS_PER_PAGE + 1}–
-                        {Math.min((memberPage + 1) * MEMBERS_PER_PAGE, filteredMembers.length)} of {filteredMembers.length}
+                        Showing {Math.min(COLLAPSED_PREVIEW_COUNT, filteredMembers.length)} of {filteredMembers.length} members
                       </span>
-                      <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        style={primaryBtn}
+                        onClick={() => { setCensusExpanded(true); setMemberPage(0); }}
+                      >
+                        ▼ Show all members
+                      </button>
+                    </div>
+                  ) : censusExpanded ? (
+                    <div style={paginationRow}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, color: '#7a8a9b' }}>
+                          {filteredMembers.length === 0
+                            ? 'No matches'
+                            : `Showing ${memberPage * MEMBERS_PER_PAGE + 1}–${Math.min((memberPage + 1) * MEMBERS_PER_PAGE, filteredMembers.length)} of ${filteredMembers.length}`
+                          }
+                        </span>
                         <button
                           style={iconBtn}
-                          onClick={() => setMemberPage((p) => Math.max(0, p - 1))}
-                          disabled={memberPage === 0}
+                          onClick={() => { setCensusExpanded(false); setMemberSearch(''); setMemberPage(0); }}
                         >
-                          ← Prev
-                        </button>
-                        <button
-                          style={iconBtn}
-                          onClick={() => setMemberPage((p) => Math.min(totalPages - 1, p + 1))}
-                          disabled={memberPage >= totalPages - 1}
-                        >
-                          Next →
+                          ▲ Collapse
                         </button>
                       </div>
+                      {totalPages > 1 && (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            style={iconBtn}
+                            onClick={() => setMemberPage((p) => Math.max(0, p - 1))}
+                            disabled={memberPage === 0}
+                          >
+                            ← Prev
+                          </button>
+                          <button
+                            style={iconBtn}
+                            onClick={() => setMemberPage((p) => Math.min(totalPages - 1, p + 1))}
+                            disabled={memberPage >= totalPages - 1}
+                          >
+                            Next →
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  ) : null}
                 </>
               )}
             </div>
@@ -1092,7 +1062,7 @@ export default function GroupDetailPage() {
         </div>
       </main>
 
-      {/* Edit Group Modal (notes field removed) */}
+      {/* Edit Group Modal */}
       {showEditModal && (
         <div style={modalOverlay} onClick={() => !saving && setShowEditModal(false)}>
           <div style={modalCard} onClick={(e) => e.stopPropagation()}>
@@ -1111,42 +1081,22 @@ export default function GroupDetailPage() {
             <div style={formRowDouble}>
               <div style={{ flex: 1 }}>
                 <label style={formLabel}>Industry</label>
-                <input
-                  type="text"
-                  value={editIndustry}
-                  onChange={(e) => setEditIndustry(e.target.value)}
-                  style={formInput}
-                />
+                <input type="text" value={editIndustry} onChange={(e) => setEditIndustry(e.target.value)} style={formInput} />
               </div>
               <div style={{ flex: 1 }}>
                 <label style={formLabel}>Location</label>
-                <input
-                  type="text"
-                  value={editLocation}
-                  onChange={(e) => setEditLocation(e.target.value)}
-                  style={formInput}
-                />
+                <input type="text" value={editLocation} onChange={(e) => setEditLocation(e.target.value)} style={formInput} />
               </div>
             </div>
 
             <div style={formRowDouble}>
               <div style={{ flex: 1 }}>
                 <label style={formLabel}>Member Count</label>
-                <input
-                  type="number"
-                  value={editMemberCount}
-                  onChange={(e) => setEditMemberCount(e.target.value)}
-                  style={formInput}
-                  min="0"
-                />
+                <input type="number" value={editMemberCount} onChange={(e) => setEditMemberCount(e.target.value)} style={formInput} min="0" />
               </div>
               <div style={{ flex: 1 }}>
                 <label style={formLabel}>Status</label>
-                <select
-                  value={editStatus}
-                  onChange={(e) => setEditStatus(e.target.value as any)}
-                  style={formInput}
-                >
+                <select value={editStatus} onChange={(e) => setEditStatus(e.target.value as any)} style={formInput}>
                   <option value="Prospect">Prospect</option>
                   <option value="Active">Active</option>
                   <option value="Renewal">Renewal</option>
@@ -1158,20 +1108,11 @@ export default function GroupDetailPage() {
             <div style={formRowDouble}>
               <div style={{ flex: 1 }}>
                 <label style={formLabel}>Renewal Date</label>
-                <input
-                  type="date"
-                  value={editRenewalDate}
-                  onChange={(e) => setEditRenewalDate(e.target.value)}
-                  style={formInput}
-                />
+                <input type="date" value={editRenewalDate} onChange={(e) => setEditRenewalDate(e.target.value)} style={formInput} />
               </div>
               <div style={{ flex: 1 }}>
                 <label style={formLabel}>Link to Client</label>
-                <select
-                  value={editClientId}
-                  onChange={(e) => setEditClientId(e.target.value)}
-                  style={formInput}
-                >
+                <select value={editClientId} onChange={(e) => setEditClientId(e.target.value)} style={formInput}>
                   <option value="">— None —</option>
                   {clients.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -1189,9 +1130,7 @@ export default function GroupDetailPage() {
             {editError && <div style={errorBox}>{editError}</div>}
 
             <div style={modalFooter}>
-              <button style={secondaryBtn} onClick={() => setShowEditModal(false)} disabled={saving}>
-                Cancel
-              </button>
+              <button style={secondaryBtn} onClick={() => setShowEditModal(false)} disabled={saving}>Cancel</button>
               <button style={primaryBtn} onClick={handleSaveEdit} disabled={saving}>
                 {saving ? 'Saving...' : 'Save Changes'}
               </button>
@@ -1209,9 +1148,7 @@ export default function GroupDetailPage() {
               You are about to permanently delete <strong>{group.name}</strong>. This will also delete all notes, census data, and activity for this group. This cannot be undone.
             </p>
             <div style={modalFooter}>
-              <button style={secondaryBtn} onClick={() => setShowDeleteConfirm(false)} disabled={deleting}>
-                Cancel
-              </button>
+              <button style={secondaryBtn} onClick={() => setShowDeleteConfirm(false)} disabled={deleting}>Cancel</button>
               <button style={dangerBtn} onClick={handleDelete} disabled={deleting}>
                 {deleting ? 'Deleting...' : 'Yes, delete'}
               </button>
@@ -1240,12 +1177,8 @@ export default function GroupDetailPage() {
               This will delete all {members.length} members and the census file for <strong>{group.name}</strong>. The group's member count will reset to 0. This cannot be undone.
             </p>
             <div style={modalFooter}>
-              <button style={secondaryBtn} onClick={() => setShowClearCensusConfirm(false)}>
-                Cancel
-              </button>
-              <button style={dangerBtn} onClick={handleClearCensus}>
-                Yes, clear census
-              </button>
+              <button style={secondaryBtn} onClick={() => setShowClearCensusConfirm(false)}>Cancel</button>
+              <button style={dangerBtn} onClick={handleClearCensus}>Yes, clear census</button>
             </div>
           </div>
         </div>
@@ -1449,10 +1382,7 @@ function statusPill(status: string): React.CSSProperties {
 
 const modalOverlay: React.CSSProperties = {
   position: 'fixed',
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
+  top: 0, left: 0, right: 0, bottom: 0,
   background: 'rgba(30, 58, 95, 0.4)',
   display: 'flex',
   alignItems: 'center',
@@ -1545,6 +1475,18 @@ const iconBtn: React.CSSProperties = {
   cursor: 'pointer',
 };
 
+const iconBtnDanger: React.CSSProperties = {
+  background: '#fff',
+  color: '#8a3a3a',
+  border: '1px solid #d4a5a5',
+  padding: '6px 12px',
+  borderRadius: 6,
+  fontFamily: 'Figtree, sans-serif',
+  fontWeight: 600,
+  fontSize: 12,
+  cursor: 'pointer',
+};
+
 const notesEditFooter: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'flex-end',
@@ -1629,103 +1571,91 @@ const noteActionBtnDanger: React.CSSProperties = {
 };
 
 const confirmRow: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 10,
-    paddingTop: 10,
-    borderTop: '1px solid #f1e6e6',
-    flexWrap: 'wrap',
-  };
-  
-  const notesScrollArea: React.CSSProperties = {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    maxHeight: 400,
-    overflowY: 'auto',
-    paddingRight: 8,
-  };
-  
-  const iconBtnDanger: React.CSSProperties = {
-    background: '#fff',
-    color: '#8a3a3a',
-    border: '1px solid #d4a5a5',
-    padding: '6px 12px',
-    borderRadius: 6,
-    fontFamily: 'Figtree, sans-serif',
-    fontWeight: 600,
-    fontSize: 12,
-    cursor: 'pointer',
-  };
-  
-  const censusMetaRow: React.CSSProperties = {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    padding: '12px 14px',
-    background: '#faf7f2',
-    borderRadius: 8,
-    marginBottom: 14,
-  };
-  
-  const censusMetaText: React.CSSProperties = {
-    fontSize: 12,
-    color: '#7a8a9b',
-    marginTop: 4,
-  };
-  
-  const searchInput: React.CSSProperties = {
-    width: '100%',
-    padding: '10px 12px',
-    border: '1px solid #cbd5e0',
-    borderRadius: 6,
-    fontSize: 14,
-    fontFamily: 'Figtree, sans-serif',
-    color: '#1e3a5f',
-    marginBottom: 12,
-    boxSizing: 'border-box',
-  };
-  
-  const tableScroll: React.CSSProperties = {
-    overflowX: 'auto',
-    border: '1px solid #e2e8f0',
-    borderRadius: 8,
-  };
-  
-  const memberTable: React.CSSProperties = {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontFamily: 'Figtree, sans-serif',
-    fontSize: 13,
-  };
-  
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '10px 12px',
-    background: '#eef1f4',
-    color: '#3a4d68',
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    borderBottom: '1px solid #d8dde5',
-    whiteSpace: 'nowrap',
-  };
-  
-  const td: React.CSSProperties = {
-    padding: '10px 12px',
-    borderBottom: '1px solid #eef1f4',
-    color: '#1e3a5f',
-    fontSize: 13,
-    verticalAlign: 'top',
-  };
-  
-  const paginationRow: React.CSSProperties = {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 12,
-    flexWrap: 'wrap',
-    gap: 10,
-  };
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginTop: 10,
+  paddingTop: 10,
+  borderTop: '1px solid #f1e6e6',
+  flexWrap: 'wrap',
+};
+
+const notesScrollArea: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  maxHeight: 400,
+  overflowY: 'auto',
+  paddingRight: 8,
+};
+
+const censusMetaRow: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  padding: '12px 14px',
+  background: '#faf7f2',
+  borderRadius: 8,
+  marginBottom: 14,
+};
+
+const censusMetaText: React.CSSProperties = {
+  fontSize: 12,
+  color: '#7a8a9b',
+  marginTop: 4,
+};
+
+const searchInput: React.CSSProperties = {
+  width: '100%',
+  padding: '10px 12px',
+  border: '1px solid #cbd5e0',
+  borderRadius: 6,
+  fontSize: 14,
+  fontFamily: 'Figtree, sans-serif',
+  color: '#1e3a5f',
+  marginBottom: 12,
+  boxSizing: 'border-box',
+};
+
+const tableScroll: React.CSSProperties = {
+  overflowX: 'auto',
+  border: '1px solid #e2e8f0',
+  borderRadius: 8,
+};
+
+const memberTable: React.CSSProperties = {
+  width: '100%',
+  borderCollapse: 'collapse',
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
+};
+
+const th: React.CSSProperties = {
+  textAlign: 'left',
+  padding: '10px 12px',
+  background: '#eef1f4',
+  color: '#3a4d68',
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: 0.4,
+  borderBottom: '1px solid #d8dde5',
+  whiteSpace: 'nowrap',
+};
+
+const td: React.CSSProperties = {
+  padding: '10px 12px',
+  borderBottom: '1px solid #eef1f4',
+  color: '#1e3a5f',
+  fontSize: 13,
+  verticalAlign: 'top',
+};
+
+const paginationRow: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginTop: 12,
+  flexWrap: 'wrap',
+  gap: 10,
+};
