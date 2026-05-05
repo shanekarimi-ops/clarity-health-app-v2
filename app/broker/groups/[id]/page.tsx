@@ -66,6 +66,11 @@ export default function GroupDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Inline notes editing
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
+
   useEffect(() => {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,18 +130,16 @@ export default function GroupDetailPage() {
       .order('first_name', { ascending: true });
     setClients((clientsData as ClientLite[]) || []);
 
-    // Load activity log entries for this group
+    // Load activity log entries for this group (server-side filter on JSONB metadata)
     const { data: activityData } = await supabase
       .from('activity_log')
       .select('id, event_type, event_summary, created_at, metadata')
       .eq('agency_id', brokerRow.agency_id)
+      .filter('metadata->>group_id', 'eq', groupId)
       .order('created_at', { ascending: false })
       .limit(100);
 
-    const filtered = ((activityData as ActivityEvent[]) || []).filter(
-      (e) => e.metadata && e.metadata.group_id === groupId,
-    );
-    setActivity(filtered);
+    setActivity((activityData as ActivityEvent[]) || []);
 
     setLoading(false);
   }
@@ -228,6 +231,45 @@ export default function GroupDetailPage() {
 
     setShowEditModal(false);
     setSaving(false);
+    await loadAll();
+  }
+
+  function startEditNotes() {
+    if (!group) return;
+    setNotesDraft(group.notes || '');
+    setEditingNotes(true);
+  }
+
+  async function handleSaveNotes() {
+    if (!group) return;
+    setSavingNotes(true);
+
+    const newNotes = notesDraft.trim() || null;
+
+    const { error } = await supabase
+      .from('groups')
+      .update({ notes: newNotes })
+      .eq('id', group.id);
+
+    if (error) {
+      alert(error.message || 'Could not save notes.');
+      setSavingNotes(false);
+      return;
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      await supabase.from('activity_log').insert({
+        agency_id: agencyId,
+        broker_user_id: user.id,
+        event_type: 'group_notes_updated',
+        event_summary: `Updated notes on ${group.name}`,
+        metadata: { group_id: group.id, group_name: group.name },
+      });
+    }
+
+    setEditingNotes(false);
+    setSavingNotes(false);
     await loadAll();
   }
 
@@ -482,12 +524,54 @@ export default function GroupDetailPage() {
               </div>
             </div>
 
-            {group.notes && (
-              <div style={{ ...infoCard, marginTop: 16 }}>
+            <div style={{ ...infoCard, marginTop: 16 }}>
+              <div style={notesHeader}>
                 <h2 style={cardTitle}>Notes</h2>
-                <p style={notesText}>{group.notes}</p>
+                {!editingNotes && (
+                  <button
+                    style={iconBtn}
+                    onClick={startEditNotes}
+                    title={group.notes ? 'Edit notes' : 'Add notes'}
+                  >
+                    {group.notes ? '✏️ Edit' : '+ Add'}
+                  </button>
+                )}
               </div>
-            )}
+
+              {editingNotes ? (
+                <>
+                  <textarea
+                    value={notesDraft}
+                    onChange={(e) => setNotesDraft(e.target.value)}
+                    style={{ ...formInput, minHeight: 100, resize: 'vertical' as const }}
+                    placeholder="Add notes about this group..."
+                    autoFocus
+                  />
+                  <div style={notesEditFooter}>
+                    <button
+                      style={secondaryBtn}
+                      onClick={() => setEditingNotes(false)}
+                      disabled={savingNotes}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      style={primaryBtn}
+                      onClick={handleSaveNotes}
+                      disabled={savingNotes}
+                    >
+                      {savingNotes ? 'Saving...' : 'Save Notes'}
+                    </button>
+                  </div>
+                </>
+              ) : group.notes ? (
+                <p style={notesText}>{group.notes}</p>
+              ) : (
+                <p style={{ color: '#7a8a9b', fontSize: 14, fontStyle: 'italic', margin: 0 }}>
+                  No notes yet. Click "+ Add" to add some.
+                </p>
+              )}
+            </div>
 
             {/* Census placeholder */}
             <div style={{ ...infoCard, marginTop: 16 }}>
@@ -936,8 +1020,34 @@ const errorBox: React.CSSProperties = {
 };
 
 const modalFooter: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'flex-end',
-  gap: 10,
-  marginTop: 8,
-};
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 8,
+  };
+  
+  const notesHeader: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  };
+  
+  const iconBtn: React.CSSProperties = {
+    background: '#fff',
+    color: '#7a9b76',
+    border: '1px solid #d4dae2',
+    padding: '6px 12px',
+    borderRadius: 6,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 12,
+    cursor: 'pointer',
+  };
+  
+  const notesEditFooter: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 12,
+  };
