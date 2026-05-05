@@ -47,9 +47,80 @@ type SpouseEmployment = {
   notes: string;
 };
 
+type Gotcha = {
+  severity: 'warn' | 'info' | 'positive';
+  tag: string;
+  message: string;
+};
+
+type Scenario = {
+  id: string;
+  rank: 1 | 2 | 3;
+  scenario_type: 'self_family' | 'spouse_family' | 'both_single' | 'self_ee_kids' | 'spouse_ee_kids';
+  scenario_label: string;
+  selfPlan: { id: string; name: string; tier: string } | null;
+  spousePlan: { id: string; name: string; tier: string } | null;
+  monthlyPremium: number;
+  annualPremium: number;
+  expectedAnnualOOP: number;
+  expectedAnnualCost: number;
+  worstCaseAnnualCost: number;
+  hsaEligible: boolean;
+  gotchas: Gotcha[];
+  whoIsOn: { self: string; spouse: string; children: string };
+  ai_insight: string | null;
+};
+
+type CoordinationResult = {
+  success: boolean;
+  household_size: number;
+  coverage_scope: string;
+  utilization_level: 'low' | 'moderate' | 'high';
+  expected_annual_medical_spend: number;
+  claims_used: number;
+  self_employer_name: string;
+  spouse_employer_name: string;
+  self_plan_count: number;
+  spouse_plan_count: number;
+  total_scenarios_evaluated: number;
+  top_scenarios: Scenario[];
+  household_income: number;
+  spouse_income: number;
+  combined_income: number;
+  marginal_tax_rate: number;
+  spousal_surcharge_applies: boolean;
+  spousal_surcharge_amount: number | null;
+  ai_overall_recommendation: string | null;
+  ai_key_tradeoffs: string[];
+  ai_used: boolean;
+  cached_at?: number;
+};
+
 const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
 const MAX_SIZE_MB = 25;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
+
+const CACHE_VERSION = 'v1';
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+const cacheKey = (userId: string) => `clarity-coordinate-${userId}-${CACHE_VERSION}`;
+
+const utilizationLabelMap: Record<string, string> = {
+  low: 'Low',
+  moderate: 'Moderate',
+  high: 'High',
+};
+
+const scopeLabelMap: Record<string, string> = {
+  individual: 'Just you (employee-only)',
+  employee_plus_spouse: 'You + spouse',
+  employee_plus_children: 'You + child(ren)',
+  family: 'Whole family',
+};
+
+function fmtMoney(n: number | null | undefined): string {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return '$' + Math.round(n).toLocaleString();
+}
 
 export default function CoordinatePage() {
   const router = useRouter();
@@ -75,6 +146,11 @@ export default function CoordinatePage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Coordination result state
+  const [running, setRunning] = useState(false);
+  const [coordError, setCoordError] = useState('');
+  const [result, setResult] = useState<CoordinationResult | null>(null);
 
   const loadData = useCallback(async (userId: string) => {
     // Self packet (latest non-spouse, success)
@@ -140,6 +216,39 @@ export default function CoordinatePage() {
     }
   }, []);
 
+  // Read cached result on mount
+  const readCache = useCallback((userId: string): CoordinationResult | null => {
+    try {
+      const raw = sessionStorage.getItem(cacheKey(userId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as CoordinationResult;
+      if (!parsed.cached_at || Date.now() - parsed.cached_at > CACHE_TTL_MS) {
+        sessionStorage.removeItem(cacheKey(userId));
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const writeCache = useCallback((userId: string, data: CoordinationResult) => {
+    try {
+      const toStore = { ...data, cached_at: Date.now() };
+      sessionStorage.setItem(cacheKey(userId), JSON.stringify(toStore));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const clearCache = useCallback((userId: string) => {
+    try {
+      sessionStorage.removeItem(cacheKey(userId));
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     async function init() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -149,10 +258,12 @@ export default function CoordinatePage() {
       }
       setUser(user);
       await loadData(user.id);
+      const cached = readCache(user.id);
+      if (cached) setResult(cached);
       setLoading(false);
     }
     init();
-  }, [router, loadData]);
+  }, [router, loadData, readCache]);
 
   // Auto-refresh while spouse packet is parsing
   useEffect(() => {
@@ -236,6 +347,9 @@ export default function CoordinatePage() {
     }
 
     await loadData(user.id);
+    // New packet means stale results; clear cache + result
+    if (user) clearCache(user.id);
+    setResult(null);
     setUploading(false);
     setUploadStatus('');
   }
@@ -274,7 +388,11 @@ export default function CoordinatePage() {
       setErrorMsg(`Delete failed: ${error.message}`);
       return;
     }
-    if (user) await loadData(user.id);
+    if (user) {
+      clearCache(user.id);
+      setResult(null);
+      await loadData(user.id);
+    }
   }
 
   async function handleSaveEmployment(e: React.FormEvent) {
@@ -306,6 +424,8 @@ export default function CoordinatePage() {
 
     setEmploymentSavedAt(Date.now());
     setTimeout(() => setEmploymentSavedAt(null), 3000);
+    // Inputs changed; invalidate cache
+    clearCache(user.id);
   }
 
   async function handleLogout() {
@@ -313,9 +433,51 @@ export default function CoordinatePage() {
     router.push('/');
   }
 
-  function handleRunCoordination() {
-    // Placeholder for P8.2/P8.3 — engine + UI
-    alert('Coordination engine coming in the next push. For now, the data has been captured.');
+  async function handleRunCoordination() {
+    if (!user) return;
+    setCoordError('');
+    setRunning(true);
+    try {
+      const res = await fetch('/api/coordinate-spouse-plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setCoordError(`Coordination failed: ${err.error || res.statusText || 'Unknown error'}`);
+        setRunning(false);
+        return;
+      }
+
+      const data = (await res.json()) as CoordinationResult;
+      if (!data.success) {
+        setCoordError('Coordination engine returned an unsuccessful response.');
+        setRunning(false);
+        return;
+      }
+
+      setResult(data);
+      writeCache(user.id, data);
+
+      // Scroll results into view after they render
+      setTimeout(() => {
+        const el = document.getElementById('coordination-results');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    } catch (e: any) {
+      setCoordError(`Network error: ${e.message}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function handleRerun() {
+    if (!user) return;
+    clearCache(user.id);
+    setResult(null);
+    handleRunCoordination();
   }
 
   if (loading) {
@@ -388,7 +550,7 @@ export default function CoordinatePage() {
             />
             <ChecklistRow
               done={spouseReady}
-              title="Spouse&apos;s employer packet"
+              title="Spouse's employer packet"
               detail={
                 spouseReady
                   ? `${spousePacket?.employer_name || spousePacket?.file_name} · ${spousePlans.length} plans extracted`
@@ -485,7 +647,7 @@ export default function CoordinatePage() {
                 ) : (
                   <>
                     <div className="dropzone-title">
-                      {isDragging ? 'Drop the spouse packet here' : 'Upload spouse&apos;s benefits packet'}
+                      {isDragging ? 'Drop the spouse packet here' : "Upload spouse's benefits packet"}
                     </div>
                     <div className="dropzone-subtitle">
                       Drag and drop, or <span className="dropzone-link">click to browse</span>
@@ -623,25 +785,41 @@ export default function CoordinatePage() {
           }}
         >
           <div style={{ textAlign: 'center', padding: '1rem' }}>
-            <div style={{ fontSize: '2.25rem', marginBottom: '0.5rem' }}>{allReady ? '🎯' : '⏳'}</div>
+            <div style={{ fontSize: '2.25rem', marginBottom: '0.5rem' }}>
+              {running ? '⏱️' : allReady ? '🎯' : '⏳'}
+            </div>
             <h3 style={{ fontFamily: 'Playfair Display, serif', color: '#1e3a5f', margin: '0 0 0.5rem 0', fontSize: '1.3rem' }}>
-              {allReady ? 'Ready to coordinate' : 'Almost there'}
+              {running ? 'Crunching the numbers...' : allReady ? 'Ready to coordinate' : 'Almost there'}
             </h3>
             <p style={{ fontSize: '0.9rem', color: '#3a4d68', maxWidth: '460px', margin: '0 auto 1.25rem auto', lineHeight: 1.5 }}>
-              {allReady
-                ? `We have ${selfPlans.length} of your plans and ${spousePlans.length} of your spouse's plans. Click below to run the coordination analysis.`
-                : 'Upload both packets to unlock the coordination analysis. Spouse employment info is optional but improves the recommendation.'}
+              {running
+                ? 'Modeling every plan combination across your household. This usually takes 15-30 seconds.'
+                : allReady
+                  ? `We have ${selfPlans.length} of your plans and ${spousePlans.length} of your spouse's plans. Click below to run the coordination analysis.`
+                  : 'Upload both packets to unlock the coordination analysis. Spouse employment info is optional but improves the recommendation.'}
             </p>
             <button
               className="btn-sm btn-accent"
               onClick={handleRunCoordination}
-              disabled={!allReady}
-              style={{ opacity: allReady ? 1 : 0.5, cursor: allReady ? 'pointer' : 'not-allowed' }}
+              disabled={!allReady || running}
+              style={{ opacity: allReady && !running ? 1 : 0.5, cursor: allReady && !running ? 'pointer' : 'not-allowed' }}
             >
-              Run coordination analysis →
+              {running ? 'Running...' : 'Run coordination analysis →'}
             </button>
+            {coordError && (
+              <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: '#fde8e8', border: '1px solid #f5b8b8', borderRadius: '6px', fontSize: '0.85rem', color: '#8a3030' }}>
+                ⚠ {coordError}
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Coordination results */}
+        {result && (
+          <div id="coordination-results">
+            <ResultsSection result={result} onRerun={handleRerun} running={running} />
+          </div>
+        )}
       </main>
     </div>
   );
@@ -683,6 +861,279 @@ function ChecklistRow({ done, title, detail, cta }: { done: boolean; title: stri
           {cta.label}
         </Link>
       )}
+    </div>
+  );
+}
+
+function ResultsSection({ result, onRerun, running }: { result: CoordinationResult; onRerun: () => void; running: boolean }) {
+  const recommended = result.top_scenarios.find(s => s.rank === 1);
+  const cachedAgo = result.cached_at ? Math.round((Date.now() - result.cached_at) / 60000) : 0;
+
+  return (
+    <>
+      {/* Header strip */}
+      <div
+        className="dash-card"
+        style={{
+          marginBottom: '1.5rem',
+          backgroundColor: '#ebf3ea',
+          borderLeft: '3px solid #7a9b76',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div>
+            <div style={{ fontSize: '0.7rem', color: '#5a7857', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>
+              Coordination analysis
+            </div>
+            <div style={{ fontSize: '0.95rem', color: '#1e3a5f' }}>
+              <strong>{result.top_scenarios.length}</strong> top scenarios from <strong>{result.total_scenarios_evaluated}</strong> evaluated combinations
+              {' · '}
+              {scopeLabelMap[result.coverage_scope] || result.coverage_scope}
+              {' · '}
+              {utilizationLabelMap[result.utilization_level] || result.utilization_level} expected use
+              {' · '}
+              {fmtMoney(result.expected_annual_medical_spend)} expected medical spend
+            </div>
+            {cachedAgo > 0 && (
+              <div style={{ fontSize: '0.75rem', color: '#6b7785', marginTop: '0.3rem' }}>
+                Results from {cachedAgo} min ago
+              </div>
+            )}
+          </div>
+          <button
+            className="btn-sm btn-ghost-sm"
+            onClick={onRerun}
+            disabled={running}
+            style={{ whiteSpace: 'nowrap' }}
+          >
+            {running ? 'Running...' : '↻ Re-run'}
+          </button>
+        </div>
+      </div>
+
+      {/* AI overall recommendation */}
+      {result.ai_overall_recommendation && (
+        <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
+          <div className="dash-card-header">
+            <div className="dash-card-title">Our recommendation</div>
+          </div>
+          <p style={{ fontSize: '0.95rem', color: '#3a4d68', lineHeight: 1.6, margin: '0.5rem 0 0 0' }}>
+            {result.ai_overall_recommendation}
+          </p>
+          {recommended && (
+            <div style={{
+              marginTop: '1rem',
+              padding: '0.75rem 1rem',
+              background: '#f5f8f4',
+              border: '1px solid #c7d9c5',
+              borderRadius: '6px',
+              fontSize: '0.85rem',
+              color: '#1e3a5f',
+            }}>
+              <strong>Recommended scenario:</strong> {recommended.scenario_label}
+              {' · '}
+              <strong>{fmtMoney(recommended.expectedAnnualCost)}/yr</strong> expected total
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Top scenarios */}
+      <div style={{ marginBottom: '1.5rem' }}>
+        <h2 style={{ fontFamily: 'Playfair Display, serif', color: '#1e3a5f', fontSize: '1.4rem', margin: '0 0 1rem 0' }}>
+          Top {result.top_scenarios.length} scenarios
+        </h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {result.top_scenarios.map((scenario) => (
+            <ScenarioCard key={scenario.id} scenario={scenario} />
+          ))}
+        </div>
+      </div>
+
+      {/* Key trade-offs */}
+      {result.ai_key_tradeoffs && result.ai_key_tradeoffs.length > 0 && (
+        <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
+          <div className="dash-card-header">
+            <div className="dash-card-title">Key trade-offs to think about</div>
+          </div>
+          <ul style={{ paddingLeft: '1.25rem', margin: '0.5rem 0 0 0', color: '#3a4d68', fontSize: '0.9rem', lineHeight: 1.7 }}>
+            {result.ai_key_tradeoffs.map((t, i) => (
+              <li key={i} style={{ marginBottom: '0.4rem' }}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Footnote */}
+      <div style={{ fontSize: '0.75rem', color: '#6b7785', marginBottom: '1rem', lineHeight: 1.5 }}>
+        Estimates are based on the plan documents you uploaded, your household profile, and recent claims (if any).
+        Actual costs depend on real utilization, network usage, and any mid-year life changes. Always confirm specifics
+        with your benefits administrator before enrolling.
+      </div>
+    </>
+  );
+}
+
+function ScenarioCard({ scenario }: { scenario: Scenario }) {
+  const isTop = scenario.rank === 1;
+
+  return (
+    <div
+      className="dash-card"
+      style={{
+        border: isTop ? '2px solid #7a9b76' : '1px solid #eef1f4',
+        backgroundColor: isTop ? '#f9fcf9' : '#fff',
+        position: 'relative',
+      }}
+    >
+      {isTop && (
+        <div style={{
+          position: 'absolute',
+          top: '-10px',
+          left: '1rem',
+          background: '#7a9b76',
+          color: '#fff',
+          fontSize: '0.7rem',
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+          padding: '0.2rem 0.6rem',
+          borderRadius: '4px',
+        }}>
+          Recommended
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.75rem' }}>
+        <div style={{ flex: 1, minWidth: '240px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.25rem' }}>
+            <div style={{
+              fontSize: '0.7rem',
+              color: '#fff',
+              backgroundColor: isTop ? '#7a9b76' : '#5b7a99',
+              fontWeight: 700,
+              padding: '0.15rem 0.5rem',
+              borderRadius: '4px',
+            }}>
+              #{scenario.rank}
+            </div>
+            <div style={{ fontFamily: 'Playfair Display, serif', color: '#1e3a5f', fontSize: '1.15rem', fontWeight: 700 }}>
+              {scenario.scenario_label}
+            </div>
+          </div>
+          <div style={{ fontSize: '0.8rem', color: '#6b7785', marginTop: '0.3rem' }}>
+            <span><strong>You:</strong> {scenario.whoIsOn.self}</span>
+            {' · '}
+            <span><strong>Spouse:</strong> {scenario.whoIsOn.spouse}</span>
+            {scenario.whoIsOn.children && scenario.whoIsOn.children !== 'none' && (
+              <>
+                {' · '}
+                <span><strong>Kids:</strong> {scenario.whoIsOn.children}</span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Cost breakdown */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+        gap: '0.6rem',
+        marginBottom: '0.75rem',
+      }}>
+        <CostBox label="Annual premium" value={fmtMoney(scenario.annualPremium)} />
+        <CostBox label="Expected OOP" value={fmtMoney(scenario.expectedAnnualOOP)} />
+        <CostBox label="Expected total" value={fmtMoney(scenario.expectedAnnualCost)} highlight />
+        <CostBox label="Worst-case total" value={fmtMoney(scenario.worstCaseAnnualCost)} subtle />
+      </div>
+
+      {/* Plan details */}
+      <div style={{ fontSize: '0.8rem', color: '#3a4d68', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+        {scenario.selfPlan && (
+          <div><strong>Your plan:</strong> {scenario.selfPlan.name} <span style={{ color: '#6b7785' }}>({scenario.selfPlan.tier})</span></div>
+        )}
+        {scenario.spousePlan && (
+          <div><strong>Spouse&apos;s plan:</strong> {scenario.spousePlan.name} <span style={{ color: '#6b7785' }}>({scenario.spousePlan.tier})</span></div>
+        )}
+        {scenario.hsaEligible && (
+          <div style={{ color: '#5a7857', marginTop: '0.25rem' }}>✓ HSA eligible</div>
+        )}
+      </div>
+
+      {/* AI insight */}
+      {scenario.ai_insight && (
+        <div style={{
+          padding: '0.6rem 0.85rem',
+          background: '#fafbfc',
+          borderLeft: '3px solid #5b7a99',
+          borderRadius: '4px',
+          fontSize: '0.85rem',
+          color: '#3a4d68',
+          lineHeight: 1.5,
+          marginBottom: scenario.gotchas?.length ? '0.75rem' : 0,
+        }}>
+          {scenario.ai_insight}
+        </div>
+      )}
+
+      {/* Gotchas */}
+      {scenario.gotchas && scenario.gotchas.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          {scenario.gotchas.map((g, i) => (
+            <GotchaRow key={i} gotcha={g} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CostBox({ label, value, highlight, subtle }: { label: string; value: string; highlight?: boolean; subtle?: boolean }) {
+  const bg = highlight ? '#ebf3ea' : subtle ? '#fafbfc' : '#fff';
+  const border = highlight ? '#c7d9c5' : '#eef1f4';
+  const valueColor = highlight ? '#1e3a5f' : subtle ? '#6b7785' : '#1e3a5f';
+  return (
+    <div style={{
+      padding: '0.6rem 0.75rem',
+      background: bg,
+      border: `1px solid ${border}`,
+      borderRadius: '6px',
+    }}>
+      <div style={{ fontSize: '0.7rem', color: '#6b7785', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.2rem' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '1.05rem', color: valueColor, fontWeight: 700, fontFamily: 'Playfair Display, serif' }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function GotchaRow({ gotcha }: { gotcha: Gotcha }) {
+  const palette = {
+    warn: { bg: '#fef9e8', border: '#f0e6b8', color: '#806c1e', icon: '⚠' },
+    info: { bg: '#eaf1f7', border: '#c5d6e8', color: '#2c4a6b', icon: 'ℹ' },
+    positive: { bg: '#f5f8f4', border: '#c7d9c5', color: '#5a7857', icon: '✓' },
+  }[gotcha.severity] || { bg: '#fafbfc', border: '#eef1f4', color: '#3a4d68', icon: '·' };
+
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: '0.5rem',
+      padding: '0.5rem 0.75rem',
+      background: palette.bg,
+      border: `1px solid ${palette.border}`,
+      borderRadius: '4px',
+      fontSize: '0.85rem',
+      color: palette.color,
+      lineHeight: 1.4,
+    }}>
+      <div style={{ flexShrink: 0, fontWeight: 700 }}>{palette.icon}</div>
+      <div style={{ flex: 1 }}>
+        <span style={{ fontWeight: 600 }}>{gotcha.tag}:</span> {gotcha.message}
+      </div>
     </div>
   );
 }
