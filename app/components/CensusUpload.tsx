@@ -97,6 +97,10 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
   const [error, setError] = useState('');
   const [progress, setProgress] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiBadges, setAiBadges] = useState<Set<string>>(new Set());
+  const [aiWarnings, setAiWarnings] = useState<string[]>([]);
+  const [aiError, setAiError] = useState('');
 
   function handleFileSelected(f: File) {
     setError('');
@@ -176,6 +180,82 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
 
   function setMappingFor(header: string, field: FieldKey) {
     setMapping((m) => ({ ...m, [header]: field }));
+    // Manual changes clear the AI badge for that column
+    setAiBadges((prev) => {
+      if (!prev.has(header)) return prev;
+      const next = new Set(prev);
+      next.delete(header);
+      return next;
+    });
+  }
+
+  // ============= AI MAPPING =============
+
+  async function handleRunAI() {
+    if (aiLoading || headers.length === 0) return;
+    setAiLoading(true);
+    setAiError('');
+    setAiWarnings([]);
+
+    try {
+      // Build sample rows (first 5) as arrays in header order
+      const sampleRows: string[][] = rows.slice(0, 5).map((r) =>
+        headers.map((h) => r[h] ?? '')
+      );
+
+      const res = await fetch('/api/parse-census', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ headers, sampleRows }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `Request failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (!data.success || !Array.isArray(data.mappings)) {
+        throw new Error('AI returned an unexpected response.');
+      }
+
+      // Apply the new mappings, tracking which ones changed from current state
+      const newMapping: Record<string, FieldKey> = { ...mapping };
+      const changed = new Set<string>();
+      const used = new Set<FieldKey>();
+
+      for (const m of data.mappings) {
+        if (!m || typeof m.csvColumn !== 'string' || typeof m.mappedField !== 'string') continue;
+        // Validate the field key against our known set
+        const validKeys: FieldKey[] = [
+          'first_name', 'last_name', 'email', 'date_of_birth', 'age', 'gender',
+          'relationship', 'salary_amount', 'tier', 'zip_code', 'state',
+          'coverage_type', 'current_plan', 'ignore',
+        ];
+        const field = (validKeys.includes(m.mappedField as FieldKey) ? m.mappedField : 'ignore') as FieldKey;
+
+        // Don't double-assign non-ignore fields
+        if (field !== 'ignore' && used.has(field)) {
+          newMapping[m.csvColumn] = 'ignore';
+          if (mapping[m.csvColumn] !== 'ignore') changed.add(m.csvColumn);
+          continue;
+        }
+
+        if (newMapping[m.csvColumn] !== field) {
+          changed.add(m.csvColumn);
+        }
+        newMapping[m.csvColumn] = field;
+        if (field !== 'ignore') used.add(field);
+      }
+
+      setMapping(newMapping);
+      setAiBadges(changed);
+      setAiWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+    } catch (err: any) {
+      setAiError(err.message || 'AI mapping failed. You can still map columns manually.');
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   // ============= COERCION HELPERS =============
@@ -412,6 +492,43 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
               Found <strong>{rows.length} rows</strong> in <strong>{file?.name}</strong>. Confirm the column mapping below — we auto-detected what we could.
             </p>
 
+            <div style={aiBar}>
+              <div>
+                <strong style={{ color: '#1e3a5f', fontSize: 14 }}>
+                  ✨ Need help mapping?
+                </strong>
+                <p style={{ color: '#3a4d68', fontSize: 12, margin: '2px 0 0' }}>
+                  Let Claude review your headers and sample rows, then suggest mappings.
+                </p>
+              </div>
+              <button
+                style={{ ...aiBtn, ...(aiLoading ? aiBtnLoading : {}) }}
+                onClick={handleRunAI}
+                disabled={aiLoading}
+              >
+                {aiLoading ? '✨ Analyzing...' : '✨ Use AI to map'}
+              </button>
+            </div>
+
+            {aiWarnings.length > 0 && (
+              <div style={aiWarningsBox}>
+                <strong style={{ display: 'block', marginBottom: 4 }}>
+                  ⚠️ Things to double-check:
+                </strong>
+                <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                  {aiWarnings.map((w, i) => (
+                    <li key={i} style={{ marginBottom: 2 }}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {aiError && (
+              <div style={errorBox}>
+                {aiError}
+              </div>
+            )}
+
             <div style={mappingTable}>
               <div style={mappingHeaderRow}>
                 <div style={mappingHeaderCell}>CSV Column</div>
@@ -424,7 +541,14 @@ export default function CensusUpload({ groupId, agencyId, userId, onClose, onSuc
                 return (
                   <div key={h} style={mappingRow}>
                     <div style={mappingCell}>
-                      <strong style={{ color: '#1e3a5f' }}>{h}</strong>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <strong style={{ color: '#1e3a5f' }}>{h}</strong>
+                        {aiBadges.has(h) && (
+                          <span style={aiBadge} title="Mapped by AI — review and adjust if needed">
+                            ✨ AI
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div style={{ ...mappingCell, color: '#7a8a9b', fontSize: 12 }}>
                       {sample && <div>{sample}</div>}
@@ -654,13 +778,65 @@ const primaryBtn: React.CSSProperties = {
 };
 
 const secondaryBtn: React.CSSProperties = {
-  background: '#fff',
-  color: '#3a4d68',
-  border: '1px solid #cbd5e0',
-  padding: '12px 22px',
-  borderRadius: 8,
-  fontFamily: 'Figtree, sans-serif',
-  fontWeight: 600,
-  fontSize: 14,
-  cursor: 'pointer',
-};
+    background: '#fff',
+    color: '#3a4d68',
+    border: '1px solid #cbd5e0',
+    padding: '12px 22px',
+    borderRadius: 8,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: 'pointer',
+  };
+  
+  const aiBar: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    background: 'linear-gradient(to right, #f5f1ea, #faf7f2)',
+    border: '1px solid #e8dfc9',
+    borderRadius: 8,
+    padding: '12px 16px',
+    marginBottom: 16,
+  };
+  
+  const aiBtn: React.CSSProperties = {
+    background: '#1e3a5f',
+    color: '#fff',
+    border: 'none',
+    padding: '10px 18px',
+    borderRadius: 6,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 13,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  };
+  
+  const aiBtnLoading: React.CSSProperties = {
+    background: '#7a8a9b',
+    cursor: 'wait',
+  };
+  
+  const aiBadge: React.CSSProperties = {
+    background: '#1e3a5f',
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 600,
+    padding: '2px 7px',
+    borderRadius: 10,
+    letterSpacing: 0.3,
+    whiteSpace: 'nowrap',
+  };
+  
+  const aiWarningsBox: React.CSSProperties = {
+    background: '#fef9e7',
+    border: '1px solid #f0d97a',
+    color: '#7a5a1a',
+    padding: '10px 14px',
+    borderRadius: 6,
+    fontSize: 13,
+    margin: '0 0 16px',
+    lineHeight: 1.5,
+  };
