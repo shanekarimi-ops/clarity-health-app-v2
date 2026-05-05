@@ -634,6 +634,8 @@ export default function GroupDetailPage() {
       census_uploaded: '📋',
       census_cleared: '🗑️',
       census_ai_mapped: '✨',
+      member_edited: '✏️',
+      member_deleted: '🗑️',
   };
     return map[type] || '•';
   }

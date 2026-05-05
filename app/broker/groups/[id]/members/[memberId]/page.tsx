@@ -65,6 +65,10 @@ export default function MemberDetailPage() {
   const [editCoverageType, setEditCoverageType] = useState('');
   const [editCurrentPlan, setEditCurrentPlan] = useState('');
 
+  // Delete confirm
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   useEffect(() => {
     loadMember();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -266,6 +270,57 @@ export default function MemberDetailPage() {
     await loadMember();
   }
 
+  async function handleDelete() {
+    if (!member) return;
+    setDeleting(true);
+
+    const memberName = `${member.first_name || ''} ${member.last_name || ''}`.trim() || 'a member';
+
+    const { error } = await supabase
+      .from('group_members')
+      .delete()
+      .eq('id', member.id);
+
+    if (error) {
+      alert(error.message || 'Could not delete member.');
+      setDeleting(false);
+      return;
+    }
+
+    // Decrement group's member_count
+    if (group) {
+      const { data: countData } = await supabase
+        .from('group_members')
+        .select('id', { count: 'exact', head: true })
+        .eq('group_id', groupId);
+      const newCount = (countData as any)?.length ?? null;
+      // Fallback: just count remaining members directly
+      const { count } = await supabase
+        .from('group_members')
+        .select('*', { count: 'exact', head: true })
+        .eq('group_id', groupId);
+      await supabase
+        .from('groups')
+        .update({ member_count: count ?? 0 })
+        .eq('id', groupId);
+    }
+
+    // Activity log
+    await supabase.from('activity_log').insert({
+      agency_id: agencyId,
+      actor_user_id: currentUserId,
+      event_type: 'member_deleted',
+      event_summary: `Deleted ${memberName} from census`,
+      metadata: {
+        group_id: groupId,
+        member_id: member.id,
+        member_name: memberName,
+      },
+    });
+
+    router.push(`/broker/groups/${groupId}`);
+  }
+
   function relationshipBadgeStyle(rel: string | null): React.CSSProperties {
     const r = (rel || '').toLowerCase();
     let bg = '#eef1f4', fg = '#3a4d68';
@@ -363,17 +418,12 @@ export default function MemberDetailPage() {
                 <button style={primaryBtnEnabled} onClick={startEdit}>
                   Edit Member
                 </button>
-                <button style={dangerBtn} disabled title="Coming in next push">
+                <button style={dangerBtnEnabled} onClick={() => setShowDeleteConfirm(true)}>
                   Delete
                 </button>
               </>
             ) : null}
           </div>
-          {!editMode && (
-            <p style={{ fontSize: 11, color: '#7a8a9b', fontStyle: 'italic', margin: '12px 0 0' }}>
-              💡 Delete coming in the next push.
-            </p>
-          )}
         </div>
 
         {/* Info card */}
@@ -530,9 +580,29 @@ export default function MemberDetailPage() {
             </>
           )}
         </div>
-      </main>
+        </main>
+
+{/* Delete Confirm Modal */}
+{showDeleteConfirm && (
+  <div style={modalOverlay} onClick={() => !deleting && setShowDeleteConfirm(false)}>
+    <div style={modalCard} onClick={(e) => e.stopPropagation()}>
+      <h2 style={modalTitle}>Delete this member?</h2>
+      <p style={{ color: '#3a4d68', fontSize: 14, lineHeight: 1.6, marginBottom: 18 }}>
+        You are about to permanently remove <strong>{`${member.first_name || ''} ${member.last_name || ''}`.trim() || 'this member'}</strong> from the census. This cannot be undone — the member can be restored by re-uploading the census.
+      </p>
+      <div style={modalFooter}>
+        <button style={secondaryBtn} onClick={() => setShowDeleteConfirm(false)} disabled={deleting}>
+          Cancel
+        </button>
+        <button style={dangerBtnEnabled} onClick={handleDelete} disabled={deleting}>
+          {deleting ? 'Deleting...' : 'Yes, delete'}
+        </button>
+      </div>
     </div>
-  );
+  </div>
+)}
+</div>
+);
 }
 
 // ============= STYLES =============
@@ -732,4 +802,50 @@ const infoValue: React.CSSProperties = {
     borderRadius: 6,
     fontSize: 13,
     marginBottom: 16,
+  };
+
+  const dangerBtnEnabled: React.CSSProperties = {
+    background: '#fff',
+    color: '#8a3a3a',
+    border: '1px solid #d4a5a5',
+    padding: '12px 22px',
+    borderRadius: 8,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: 'pointer',
+  };
+  
+  const modalOverlay: React.CSSProperties = {
+    position: 'fixed',
+    top: 0, left: 0, right: 0, bottom: 0,
+    background: 'rgba(30, 58, 95, 0.4)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 100,
+    padding: 20,
+  };
+  
+  const modalCard: React.CSSProperties = {
+    background: '#fff',
+    borderRadius: 12,
+    padding: 28,
+    maxWidth: 460,
+    width: '100%',
+    fontFamily: 'Figtree, sans-serif',
+  };
+  
+  const modalTitle: React.CSSProperties = {
+    fontFamily: 'Playfair Display, serif',
+    color: '#1e3a5f',
+    fontSize: 24,
+    margin: '0 0 16px',
+  };
+  
+  const modalFooter: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 8,
   };
