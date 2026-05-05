@@ -19,6 +19,15 @@ type RecRow = {
   plans: any[] | null;
 };
 
+// Map of report_type values stored in activity_log metadata to UI card identifiers
+type ReportType =
+  | 'client_recommendation'
+  | 'agency_performance'
+  | 'renewal_pipeline'
+  | 'commission_report'
+  | 'retention_analytics'
+  | 'compliance_summary';
+
 export default function BrokerReportsPage() {
   const router = useRouter();
 
@@ -27,13 +36,26 @@ export default function BrokerReportsPage() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [agencyName, setAgencyName] = useState('');
+  const [agencyId, setAgencyId] = useState('');
   const [userId, setUserId] = useState('');
 
-  // Test PDF state (Push 1)
-  const [testGenerating, setTestGenerating] = useState(false);
-  const [testStatus, setTestStatus] = useState<string>('');
+  // Real stats for header tiles
+  const [statClientCount, setStatClientCount] = useState<number | null>(null);
+  const [statRecCount, setStatRecCount] = useState<number | null>(null);
+  const [statReportCount, setStatReportCount] = useState<number | null>(null);
+  const [statActivityCount, setStatActivityCount] = useState<number | null>(null);
 
-  // Client Rec PDF modal state (Push 2)
+  // Last-generated timestamps per report type, keyed by ReportType
+  const [lastGenerated, setLastGenerated] = useState<Record<ReportType, string | null>>({
+    client_recommendation: null,
+    agency_performance: null,
+    renewal_pipeline: null,
+    commission_report: null,
+    retention_analytics: null,
+    compliance_summary: null,
+  });
+
+  // Client Rec PDF modal state
   const [showClientRecModal, setShowClientRecModal] = useState(false);
   const [modalClients, setModalClients] = useState<ClientRow[]>([]);
   const [modalRecs, setModalRecs] = useState<RecRow[]>([]);
@@ -46,7 +68,7 @@ export default function BrokerReportsPage() {
   const [modalError, setModalError] = useState<string>('');
   const [generatingClientRec, setGeneratingClientRec] = useState(false);
 
-  // Agency Perf PDF modal state (Push 3)
+  // Agency Perf PDF modal state
   const [showAgencyPerfModal, setShowAgencyPerfModal] = useState(false);
   const [agencyDaysBack, setAgencyDaysBack] = useState(90);
   const [agencyIncludeRoster, setAgencyIncludeRoster] = useState(true);
@@ -55,24 +77,24 @@ export default function BrokerReportsPage() {
   const [agencyError, setAgencyError] = useState<string>('');
   const [generatingAgencyPerf, setGeneratingAgencyPerf] = useState(false);
 
-  // Renewal Pipeline modal state (Push 4)
+  // Renewal Pipeline modal state
   const [showRenewalModal, setShowRenewalModal] = useState(false);
   const [renewalError, setRenewalError] = useState<string>('');
   const [generatingRenewal, setGeneratingRenewal] = useState(false);
 
-  // Commission Report modal state (Push 4)
+  // Commission Report modal state
   const [showCommissionModal, setShowCommissionModal] = useState(false);
   const [commissionPeriod, setCommissionPeriod] = useState('ytd');
   const [commissionError, setCommissionError] = useState<string>('');
   const [generatingCommission, setGeneratingCommission] = useState(false);
 
-  // Retention Analytics modal state (Session 21 Push 2)
+  // Retention Analytics modal state
   const [showRetentionModal, setShowRetentionModal] = useState(false);
   const [retentionPeriod, setRetentionPeriod] = useState('12m');
   const [retentionError, setRetentionError] = useState<string>('');
   const [generatingRetention, setGeneratingRetention] = useState(false);
 
-  // Compliance Summary modal state (Session 21 Push 3)
+  // Compliance Summary modal state
   const [showComplianceModal, setShowComplianceModal] = useState(false);
   const [compliancePeriod, setCompliancePeriod] = useState('current');
   const [complianceError, setComplianceError] = useState<string>('');
@@ -84,6 +106,15 @@ export default function BrokerReportsPage() {
   useEffect(() => {
     loadUser();
   }, []);
+
+  // After agency is loaded, fetch the stats + last-generated data
+  useEffect(() => {
+    if (agencyId) {
+      loadStats();
+      loadLastGenerated();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agencyId]);
 
   async function loadUser() {
     const { data: { user } } = await supabase.auth.getUser();
@@ -104,14 +135,97 @@ export default function BrokerReportsPage() {
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (brokerRow?.agencies) {
-      const agency: any = Array.isArray(brokerRow.agencies)
-        ? brokerRow.agencies[0]
-        : brokerRow.agencies;
-      setAgencyName(agency?.name || '');
+    if (brokerRow) {
+      setAgencyId(brokerRow.agency_id || '');
+      if (brokerRow.agencies) {
+        const agency: any = Array.isArray(brokerRow.agencies)
+          ? brokerRow.agencies[0]
+          : brokerRow.agencies;
+        setAgencyName(agency?.name || '');
+      }
     }
 
     setLoading(false);
+  }
+
+  async function loadStats() {
+    if (!agencyId) return;
+
+    // Total clients in agency
+    const { count: clientCount } = await supabase
+      .from('clients')
+      .select('id', { count: 'exact', head: true })
+      .eq('agency_id', agencyId);
+    setStatClientCount(clientCount || 0);
+
+    // Total recommendations run for clients in this agency.
+    // We do this by first fetching client IDs, then counting recs against them.
+    const { data: clientIds } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('agency_id', agencyId);
+
+    if (clientIds && clientIds.length > 0) {
+      const ids = clientIds.map((c: any) => c.id);
+      const { count: recCount } = await supabase
+        .from('recommendations')
+        .select('id', { count: 'exact', head: true })
+        .in('client_id', ids);
+      setStatRecCount(recCount || 0);
+    } else {
+      setStatRecCount(0);
+    }
+
+    // Reports generated (count of report_generated events in activity_log)
+    const { count: reportCount } = await supabase
+      .from('activity_log')
+      .select('id', { count: 'exact', head: true })
+      .eq('agency_id', agencyId)
+      .eq('event_type', 'report_generated');
+    setStatReportCount(reportCount || 0);
+
+    // Total activity events for agency
+    const { count: activityCount } = await supabase
+      .from('activity_log')
+      .select('id', { count: 'exact', head: true })
+      .eq('agency_id', agencyId);
+    setStatActivityCount(activityCount || 0);
+  }
+
+  async function loadLastGenerated() {
+    if (!agencyId) return;
+
+    // Pull all report_generated events ordered newest first; we just need the
+    // latest per report_type, which we'll compute client-side.
+    const { data: events } = await supabase
+      .from('activity_log')
+      .select('event_type, metadata, created_at')
+      .eq('agency_id', agencyId)
+      .eq('event_type', 'report_generated')
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (!events) return;
+
+    const next: Record<ReportType, string | null> = {
+      client_recommendation: null,
+      agency_performance: null,
+      renewal_pipeline: null,
+      commission_report: null,
+      retention_analytics: null,
+      compliance_summary: null,
+    };
+
+    for (const ev of events) {
+      const reportType = (ev as any).metadata?.report_type as ReportType | undefined;
+      if (!reportType) continue;
+      // Only set if we haven't seen this type yet (events are newest-first)
+      if (next[reportType] === null) {
+        next[reportType] = (ev as any).created_at;
+      }
+    }
+
+    setLastGenerated(next);
   }
 
   async function handleLogout() {
@@ -119,51 +233,7 @@ export default function BrokerReportsPage() {
     router.push('/login');
   }
 
-  // ---- TEST PDF (Push 1 - will be removed in Push 4 of S21) ----
-  async function handleTestPDF() {
-    if (!userId) {
-      setTestStatus('❌ Not logged in');
-      return;
-    }
-
-    setTestGenerating(true);
-    setTestStatus('Generating test PDF...');
-
-    try {
-      const res = await fetch('/api/reports/test-pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        console.error('Test PDF error response:', errText);
-        setTestStatus(`❌ Failed (${res.status}). Check console.`);
-        setTestGenerating(false);
-        return;
-      }
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'clarity-health-test.pdf';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-
-      setTestStatus('✅ Test PDF downloaded!');
-    } catch (err: any) {
-      console.error('Test PDF generation error:', err);
-      setTestStatus(`❌ Error: ${err?.message || String(err)}`);
-    } finally {
-      setTestGenerating(false);
-    }
-  }
-
-  // ---- CLIENT REC PDF MODAL (Push 2) ----
+  // ---- CLIENT REC PDF MODAL ----
 
   async function openClientRecModal() {
     setShowClientRecModal(true);
@@ -289,6 +359,10 @@ export default function BrokerReportsPage() {
       setShowClientRecModal(false);
       setToastMessage('✅ Client recommendation PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
+
+      // Refresh stats so the new report shows up in the tiles + Last Generated
+      loadStats();
+      loadLastGenerated();
     } catch (err: any) {
       console.error('Client rec generate exception:', err);
       setModalError('❌ ' + (err?.message || String(err)));
@@ -302,7 +376,7 @@ export default function BrokerReportsPage() {
     setShowClientRecModal(false);
   }
 
-  // ---- AGENCY PERF PDF MODAL (Push 3) ----
+  // ---- AGENCY PERF PDF MODAL ----
 
   function openAgencyPerfModal() {
     setShowAgencyPerfModal(true);
@@ -367,6 +441,9 @@ export default function BrokerReportsPage() {
       setShowAgencyPerfModal(false);
       setToastMessage('✅ Agency performance PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
+
+      loadStats();
+      loadLastGenerated();
     } catch (err: any) {
       console.error('Agency perf generate exception:', err);
       setAgencyError('❌ ' + (err?.message || String(err)));
@@ -375,7 +452,7 @@ export default function BrokerReportsPage() {
     }
   }
 
-  // ---- RENEWAL PIPELINE MODAL (Push 4) ----
+  // ---- RENEWAL PIPELINE MODAL ----
 
   function openRenewalModal() {
     setShowRenewalModal(true);
@@ -430,6 +507,9 @@ export default function BrokerReportsPage() {
       setShowRenewalModal(false);
       setToastMessage('✅ Renewal pipeline PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
+
+      loadStats();
+      loadLastGenerated();
     } catch (err: any) {
       console.error('Renewal generate exception:', err);
       setRenewalError('❌ ' + (err?.message || String(err)));
@@ -438,7 +518,7 @@ export default function BrokerReportsPage() {
     }
   }
 
-  // ---- COMMISSION REPORT MODAL (Push 4) ----
+  // ---- COMMISSION REPORT MODAL ----
 
   function openCommissionModal() {
     setShowCommissionModal(true);
@@ -497,6 +577,9 @@ export default function BrokerReportsPage() {
       setShowCommissionModal(false);
       setToastMessage('✅ Commission report PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
+
+      loadStats();
+      loadLastGenerated();
     } catch (err: any) {
       console.error('Commission generate exception:', err);
       setCommissionError('❌ ' + (err?.message || String(err)));
@@ -505,7 +588,7 @@ export default function BrokerReportsPage() {
     }
   }
 
-  // ---- RETENTION ANALYTICS MODAL (Session 21 Push 2) ----
+  // ---- RETENTION ANALYTICS MODAL ----
 
   function openRetentionModal() {
     setShowRetentionModal(true);
@@ -564,6 +647,9 @@ export default function BrokerReportsPage() {
       setShowRetentionModal(false);
       setToastMessage('✅ Retention analytics PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
+
+      loadStats();
+      loadLastGenerated();
     } catch (err: any) {
       console.error('Retention generate exception:', err);
       setRetentionError('❌ ' + (err?.message || String(err)));
@@ -572,7 +658,7 @@ export default function BrokerReportsPage() {
     }
   }
 
-  // ---- COMPLIANCE SUMMARY MODAL (Session 21 Push 3) ----
+  // ---- COMPLIANCE SUMMARY MODAL ----
 
   function openComplianceModal() {
     setShowComplianceModal(true);
@@ -631,6 +717,9 @@ export default function BrokerReportsPage() {
       setShowComplianceModal(false);
       setToastMessage('✅ Compliance summary PDF generated!');
       setTimeout(() => setToastMessage(''), 4000);
+
+      loadStats();
+      loadLastGenerated();
     } catch (err: any) {
       console.error('Compliance generate exception:', err);
       setComplianceError('❌ ' + (err?.message || String(err)));
@@ -651,6 +740,36 @@ export default function BrokerReportsPage() {
     } catch {
       return iso;
     }
+  }
+
+  function formatRelativeTime(iso: string): string {
+    const now = Date.now();
+    const then = new Date(iso).getTime();
+    const diffSec = Math.floor((now - then) / 1000);
+
+    if (diffSec < 60) return 'just now';
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} min ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} hr ago`;
+    if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
+    return formatDateShort(iso);
+  }
+
+  function lastGeneratedFor(reportType: ReportType): React.ReactNode {
+    const ts = lastGenerated[reportType];
+    if (!ts) {
+      return <span style={lastGenLabelMuted}>Not yet generated</span>;
+    }
+    return (
+      <span style={lastGenLabel}>
+        Last generated {formatRelativeTime(ts)}
+      </span>
+    );
+  }
+
+  // Render a stat tile that shows the number with a loading dash if null
+  function renderStatValue(n: number | null): string {
+    if (n === null) return '—';
+    return n.toString();
   }
 
   if (loading) {
@@ -679,55 +798,36 @@ export default function BrokerReportsPage() {
               Generate white-label PDFs for clients and pull agency-wide analytics
             </p>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button
-              style={testBtn}
-              onClick={handleTestPDF}
-              disabled={testGenerating}
-              title="Test the PDF generation pipeline (will be removed)"
-            >
-              {testGenerating ? '⏳ Generating...' : '🧪 Test PDF'}
-            </button>
-            <button style={primaryBtnDisabled} disabled title="Coming in Session 24">
-              + Generate Report
-            </button>
-          </div>
         </div>
 
-        {testStatus && (
-          <div style={testStatusRow}>
-            {testStatus}
-          </div>
-        )}
-
         <div style={comingSoonBanner}>
-          <span style={{ fontSize: 20, marginRight: 10 }}>🚧</span>
-          <strong>Coming in Session 24</strong>
+          <span style={{ fontSize: 20, marginRight: 10 }}>🚀</span>
+          <strong>What's coming next</strong>
           <span style={{ marginLeft: 10, color: '#3a4d68' }}>
-            — White-label PDF exports, agency dashboards, retention metrics, commission tracking
+            — Real commission tracking, white-label customization, scheduled email delivery, and CSV exports
           </span>
         </div>
 
         <div style={statsRow}>
           <div style={statTile}>
             <div style={statLabel}>Total Clients</div>
-            <div style={statValue}>5</div>
-            <div style={statTrend}>—</div>
+            <div style={statValue}>{renderStatValue(statClientCount)}</div>
+            <div style={statTrend}>In your agency</div>
           </div>
           <div style={statTile}>
             <div style={statLabel}>Recommendations Run</div>
-            <div style={statValue}>2</div>
-            <div style={statTrend}>—</div>
+            <div style={statValue}>{renderStatValue(statRecCount)}</div>
+            <div style={statTrend}>All-time</div>
           </div>
           <div style={statTile}>
-            <div style={statLabel}>Active Plans</div>
-            <div style={statValue}>—</div>
-            <div style={statTrend}>—</div>
+            <div style={statLabel}>Reports Generated</div>
+            <div style={statValue}>{renderStatValue(statReportCount)}</div>
+            <div style={statTrend}>All-time</div>
           </div>
           <div style={statTile}>
-            <div style={statLabel}>Est. Annual Premium</div>
-            <div style={statValue}>—</div>
-            <div style={statTrend}>—</div>
+            <div style={statLabel}>Activity Events</div>
+            <div style={statValue}>{renderStatValue(statActivityCount)}</div>
+            <div style={statTrend}>Across your agency</div>
           </div>
         </div>
 
@@ -741,6 +841,7 @@ export default function BrokerReportsPage() {
             <p style={mockCardDesc}>
               White-labeled, agency-branded PDF showing top plan recommendations with claims insights
             </p>
+            <div style={lastGenWrap}>{lastGeneratedFor('client_recommendation')}</div>
             <button style={liveBtn} onClick={openClientRecModal}>
               Generate
             </button>
@@ -753,6 +854,7 @@ export default function BrokerReportsPage() {
             <p style={mockCardDesc}>
               Monthly snapshot of clients added, recommendations run, plans sold, and commission earned
             </p>
+            <div style={lastGenWrap}>{lastGeneratedFor('agency_performance')}</div>
             <button style={liveBtn} onClick={openAgencyPerfModal}>
               Generate
             </button>
@@ -766,6 +868,7 @@ export default function BrokerReportsPage() {
             <p style={mockCardDesc}>
               Clients with renewals in the next 30, 60, or 90 days, sorted by group size
             </p>
+            <div style={lastGenWrap}>{lastGeneratedFor('renewal_pipeline')}</div>
             <button style={liveBtn} onClick={openRenewalModal}>
               Generate
             </button>
@@ -779,12 +882,13 @@ export default function BrokerReportsPage() {
             <p style={mockCardDesc}>
               Track commissions by carrier, broker, and group across the agency book of business
             </p>
+            <div style={lastGenWrap}>{lastGeneratedFor('commission_report')}</div>
             <button style={liveBtn} onClick={openCommissionModal}>
               Generate
             </button>
           </div>
 
-          {/* RETENTION ANALYTICS — SAMPLE (Session 21 Push 2) */}
+          {/* RETENTION ANALYTICS — SAMPLE */}
           <div style={liveCard}>
             <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>📈</div>
@@ -792,12 +896,13 @@ export default function BrokerReportsPage() {
             <p style={mockCardDesc}>
               Year-over-year client retention, churn reasons, and lifetime value by client segment
             </p>
+            <div style={lastGenWrap}>{lastGeneratedFor('retention_analytics')}</div>
             <button style={liveBtn} onClick={openRetentionModal}>
               Generate
             </button>
           </div>
 
-          {/* COMPLIANCE SUMMARY — SAMPLE (Session 21 Push 3) */}
+          {/* COMPLIANCE SUMMARY — SAMPLE */}
           <div style={liveCard}>
             <div style={sampleBadge}>SAMPLE</div>
             <div style={cardIconWrap}>📋</div>
@@ -805,6 +910,7 @@ export default function BrokerReportsPage() {
             <p style={mockCardDesc}>
               ACA reporting status, SBC distribution log, and 5500 filing tracker by group
             </p>
+            <div style={lastGenWrap}>{lastGeneratedFor('compliance_summary')}</div>
             <button style={liveBtn} onClick={openComplianceModal}>
               Generate
             </button>
@@ -812,13 +918,13 @@ export default function BrokerReportsPage() {
         </div>
 
         <div style={featureListCard}>
-          <h3 style={featureListTitle}>What you'll be able to do:</h3>
+          <h3 style={featureListTitle}>Coming in future sessions:</h3>
           <ul style={featureList}>
-            <li>Export branded PDFs with your agency's logo and colors</li>
-            <li>Schedule recurring reports (weekly, monthly, quarterly)</li>
+            <li>White-label PDF customization (swap logo and colors per agency)</li>
+            <li>Scheduled recurring reports (weekly, monthly, quarterly)</li>
             <li>Email reports directly to clients from the platform</li>
-            <li>Track commission payouts by carrier and effective date</li>
-            <li>Build custom report templates with your own fields</li>
+            <li>Real commission tracking wired to carrier statements</li>
+            <li>Custom report templates with your own fields</li>
             <li>Export raw data to CSV for accounting integration</li>
           </ul>
         </div>
@@ -1182,7 +1288,7 @@ export default function BrokerReportsPage() {
         </div>
       )}
 
-      {/* RETENTION ANALYTICS MODAL (Session 21 Push 2) */}
+      {/* RETENTION ANALYTICS MODAL */}
       {showRetentionModal && (
         <div style={modalOverlay} onClick={closeRetentionModal}>
           <div style={modalBox} onClick={(e) => e.stopPropagation()}>
@@ -1201,9 +1307,7 @@ export default function BrokerReportsPage() {
               <div style={sampleNotice}>
                 <strong>⚠ Sample report:</strong> Real retention tracking
                 requires multiple renewal cycles of data. This report uses
-                illustrative figures to demonstrate the format. Real retention
-                analytics will become available as your agency accumulates
-                client history.
+                illustrative figures to demonstrate the format.
               </div>
 
               <div style={modalField}>
@@ -1255,12 +1359,12 @@ export default function BrokerReportsPage() {
               >
                 {generatingRetention ? '⏳ Generating PDF...' : '📈 Generate PDF'}
               </button>
-              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* COMPLIANCE SUMMARY MODAL (Session 21 Push 3) */}
+      {/* COMPLIANCE SUMMARY MODAL */}
       {showComplianceModal && (
         <div style={modalOverlay} onClick={closeComplianceModal}>
           <div style={modalBox} onClick={(e) => e.stopPropagation()}>
@@ -1370,54 +1474,6 @@ const pageSubtitle: React.CSSProperties = {
   fontSize: 15,
 };
 
-const primaryBtnDisabled: React.CSSProperties = {
-  background: '#cbd5e0',
-  color: '#fff',
-  border: 'none',
-  padding: '12px 22px',
-  borderRadius: 8,
-  fontFamily: 'Figtree, sans-serif',
-  fontWeight: 600,
-  fontSize: 14,
-  cursor: 'not-allowed',
-  opacity: 0.7,
-};
-
-const testBtn: React.CSSProperties = {
-  background: '#1e3a5f',
-  color: '#fff',
-  border: 'none',
-  padding: '12px 18px',
-  borderRadius: 8,
-  fontFamily: 'Figtree, sans-serif',
-  fontWeight: 600,
-  fontSize: 13,
-  cursor: 'pointer',
-};
-
-const testStatusRow: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #d4dae2',
-  borderRadius: 8,
-  padding: '10px 14px',
-  marginBottom: 18,
-  fontFamily: 'Figtree, sans-serif',
-  fontSize: 13,
-  color: '#1e3a5f',
-};
-
-const secondaryBtnDisabled: React.CSSProperties = {
-  background: '#fff',
-  color: '#7a8a9b',
-  border: '1px solid #e2e8f0',
-  padding: '10px 16px',
-  borderRadius: 6,
-  fontFamily: 'Figtree, sans-serif',
-  fontSize: 13,
-  cursor: 'not-allowed',
-  width: '100%',
-};
-
 const liveBtn: React.CSSProperties = {
   background: '#7a9b76',
   color: '#fff',
@@ -1495,17 +1551,6 @@ const cardGrid: React.CSSProperties = {
   marginBottom: 32,
 };
 
-const mockCard: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #e2e8f0',
-  borderRadius: 10,
-  padding: 22,
-  fontFamily: 'Figtree, sans-serif',
-  opacity: 0.7,
-  display: 'flex',
-  flexDirection: 'column',
-};
-
 const liveCard: React.CSSProperties = {
   background: '#fff',
   border: '2px solid #7a9b76',
@@ -1547,8 +1592,27 @@ const mockCardDesc: React.CSSProperties = {
   color: '#3a4d68',
   fontSize: 13,
   lineHeight: 1.5,
-  margin: '0 0 14px',
+  margin: '0 0 10px',
   flex: 1,
+};
+
+const lastGenWrap: React.CSSProperties = {
+  marginBottom: 12,
+  minHeight: 18,
+};
+
+const lastGenLabel: React.CSSProperties = {
+  fontSize: 11,
+  color: '#7a9b76',
+  fontFamily: 'Figtree, sans-serif',
+  fontWeight: 600,
+};
+
+const lastGenLabelMuted: React.CSSProperties = {
+  fontSize: 11,
+  color: '#a0a8b3',
+  fontFamily: 'Figtree, sans-serif',
+  fontStyle: 'italic',
 };
 
 const featureListCard: React.CSSProperties = {

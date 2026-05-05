@@ -147,6 +147,8 @@ export default function BrokerDashboardPage() {
       link_request_sent: '🔗',
       link_accepted: '✅',
       link_revoked: '🚫',
+      renewal_date_set: '📅',
+      report_generated: '📄',
     };
     return icons[eventType] || '•';
   }
