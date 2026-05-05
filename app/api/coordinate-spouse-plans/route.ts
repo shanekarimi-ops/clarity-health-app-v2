@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import Anthropic from '@anthropic-ai/sdk';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 // ============================================================
 // TYPES
@@ -47,9 +48,9 @@ type SpouseEmployment = {
 type ScenarioId = 'self_family' | 'spouse_family' | 'both_single' | 'self_ee_kids' | 'spouse_ee_kids';
 
 type Scenario = {
-  id: string; // Unique id for this scenario combo
+  id: string;
   scenario_type: ScenarioId;
-  scenario_label: string; // Human-readable
+  scenario_label: string;
   selfPlan: { id: string; name: string; tier: string } | null;
   spousePlan: { id: string; name: string; tier: string } | null;
   monthlyPremium: number;
@@ -60,14 +61,14 @@ type Scenario = {
   hsaEligible: boolean;
   gotchas: Array<{ severity: 'warn' | 'info' | 'positive'; tag: string; message: string }>;
   whoIsOn: {
-    self: string; // Plan name + tier, e.g. "Self on PPO (Single)" or "Waived"
+    self: string;
     spouse: string;
     children: string;
   };
 };
 
 // ============================================================
-// UTILIZATION RULES (mirror of compare-plans / recommend logic)
+// UTILIZATION RULES
 // ============================================================
 
 function estimateUtilizationLevel(
@@ -79,28 +80,18 @@ function estimateUtilizationLevel(
   const householdSize = household.household_size || 1;
 
   let score = 0;
-
-  // High-severity conditions
   const highSev = ['cancer', 'heart disease', 'autoimmune', 'chronic pain', 'pregnancy'];
   for (const c of conditions) {
     if (highSev.some((h) => c.toLowerCase().includes(h))) score += 3;
   }
-
-  // Moderate-severity conditions
   const modSev = ['diabetes', 'hypertension', 'asthma', 'mental health', 'depression', 'anxiety'];
   for (const c of conditions) {
     if (modSev.some((m) => c.toLowerCase().includes(m))) score += 1.5;
   }
-
-  // Medications signal
   if (meds.length > 50) score += 1;
   if (meds.includes(',')) score += 0.5;
-
-  // Claims signal (3+ claims = at least moderate)
   if (claimsCount >= 5) score += 2;
   else if (claimsCount >= 3) score += 1;
-
-  // Household size scales utilization moderately
   if (householdSize >= 4) score += 0.5;
 
   if (score >= 4) return 'high';
@@ -111,7 +102,6 @@ function estimateUtilizationLevel(
 function expectedSpendForLevel(level: 'low' | 'moderate' | 'high', householdSize: number): number {
   const baseByLevel = { low: 800, moderate: 3500, high: 9000 };
   const base = baseByLevel[level];
-  // Diminishing returns for additional household members
   const multiplier = 1 + (householdSize - 1) * 0.6;
   return Math.round(base * multiplier);
 }
@@ -123,20 +113,15 @@ function expectedOOPGivenSpend(
 ): number {
   const ded = deductible ?? 0;
   const oop = oopMax ?? Infinity;
-
   if (totalSpend <= 0) return 0;
-
   let oopPaid = 0;
-  if (totalSpend <= ded) {
-    oopPaid = totalSpend;
-  } else {
-    oopPaid = ded + (totalSpend - ded) * 0.2; // 20% coinsurance
-  }
+  if (totalSpend <= ded) oopPaid = totalSpend;
+  else oopPaid = ded + (totalSpend - ded) * 0.2;
   return Math.min(oopPaid, oop);
 }
 
 // ============================================================
-// HELPER: get tier premium with fallback ladder
+// HELPERS
 // ============================================================
 
 function getTierPremium(plan: EmployerPlan, tier: 'single' | 'family' | 'ee_spouse' | 'ee_children'): number | null {
@@ -187,16 +172,10 @@ function buildSelfFamily(
 
   const ded = getTierDeductible(selfPlan, tier);
   const oop = getTierOOPMax(selfPlan, tier);
-
   const householdSize = household.household_size || 2;
   const totalSpend = expectedSpendForLevel(utilLevel, householdSize);
   const expectedOOP = expectedOOPGivenSpend(totalSpend, ded, oop);
-
-  // Spousal surcharge applies when spouse has access to coverage but enrolls on this side
-  const surchargePerMonth = spouseEmployment.spousal_surcharge_applies
-    ? (spouseEmployment.spousal_surcharge_amount || 0)
-    : 0;
-
+  const surchargePerMonth = spouseEmployment.spousal_surcharge_applies ? (spouseEmployment.spousal_surcharge_amount || 0) : 0;
   const monthlyPremium = premium + surchargePerMonth;
   const annualPremium = monthlyPremium * 12;
   const expectedAnnualCost = annualPremium + expectedOOP;
@@ -250,11 +229,9 @@ function buildSpouseFamily(
 
   const ded = getTierDeductible(spousePlan, tier);
   const oop = getTierOOPMax(spousePlan, tier);
-
   const householdSize = household.household_size || 2;
   const totalSpend = expectedSpendForLevel(utilLevel, householdSize);
   const expectedOOP = expectedOOPGivenSpend(totalSpend, ded, oop);
-
   const monthlyPremium = premium;
   const annualPremium = monthlyPremium * 12;
   const expectedAnnualCost = annualPremium + expectedOOP;
@@ -296,11 +273,8 @@ function buildBothSingle(
   utilLevel: 'low' | 'moderate' | 'high',
   household: Household
 ): Scenario | null {
-  // Only valid when no kids are being covered
   const scope = household.coverage_scope;
-  if (scope !== 'individual' && scope !== 'employee_plus_spouse') {
-    return null; // Kids exist; this scenario doesn't cover them
-  }
+  if (scope !== 'individual' && scope !== 'employee_plus_spouse') return null;
 
   const selfPrem = getTierPremium(selfPlan, 'single');
   const spousePrem = getTierPremium(spousePlan, 'single');
@@ -311,7 +285,6 @@ function buildBothSingle(
   const spouseDed = getTierDeductible(spousePlan, 'single');
   const spouseOOP = getTierOOPMax(spousePlan, 'single');
 
-  // Split household expected spend evenly between the two spouses
   const householdSize = household.household_size || 2;
   const totalSpend = expectedSpendForLevel(utilLevel, householdSize);
   const perPersonSpend = totalSpend / householdSize;
@@ -383,7 +356,6 @@ function buildSelfEEKids(
 
   const householdSize = household.household_size || 3;
   const totalSpend = expectedSpendForLevel(utilLevel, householdSize);
-  // Self+kids carries (householdSize - 1) people, spouse carries 1
   const selfPortion = totalSpend * ((householdSize - 1) / householdSize);
   const spousePortion = totalSpend * (1 / householdSize);
 
@@ -494,12 +466,7 @@ function buildSpouseEEKids(
   };
 }
 
-// ============================================================
-// TAX BRACKET HELPER
-// ============================================================
-
 function approximateMarginalTaxRate(combinedIncome: number): number {
-  // Rough 2025 federal MFJ brackets — we do not give tax advice, this is just for premium-pretax estimation
   if (combinedIncome >= 731200) return 0.37;
   if (combinedIncome >= 487450) return 0.35;
   if (combinedIncome >= 383900) return 0.32;
@@ -507,6 +474,107 @@ function approximateMarginalTaxRate(combinedIncome: number): number {
   if (combinedIncome >= 94300) return 0.22;
   if (combinedIncome >= 23200) return 0.12;
   return 0.10;
+}
+
+// ============================================================
+// AI SUMMARIZATION LAYER
+// ============================================================
+
+async function generateAISummary(args: {
+  household: Household;
+  spouseEmployment: SpouseEmployment;
+  topScenarios: Scenario[];
+  utilizationLevel: 'low' | 'moderate' | 'high';
+  expectedSpend: number;
+  combinedIncome: number;
+  marginalRate: number;
+  selfEmployerName: string;
+  spouseEmployerName: string;
+  claimsCount: number;
+}): Promise<{
+  overallRecommendation: string;
+  perScenarioInsights: Array<{ scenario_id: string; insight: string }>;
+  keyTradeoffs: string[];
+} | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const client = new Anthropic({ apiKey });
+
+  const scenariosForPrompt = args.topScenarios.map((s, i) => ({
+    rank: i + 1,
+    id: s.id,
+    label: s.scenario_label,
+    monthly_premium: Math.round(s.monthlyPremium),
+    annual_premium: Math.round(s.annualPremium),
+    expected_annual_cost: Math.round(s.expectedAnnualCost),
+    worst_case_annual_cost: Math.round(s.worstCaseAnnualCost),
+    hsa_eligible: s.hsaEligible,
+    who_is_on: s.whoIsOn,
+    gotchas: s.gotchas.map((g) => ({ severity: g.severity, message: g.message })),
+  }));
+
+  const prompt = `You are a benefits advisor helping a couple decide how to coordinate their employer health insurance.
+
+HOUSEHOLD CONTEXT:
+- Coverage scope: ${args.household.coverage_scope || 'unknown'}
+- Household size: ${args.household.household_size || 'unknown'}
+- Conditions: ${(args.household.conditions || []).join(', ') || 'none reported'}
+- Estimated medical utilization: ${args.utilizationLevel}
+- Expected annual medical spend: ~$${args.expectedSpend.toLocaleString()}
+- Combined household income: ~$${args.combinedIncome.toLocaleString()} (marginal tax rate ~${Math.round(args.marginalRate * 100)}%)
+- Claims uploaded: ${args.claimsCount}
+- Self employer: ${args.selfEmployerName}
+- Spouse employer: ${args.spouseEmployerName}
+
+TOP 3 SCENARIOS (already ranked by total expected annual cost):
+${JSON.stringify(scenariosForPrompt, null, 2)}
+
+Your task: Return ONLY valid JSON (no preamble, no markdown fences) with this exact shape:
+
+{
+  "overallRecommendation": "2-3 sentence plain-English explanation of why scenario rank #1 wins for this household. Reference the dollar gap to scenario #2, the household composition, and any decisive trade-off (HSA, surcharge, taxes). Talk to the user as 'you' and refer to the spouse naturally.",
+  "perScenarioInsights": [
+    { "scenario_id": "<exact id from input>", "insight": "1 sentence per scenario explaining why it ranked here, claim/condition-aware where relevant" },
+    { "scenario_id": "<exact id>", "insight": "..." },
+    { "scenario_id": "<exact id>", "insight": "..." }
+  ],
+  "keyTradeoffs": [
+    "3-5 short bullet-style tradeoffs across the top scenarios. Examples: HSA conflicts, premium vs OOP risk, tax impact, network differences."
+  ]
+}
+
+Important:
+- Write at a 9th-grade reading level. No insurance jargon unless you explain it.
+- Be specific with dollar figures from the data.
+- If a scenario has spousal-surcharge gotcha, call that out by name.
+- If utilization is low, lean toward HDHP/HSA reasoning. If high, lean toward low-deductible plans.
+- Never give actual tax advice — phrase tax savings as estimates.`;
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const responseText = response.content
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('')
+      .replace(/```json|```/g, '')
+      .trim();
+
+    const parsed = JSON.parse(responseText);
+    return {
+      overallRecommendation: parsed.overallRecommendation || '',
+      perScenarioInsights: Array.isArray(parsed.perScenarioInsights) ? parsed.perScenarioInsights : [],
+      keyTradeoffs: Array.isArray(parsed.keyTradeoffs) ? parsed.keyTradeoffs : [],
+    };
+  } catch (e: any) {
+    console.error('AI summary failed:', e.message);
+    return null;
+  }
 }
 
 // ============================================================
@@ -524,7 +592,6 @@ export async function POST(request: Request) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // ===== LOAD HOUSEHOLD =====
     const { data: hh, error: hhErr } = await supabase
       .from('households')
       .select('*')
@@ -539,7 +606,6 @@ export async function POST(request: Request) {
     }
     const household = hh as Household;
 
-    // ===== LOAD SELF + SPOUSE PACKETS =====
     const { data: selfPackets } = await supabase
       .from('employer_benefits_packets')
       .select('*')
@@ -568,7 +634,6 @@ export async function POST(request: Request) {
     const selfPacket = selfPackets[0];
     const spousePacket = spousePackets[0];
 
-    // ===== LOAD PLANS =====
     const { data: selfPlansData } = await supabase
       .from('employer_plans')
       .select('*')
@@ -586,7 +651,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Need at least one plan in each packet.' }, { status: 400 });
     }
 
-    // ===== LOAD SPOUSE EMPLOYMENT =====
     const { data: empData } = await supabase
       .from('spouse_employment_info')
       .select('*')
@@ -600,7 +664,6 @@ export async function POST(request: Request) {
       spousal_surcharge_amount: empData?.spousal_surcharge_amount ? Number(empData.spousal_surcharge_amount) : null,
     };
 
-    // ===== LOAD CLAIMS COUNT =====
     const { count: claimsCount } = await supabase
       .from('claims')
       .select('*', { count: 'exact', head: true })
@@ -608,38 +671,28 @@ export async function POST(request: Request) {
 
     const utilizationLevel = estimateUtilizationLevel(household, claimsCount ?? 0);
 
-    // ===== BUILD SCENARIOS =====
     const allScenarios: Scenario[] = [];
 
-    // Self-Family scenarios (one per self plan)
     for (const sp of selfPlans) {
       const s = buildSelfFamily(sp, spouseEmployment, utilizationLevel, household);
       if (s) allScenarios.push(s);
     }
-
-    // Spouse-Family scenarios (one per spouse plan)
     for (const sp of spousePlans) {
       const s = buildSpouseFamily(sp, utilizationLevel, household);
       if (s) allScenarios.push(s);
     }
-
-    // Both-Single scenarios (cross product)
     for (const selfP of selfPlans) {
       for (const spouseP of spousePlans) {
         const s = buildBothSingle(selfP, spouseP, utilizationLevel, household);
         if (s) allScenarios.push(s);
       }
     }
-
-    // Self-EE+Kids scenarios (cross product)
     for (const selfP of selfPlans) {
       for (const spouseP of spousePlans) {
         const s = buildSelfEEKids(selfP, spouseP, utilizationLevel, household);
         if (s) allScenarios.push(s);
       }
     }
-
-    // Spouse-EE+Kids scenarios (cross product)
     for (const selfP of selfPlans) {
       for (const spouseP of spousePlans) {
         const s = buildSpouseEEKids(selfP, spouseP, utilizationLevel, household);
@@ -654,7 +707,6 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
-    // ===== ADD INCOME-DERIVED GOTCHA TO ALL SCENARIOS =====
     const householdIncome = household.annual_income || 0;
     const spouseIncome = spouseEmployment.spouse_annual_income || 0;
     const combinedIncome = Math.max(householdIncome, householdIncome + spouseIncome);
@@ -671,33 +723,53 @@ export async function POST(request: Request) {
       }
     }
 
-    // ===== RANK BY EXPECTED ANNUAL COST =====
     allScenarios.sort((a, b) => a.expectedAnnualCost - b.expectedAnnualCost);
+    const top3 = allScenarios.slice(0, 3);
 
-    // ===== TOP 3 + ASSIGN RANKS =====
-    const top3 = allScenarios.slice(0, 3).map((s, i) => ({ ...s, rank: i + 1 }));
+    // ===== AI LAYER =====
+    const expectedSpend = expectedSpendForLevel(utilizationLevel, household.household_size || 2);
+    const aiSummary = await generateAISummary({
+      household,
+      spouseEmployment,
+      topScenarios: top3,
+      utilizationLevel,
+      expectedSpend,
+      combinedIncome,
+      marginalRate,
+      selfEmployerName: selfPacket.employer_name || 'Your employer',
+      spouseEmployerName: spousePacket.employer_name || spouseEmployment.spouse_employer_name || "Spouse's employer",
+      claimsCount: claimsCount ?? 0,
+    });
+
+    // Attach AI insights per scenario by id
+    const top3WithAI = top3.map((s, i) => {
+      const aiInsight = aiSummary?.perScenarioInsights.find((x) => x.scenario_id === s.id)?.insight || null;
+      return { ...s, rank: i + 1, ai_insight: aiInsight };
+    });
 
     return NextResponse.json({
       success: true,
       household_size: household.household_size,
       coverage_scope: household.coverage_scope,
       utilization_level: utilizationLevel,
-      expected_annual_medical_spend: expectedSpendForLevel(utilizationLevel, household.household_size || 2),
+      expected_annual_medical_spend: expectedSpend,
       claims_used: claimsCount ?? 0,
       self_employer_name: selfPacket.employer_name || 'Your employer',
       spouse_employer_name: spousePacket.employer_name || spouseEmployment.spouse_employer_name || "Spouse's employer",
       self_plan_count: selfPlans.length,
       spouse_plan_count: spousePlans.length,
       total_scenarios_evaluated: allScenarios.length,
-      top_scenarios: top3,
-      all_scenarios_count: allScenarios.length,
-      // Helpful for AI layer downstream:
+      top_scenarios: top3WithAI,
       household_income: householdIncome,
       spouse_income: spouseIncome,
       combined_income: combinedIncome,
       marginal_tax_rate: marginalRate,
       spousal_surcharge_applies: spouseEmployment.spousal_surcharge_applies,
       spousal_surcharge_amount: spouseEmployment.spousal_surcharge_amount,
+      // AI fields
+      ai_overall_recommendation: aiSummary?.overallRecommendation || null,
+      ai_key_tradeoffs: aiSummary?.keyTradeoffs || [],
+      ai_used: !!aiSummary,
     });
   } catch (e: any) {
     console.error('coordinate-spouse-plans error:', e);
