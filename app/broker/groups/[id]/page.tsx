@@ -187,16 +187,26 @@ export default function GroupDetailPage() {
     setClients((clientsData as ClientLite[]) || []);
 
     // Load activity log entries for this group
-    // Use server-side JSONB filter
+    // Pull recent activity then filter client-side (more reliable than JSONB operators
+    // which behave inconsistently across PostgREST versions)
     const { data: activityData } = await supabase
       .from('activity_log')
       .select('id, event_type, event_summary, created_at, metadata')
       .eq('agency_id', brokerRow.agency_id)
-      .filter('metadata->>group_id', 'eq', groupId)
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(500);
 
-    setActivity((activityData as ActivityEvent[]) || []);
+    const filtered = ((activityData as ActivityEvent[]) || []).filter((e) => {
+      if (!e.metadata) return false;
+      // metadata might be a JSON string OR an object depending on driver/version
+      let meta: any = e.metadata;
+      if (typeof meta === 'string') {
+        try { meta = JSON.parse(meta); } catch { return false; }
+      }
+      return meta && meta.group_id === groupId;
+    });
+
+    setActivity(filtered);
 
     setLoading(false);
   }
@@ -696,7 +706,7 @@ export default function GroupDetailPage() {
                   No notes yet. Click "+ Add Note" to start a journal for this group.
                 </p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={notesScrollArea}>
                   {notes.map((note) => {
                     const isAuthor = note.author_user_id === currentUserId;
                     const isEditing = editingNoteId === note.id;
@@ -1343,11 +1353,20 @@ const noteActionBtnDanger: React.CSSProperties = {
 };
 
 const confirmRow: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  marginTop: 10,
-  paddingTop: 10,
-  borderTop: '1px solid #f1e6e6',
-  flexWrap: 'wrap',
-};
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTop: '1px solid #f1e6e6',
+    flexWrap: 'wrap',
+  };
+  
+  const notesScrollArea: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    maxHeight: 400,
+    overflowY: 'auto',
+    paddingRight: 8, // breathing room so the scrollbar doesn't crowd content
+  };
