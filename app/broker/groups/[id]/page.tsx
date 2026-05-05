@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
+import CensusUpload from '../../../components/CensusUpload';
 
 type Group = {
   id: string;
@@ -35,15 +36,42 @@ type ActivityEvent = {
 };
 
 type GroupNote = {
-  id: string;
-  group_id: string;
-  agency_id: string;
-  author_user_id: string;
-  author_name: string | null;
-  body: string;
-  created_at: string;
-  updated_at: string;
-};
+    id: string;
+    group_id: string;
+    agency_id: string;
+    author_user_id: string;
+    author_name: string | null;
+    body: string;
+    created_at: string;
+    updated_at: string;
+  };
+  
+  type GroupMember = {
+    id: string;
+    first_name: string | null;
+    last_name: string | null;
+    email: string | null;
+    date_of_birth: string | null;
+    age: number | null;
+    gender: string | null;
+    relationship: string | null;
+    salary_amount: number | null;
+    tier: string | null;
+    zip_code: string | null;
+    state: string | null;
+    coverage_type: string | null;
+    current_plan: string | null;
+  };
+  
+  type CensusUploadRow = {
+    id: string;
+    original_filename: string;
+    file_size_bytes: number | null;
+    row_count: number;
+    parse_status: string;
+    file_path: string;
+    created_at: string;
+  };
 
 export default function GroupDetailPage() {
   const router = useRouter();
@@ -87,6 +115,15 @@ export default function GroupDetailPage() {
   const [editingNoteBody, setEditingNoteBody] = useState('');
   const [savingEditNote, setSavingEditNote] = useState(false);
   const [confirmDeleteNoteId, setConfirmDeleteNoteId] = useState<string | null>(null);
+
+  // Census
+  const [members, setMembers] = useState<GroupMember[]>([]);
+  const [census, setCensus] = useState<CensusUploadRow | null>(null);
+  const [showCensusUpload, setShowCensusUpload] = useState(false);
+  const [showClearCensusConfirm, setShowClearCensusConfirm] = useState(false);
+  const [memberSearch, setMemberSearch] = useState('');
+  const [memberPage, setMemberPage] = useState(0);
+  const MEMBERS_PER_PAGE = 25;
 
   useEffect(() => {
     loadAll();
@@ -208,8 +245,103 @@ export default function GroupDetailPage() {
 
     setActivity(filtered);
 
+    // Load most recent census upload for this group
+    const { data: censusData } = await supabase
+      .from('census_uploads')
+      .select('*')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const latestCensus = censusData && censusData.length > 0 ? censusData[0] : null;
+    setCensus(latestCensus as CensusUploadRow | null);
+
+    // Load members for this group
+    const { data: membersData } = await supabase
+      .from('group_members')
+      .select('id, first_name, last_name, email, date_of_birth, age, gender, relationship, salary_amount, tier, zip_code, state, coverage_type, current_plan')
+      .eq('group_id', groupId)
+      .order('last_name', { ascending: true });
+    setMembers((membersData as GroupMember[]) || []);
+
     setLoading(false);
   }
+
+  // ============= CENSUS HANDLERS =============
+
+  function handleCensusSuccess() {
+    setShowCensusUpload(false);
+    loadAll(); // refresh everything (members, census row, group member_count, activity)
+  }
+
+  async function handleDownloadCensus() {
+    if (!census) return;
+    const { data, error } = await supabase.storage
+      .from('census-uploads')
+      .createSignedUrl(census.file_path, 60);
+    if (error || !data?.signedUrl) {
+      alert('Could not generate download link.');
+      return;
+    }
+    window.open(data.signedUrl, '_blank');
+  }
+
+  async function handleClearCensus() {
+    if (!group || !census) return;
+
+    // Delete file from storage (best-effort)
+    await supabase.storage.from('census-uploads').remove([census.file_path]);
+
+    // Delete members
+    await supabase.from('group_members').delete().eq('group_id', group.id);
+
+    // Delete census_uploads row(s) for this group
+    await supabase.from('census_uploads').delete().eq('group_id', group.id);
+
+    // Reset member_count
+    await supabase.from('groups').update({ member_count: 0 }).eq('id', group.id);
+
+    // Activity log
+    await supabase.from('activity_log').insert({
+      agency_id: agencyId,
+      actor_user_id: currentUserId,
+      event_type: 'census_cleared',
+      event_summary: `Cleared census for ${group.name}`,
+      metadata: { group_id: group.id, group_name: group.name },
+    });
+
+    setShowClearCensusConfirm(false);
+    await loadAll();
+  }
+
+  function formatBytes(bytes: number | null): string {
+    if (!bytes) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  function formatSalary(amt: number | null): string {
+    if (amt === null || amt === undefined) return '—';
+    return `$${amt.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  }
+
+  // Filtered + paginated members
+  const filteredMembers = members.filter((m) => {
+    if (!memberSearch.trim()) return true;
+    const q = memberSearch.toLowerCase().trim();
+    return (
+      (m.first_name || '').toLowerCase().includes(q) ||
+      (m.last_name || '').toLowerCase().includes(q) ||
+      (m.email || '').toLowerCase().includes(q) ||
+      (m.zip_code || '').toLowerCase().includes(q)
+    );
+  });
+  const totalPages = Math.ceil(filteredMembers.length / MEMBERS_PER_PAGE);
+  const paginatedMembers = filteredMembers.slice(
+    memberPage * MEMBERS_PER_PAGE,
+    (memberPage + 1) * MEMBERS_PER_PAGE,
+  );
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -810,16 +942,129 @@ export default function GroupDetailPage() {
               )}
             </div>
 
-            {/* Census placeholder */}
+            {/* Census section */}
             <div style={{ ...infoCard, marginTop: 16 }}>
-              <h2 style={cardTitle}>Census</h2>
-              <div style={placeholderBox}>
-                <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
-                <strong style={{ color: '#1e3a5f' }}>Census upload coming in Push 4</strong>
-                <p style={{ color: '#3a4d68', fontSize: 13, margin: '8px 0 0' }}>
-                  Upload CSV or Excel files to parse member data, track ages, and generate carrier recommendations.
-                </p>
+              <div style={notesHeader}>
+                <h2 style={cardTitle}>Census</h2>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {census && (
+                    <>
+                      <button style={iconBtn} onClick={handleDownloadCensus}>
+                        ⬇ Download
+                      </button>
+                      <button style={iconBtnDanger} onClick={() => setShowClearCensusConfirm(true)}>
+                        🗑️ Clear
+                      </button>
+                    </>
+                  )}
+                  <button style={iconBtn} onClick={() => setShowCensusUpload(true)}>
+                    {census ? '⟳ Replace' : '+ Upload Census'}
+                  </button>
+                </div>
               </div>
+
+              {!census ? (
+                <div style={placeholderBox}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+                  <strong style={{ color: '#1e3a5f' }}>No census uploaded yet</strong>
+                  <p style={{ color: '#3a4d68', fontSize: 13, margin: '8px 0 0' }}>
+                    Upload a CSV file with your group's member roster to enable plan comparisons and carrier recommendations.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div style={censusMetaRow}>
+                    <div>
+                      <strong style={{ color: '#1e3a5f' }}>{census.original_filename}</strong>
+                      <div style={censusMetaText}>
+                        {census.row_count} members · {formatBytes(census.file_size_bytes)} · uploaded {formatDate(census.created_at, true)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Search */}
+                  <input
+                    type="text"
+                    placeholder="Search members by name, email, or zip..."
+                    value={memberSearch}
+                    onChange={(e) => { setMemberSearch(e.target.value); setMemberPage(0); }}
+                    style={searchInput}
+                  />
+
+                  {/* Members table */}
+                  <div style={tableScroll}>
+                    <table style={memberTable}>
+                      <thead>
+                        <tr>
+                          <th style={th}>Name</th>
+                          <th style={th}>Age</th>
+                          <th style={th}>Gender</th>
+                          <th style={th}>Relationship</th>
+                          <th style={th}>Tier</th>
+                          <th style={th}>Salary</th>
+                          <th style={th}>Zip</th>
+                          <th style={th}>State</th>
+                          <th style={th}>Plan</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paginatedMembers.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} style={{ ...td, textAlign: 'center', color: '#7a8a9b', padding: 20 }}>
+                              {memberSearch ? 'No matches.' : 'No members found.'}
+                            </td>
+                          </tr>
+                        ) : (
+                          paginatedMembers.map((m) => (
+                            <tr key={m.id}>
+                              <td style={td}>
+                                {(m.first_name || '') + ' ' + (m.last_name || '')}
+                                {m.email && (
+                                  <div style={{ fontSize: 11, color: '#7a8a9b' }}>{m.email}</div>
+                                )}
+                              </td>
+                              <td style={td}>{m.age ?? '—'}</td>
+                              <td style={td}>{m.gender || '—'}</td>
+                              <td style={td}>{m.relationship || '—'}</td>
+                              <td style={td}>{m.tier || '—'}</td>
+                              <td style={td}>{formatSalary(m.salary_amount)}</td>
+                              <td style={td}>{m.zip_code || '—'}</td>
+                              <td style={td}>{m.state || '—'}</td>
+                              <td style={td}>{m.current_plan || '—'}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div style={paginationRow}>
+                      <span style={{ fontSize: 12, color: '#7a8a9b' }}>
+                        Showing {memberPage * MEMBERS_PER_PAGE + 1}–
+                        {Math.min((memberPage + 1) * MEMBERS_PER_PAGE, filteredMembers.length)} of {filteredMembers.length}
+                      </span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button
+                          style={iconBtn}
+                          onClick={() => setMemberPage((p) => Math.max(0, p - 1))}
+                          disabled={memberPage === 0}
+                        >
+                          ← Prev
+                        </button>
+                        <button
+                          style={iconBtn}
+                          onClick={() => setMemberPage((p) => Math.min(totalPages - 1, p + 1))}
+                          disabled={memberPage >= totalPages - 1}
+                        >
+                          Next →
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
@@ -969,6 +1214,37 @@ export default function GroupDetailPage() {
               </button>
               <button style={dangerBtn} onClick={handleDelete} disabled={deleting}>
                 {deleting ? 'Deleting...' : 'Yes, delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Census Upload Modal */}
+      {showCensusUpload && (
+        <CensusUpload
+          groupId={group.id}
+          agencyId={agencyId}
+          userId={currentUserId}
+          onClose={() => setShowCensusUpload(false)}
+          onSuccess={handleCensusSuccess}
+        />
+      )}
+
+      {/* Clear Census Confirm Modal */}
+      {showClearCensusConfirm && (
+        <div style={modalOverlay} onClick={() => setShowClearCensusConfirm(false)}>
+          <div style={{ ...modalCard, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={modalTitle}>Clear census?</h2>
+            <p style={{ color: '#3a4d68', fontSize: 14, lineHeight: 1.6, marginBottom: 18 }}>
+              This will delete all {members.length} members and the census file for <strong>{group.name}</strong>. The group's member count will reset to 0. This cannot be undone.
+            </p>
+            <div style={modalFooter}>
+              <button style={secondaryBtn} onClick={() => setShowClearCensusConfirm(false)}>
+                Cancel
+              </button>
+              <button style={dangerBtn} onClick={handleClearCensus}>
+                Yes, clear census
               </button>
             </div>
           </div>
@@ -1368,5 +1644,88 @@ const confirmRow: React.CSSProperties = {
     gap: 12,
     maxHeight: 400,
     overflowY: 'auto',
-    paddingRight: 8, // breathing room so the scrollbar doesn't crowd content
+    paddingRight: 8,
+  };
+  
+  const iconBtnDanger: React.CSSProperties = {
+    background: '#fff',
+    color: '#8a3a3a',
+    border: '1px solid #d4a5a5',
+    padding: '6px 12px',
+    borderRadius: 6,
+    fontFamily: 'Figtree, sans-serif',
+    fontWeight: 600,
+    fontSize: 12,
+    cursor: 'pointer',
+  };
+  
+  const censusMetaRow: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    padding: '12px 14px',
+    background: '#faf7f2',
+    borderRadius: 8,
+    marginBottom: 14,
+  };
+  
+  const censusMetaText: React.CSSProperties = {
+    fontSize: 12,
+    color: '#7a8a9b',
+    marginTop: 4,
+  };
+  
+  const searchInput: React.CSSProperties = {
+    width: '100%',
+    padding: '10px 12px',
+    border: '1px solid #cbd5e0',
+    borderRadius: 6,
+    fontSize: 14,
+    fontFamily: 'Figtree, sans-serif',
+    color: '#1e3a5f',
+    marginBottom: 12,
+    boxSizing: 'border-box',
+  };
+  
+  const tableScroll: React.CSSProperties = {
+    overflowX: 'auto',
+    border: '1px solid #e2e8f0',
+    borderRadius: 8,
+  };
+  
+  const memberTable: React.CSSProperties = {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontFamily: 'Figtree, sans-serif',
+    fontSize: 13,
+  };
+  
+  const th: React.CSSProperties = {
+    textAlign: 'left',
+    padding: '10px 12px',
+    background: '#eef1f4',
+    color: '#3a4d68',
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    borderBottom: '1px solid #d8dde5',
+    whiteSpace: 'nowrap',
+  };
+  
+  const td: React.CSSProperties = {
+    padding: '10px 12px',
+    borderBottom: '1px solid #eef1f4',
+    color: '#1e3a5f',
+    fontSize: 13,
+    verticalAlign: 'top',
+  };
+  
+  const paginationRow: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    flexWrap: 'wrap',
+    gap: 10,
   };
