@@ -17,23 +17,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing agency_id or user_id' }, { status: 400 });
     }
 
-    // Verify caller is in the agency
+    // Verify caller is in the agency (and active)
     const { data: caller } = await supabaseAdmin
       .from('brokers')
       .select('id')
       .eq('user_id', user_id)
       .eq('agency_id', agency_id)
+      .is('removed_at', null)
       .maybeSingle();
 
     if (!caller) {
       return NextResponse.json({ error: 'Not authorized for this agency' }, { status: 403 });
     }
 
-    // Fetch all brokers in the agency
+    // Fetch all ACTIVE brokers in the agency
     const { data: brokerRows, error: brokerErr } = await supabaseAdmin
       .from('brokers')
       .select('id, user_id, role')
-      .eq('agency_id', agency_id);
+      .eq('agency_id', agency_id)
+      .is('removed_at', null);
 
     if (brokerErr) {
       console.error('Error fetching brokers:', brokerErr);
@@ -61,7 +63,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Client counts (joined on broker.id, NOT user_id)
+    // Client counts (joined on broker.id)
     const { data: clientRows } = await supabaseAdmin
       .from('clients')
       .select('id, assigned_broker_id')
@@ -85,7 +87,7 @@ export async function POST(req: NextRequest) {
       recCounts[uid] = count || 0;
     }
 
-    // Finalized plan designs count (by created_by_user_id)
+    // Finalized plan designs count
     const designCounts: Record<string, number> = {};
     for (const uid of userIds) {
       const { count } = await supabaseAdmin
