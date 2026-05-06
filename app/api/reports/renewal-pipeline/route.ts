@@ -285,23 +285,23 @@ export async function POST(req: NextRequest) {
       lines.push('');
 
       // Summary block
-      const totalEstPremium = rows.reduce((sum, r) => sum + r.estPremium, 0);
+      const totalEstPremium = rows.reduce((sum, r) => sum + (r.estPremium || 0), 0);
       lines.push(csvRow(['SUMMARY']));
       lines.push(csvRow(['Bucket', 'Client Count', 'Estimated Annual Premium']));
       lines.push(csvRow([
         'Urgent (≤30 days)',
         renewals30.length,
-        fmtMoney(renewals30.reduce((s, r) => s + r.estPremium, 0)),
+        fmtMoney(renewals30.reduce((s, r) => s + (r.estPremium || 0), 0)),
       ]));
       lines.push(csvRow([
         '31–60 days',
         renewals60.length,
-        fmtMoney(renewals60.reduce((s, r) => s + r.estPremium, 0)),
+        fmtMoney(renewals60.reduce((s, r) => s + (r.estPremium || 0), 0)),
       ]));
       lines.push(csvRow([
         '61–90 days',
         renewals90.length,
-        fmtMoney(renewals90.reduce((s, r) => s + r.estPremium, 0)),
+        fmtMoney(renewals90.reduce((s, r) => s + (r.estPremium || 0), 0)),
       ]));
       lines.push(csvRow(['Total', rows.length, fmtMoney(totalEstPremium)]));
       lines.push('');
@@ -322,16 +322,16 @@ export async function POST(req: NextRequest) {
       for (const r of allRows) {
         const clientLabel =
           r.employer_name || `${r.first_name || ''} ${r.last_name || ''}`.trim();
-        lines.push(csvRow([
-          bucketLabel(r.daysUntil),
-          r.daysUntil,
-          r.renewal_date,
-          clientLabel,
-          r.carrier,
-          r.member_count || '',
-          r.state || '',
-          fmtMoney(r.estPremium),
-        ]));
+          lines.push(csvRow([
+            bucketLabel(r.daysUntil),
+            r.daysUntil,
+            r.renewal_date,
+            clientLabel,
+            r.carrier,
+            r.member_count || '',
+            r.state || '',
+            fmtMoney(r.estPremium || 0),
+          ]));
       }
 
       const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
