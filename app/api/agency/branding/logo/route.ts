@@ -27,38 +27,13 @@ const EXT_FOR_TYPE: Record<string, string> = {
 };
 
 // Reject SVGs that contain script tags or event handler attributes — basic XSS hardening.
-// This is not a full sanitizer; it's a hedge against the most common payloads.
 function svgIsSuspicious(text: string): boolean {
   const lower = text.toLowerCase();
   if (lower.includes('<script')) return true;
   if (/\son[a-z]+\s*=/.test(lower)) return true; // onload=, onclick=, etc.
   if (lower.includes('javascript:')) return true;
-  if (lower.includes('<foreignobject')) return true; // can host arbitrary HTML
+  if (lower.includes('<foreignobject')) return true;
   return false;
-}
-
-async function loadBrokerForWrite(admin: any, userId: string) {
-  const { data: brokerRow, error } = await admin
-    .from('brokers')
-    .select('agency_id, role, removed_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (error || !brokerRow) {
-    return { error: NextResponse.json({ error: 'Broker profile not found' }, { status: 404 }) };
-  }
-  if (brokerRow.removed_at) {
-    return { error: NextResponse.json({ error: 'Broker removed from agency' }, { status: 403 }) };
-  }
-  if (brokerRow.role !== 'owner' && brokerRow.role !== 'admin') {
-    return {
-      error: NextResponse.json(
-        { error: 'Only Owner or Admin can change the agency logo' },
-        { status: 403 }
-      ),
-    };
-  }
-  return { agencyId: brokerRow.agency_id as string };
 }
 
 // =====================================================
@@ -90,7 +65,7 @@ export async function POST(req: NextRequest) {
     const fileSize = (file as any).size as number;
     if (typeof fileSize === 'number' && fileSize > MAX_LOGO_BYTES) {
       return NextResponse.json(
-        { error: `Logo file is too large (max 2 MB)` },
+        { error: 'Logo file is too large (max 2 MB)' },
         { status: 400 }
       );
     }
@@ -99,14 +74,33 @@ export async function POST(req: NextRequest) {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    const auth = await loadBrokerForWrite(admin, userId);
-    if ('error' in auth) return auth.error;
-    const agencyId = auth.agencyId;
+    // Auth check — Owner/Admin only
+    const { data: brokerRow, error: brokerErr } = await admin
+      .from('brokers')
+      .select('agency_id, role, removed_at')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    // Convert the Blob to a Buffer for upload, and run SVG safety check if applicable
+    if (brokerErr || !brokerRow) {
+      return NextResponse.json({ error: 'Broker profile not found' }, { status: 404 });
+    }
+    if (brokerRow.removed_at) {
+      return NextResponse.json({ error: 'Broker removed from agency' }, { status: 403 });
+    }
+    if (brokerRow.role !== 'owner' && brokerRow.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Only Owner or Admin can change the agency logo' },
+        { status: 403 }
+      );
+    }
+
+    const agencyId = brokerRow.agency_id as string;
+
+    // Convert Blob to Buffer
     const arrayBuf = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuf);
 
+    // SVG safety check
     if (fileType === 'image/svg+xml') {
       const text = buffer.toString('utf-8');
       if (svgIsSuspicious(text)) {
@@ -123,8 +117,7 @@ export async function POST(req: NextRequest) {
     const ext = EXT_FOR_TYPE[fileType];
     const objectPath = `${agencyId}/logo.${ext}`;
 
-    // Before uploading the new file, remove any existing logo with a different extension
-    // so we don't leave orphan files. Listing the folder is the simplest way.
+    // Clean up any existing logo with a different extension to avoid orphans
     const { data: existingFiles } = await admin.storage.from(BUCKET).list(agencyId);
     if (existingFiles && existingFiles.length > 0) {
       const stale = existingFiles
@@ -135,7 +128,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Upload (upsert so re-uploading the same extension overwrites cleanly)
+    // Upload (upsert handles same-extension replacements)
     const { error: uploadErr } = await admin.storage
       .from(BUCKET)
       .upload(objectPath, buffer, {
@@ -149,12 +142,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to upload logo' }, { status: 500 });
     }
 
-    // Public URL — bucket is public-read, so this works without signing
+    // Public URL with cache-buster
     const { data: pub } = admin.storage.from(BUCKET).getPublicUrl(objectPath);
-    // Append a cache-buster so the new logo shows immediately even if a CDN cached the old one
     const logoUrl = `${pub.publicUrl}?v=${Date.now()}`;
 
-    // Read previous logo_url for the audit log diff
+    // Read previous logo_url for audit diff
     const { data: existingAgency } = await admin
       .from('agencies')
       .select('logo_url')
@@ -215,29 +207,47 @@ export async function DELETE(req: NextRequest) {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    const auth = await loadBrokerForWrite(admin, userId);
-    if ('error' in auth) return auth.error;
-    const agencyId = auth.agencyId;
+    // Auth check — Owner/Admin only
+    const { data: brokerRow, error: brokerErr } = await admin
+      .from('brokers')
+      .select('agency_id, role, removed_at')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    // Read current logo_url for audit + to know if there's anything to delete
+    if (brokerErr || !brokerRow) {
+      return NextResponse.json({ error: 'Broker profile not found' }, { status: 404 });
+    }
+    if (brokerRow.removed_at) {
+      return NextResponse.json({ error: 'Broker removed from agency' }, { status: 403 });
+    }
+    if (brokerRow.role !== 'owner' && brokerRow.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Only Owner or Admin can change the agency logo' },
+        { status: 403 }
+      );
+    }
+
+    const agencyId = brokerRow.agency_id as string;
+
+    // Read current logo_url for audit + decide if there's anything to remove
     const { data: existingAgency } = await admin
       .from('agencies')
       .select('logo_url')
       .eq('id', agencyId)
       .maybeSingle();
 
-    // List + remove all files in the agency's folder
+    // Remove all files in the agency's folder
     const { data: existingFiles } = await admin.storage.from(BUCKET).list(agencyId);
     if (existingFiles && existingFiles.length > 0) {
       const paths = existingFiles.map((f) => `${agencyId}/${f.name}`);
       const { error: removeErr } = await admin.storage.from(BUCKET).remove(paths);
       if (removeErr) {
         console.error('Logo storage remove error:', removeErr);
-        // Non-fatal — we still want to clear the DB column
+        // Non-fatal — still clear the DB column
       }
     }
 
-    // Clear the URL on the agency row
+    // Clear URL on the agency row
     const { error: updateErr } = await admin
       .from('agencies')
       .update({ logo_url: null })
