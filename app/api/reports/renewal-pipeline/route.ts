@@ -8,7 +8,7 @@ import {
 } from '../../../components/pdf/RenewalPipelinePDF';
 
 // =====================================================
-// RENEWAL PIPELINE PDF
+// RENEWAL PIPELINE (PDF or CSV)
 // Real if clients.renewal_date is set, mock otherwise.
 // =====================================================
 
@@ -41,14 +41,45 @@ function daysBetween(future: Date, now: Date): number {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
+// ---- CSV HELPERS ----
+function csvCell(v: any): string {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function csvRow(cells: any[]): string {
+  return cells.map(csvCell).join(',');
+}
+
+function fmtMoney(n: number): string {
+  return `$${Math.round(n).toLocaleString('en-US')}`;
+}
+
+function bucketLabel(daysUntil: number): string {
+  if (daysUntil <= 30) return 'Urgent (≤30 days)';
+  if (daysUntil <= 60) return '31–60 days';
+  return '61–90 days';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId } = body;
+    const { userId, format = 'pdf' } = body;
 
     if (!userId) {
       return NextResponse.json(
         { error: 'userId is required' },
+        { status: 400 }
+      );
+    }
+
+    if (format !== 'pdf' && format !== 'csv') {
+      return NextResponse.json(
+        { error: 'format must be "pdf" or "csv"' },
         { status: 400 }
       );
     }
@@ -211,7 +242,111 @@ export async function POST(req: NextRequest) {
       .filter((r) => r.daysUntil > 60 && r.daysUntil <= 90)
       .sort((a, b) => a.daysUntil - b.daysUntil);
 
-    // 6. Render the PDF
+    const today = new Date().toISOString().slice(0, 10);
+    const safeAgency = agencyName
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    // 7. Log activity (once, regardless of format)
+    try {
+      await supabase.from('activity_log').insert({
+        agency_id: agencyId,
+        client_id: null,
+        actor_user_id: userId,
+        event_type: 'report_generated',
+        event_data: {
+          report_type: 'renewal_pipeline',
+          is_sample: isSample,
+          format,
+          total_renewals: rows.length,
+        },
+      });
+    } catch (logErr) {
+      console.error('Activity log write failed (non-fatal):', logErr);
+    }
+
+    // ===== CSV BRANCH =====
+    if (format === 'csv') {
+      const lines: string[] = [];
+
+      // Header block
+      lines.push(csvRow(['Clarity Health — Renewal Pipeline']));
+      lines.push(csvRow(['Agency', agencyName]));
+      lines.push(csvRow(['Broker', brokerName]));
+      lines.push(csvRow(['Generated', today]));
+      if (isSample) {
+        lines.push(csvRow([
+          'Note',
+          'SAMPLE DATA — Renewal dates synthesized. Set clients.renewal_date for real data.',
+        ]));
+      }
+      lines.push('');
+
+      // Summary block
+      const totalEstPremium = rows.reduce((sum, r) => sum + r.estPremium, 0);
+      lines.push(csvRow(['SUMMARY']));
+      lines.push(csvRow(['Bucket', 'Client Count', 'Estimated Annual Premium']));
+      lines.push(csvRow([
+        'Urgent (≤30 days)',
+        renewals30.length,
+        fmtMoney(renewals30.reduce((s, r) => s + r.estPremium, 0)),
+      ]));
+      lines.push(csvRow([
+        '31–60 days',
+        renewals60.length,
+        fmtMoney(renewals60.reduce((s, r) => s + r.estPremium, 0)),
+      ]));
+      lines.push(csvRow([
+        '61–90 days',
+        renewals90.length,
+        fmtMoney(renewals90.reduce((s, r) => s + r.estPremium, 0)),
+      ]));
+      lines.push(csvRow(['Total', rows.length, fmtMoney(totalEstPremium)]));
+      lines.push('');
+
+      // Renewals block — single flat table, sorted by daysUntil ascending
+      lines.push(csvRow(['RENEWALS']));
+      lines.push(csvRow([
+        'Bucket',
+        'Days Until Renewal',
+        'Renewal Date',
+        'Client / Employer',
+        'Carrier',
+        'Group Size',
+        'State',
+        'Estimated Annual Premium',
+      ]));
+      const allRows = [...renewals30, ...renewals60, ...renewals90];
+      for (const r of allRows) {
+        const clientLabel =
+          r.employer_name || `${r.first_name || ''} ${r.last_name || ''}`.trim();
+        lines.push(csvRow([
+          bucketLabel(r.daysUntil),
+          r.daysUntil,
+          r.renewal_date,
+          clientLabel,
+          r.carrier,
+          r.member_count || '',
+          r.state || '',
+          fmtMoney(r.estPremium),
+        ]));
+      }
+
+      const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
+      const fileName = `${safeAgency}-renewal-pipeline-${today}.csv`;
+
+      return new NextResponse(csv, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${fileName}"`,
+        },
+      });
+    }
+
+    // ===== PDF BRANCH (default) =====
     const doc = React.createElement(RenewalPipelinePDF, {
       agencyName,
       brokerName,
@@ -222,31 +357,6 @@ export async function POST(req: NextRequest) {
     });
 
     const pdfBuffer = await renderToBuffer(doc as any);
-
-    // 7. Log activity
-    try {
-      await supabase.from('activity_log').insert({
-        agency_id: agencyId,
-        client_id: null,
-        actor_user_id: userId,
-        event_type: 'report_generated',
-        event_data: {
-          report_type: 'renewal_pipeline',
-          is_sample: isSample,
-          total_renewals: rows.length,
-        },
-      });
-    } catch (logErr) {
-      console.error('Activity log write failed (non-fatal):', logErr);
-    }
-
-    // 8. Filename
-    const today = new Date().toISOString().slice(0, 10);
-    const safeAgency = agencyName
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
     const fileName = `${safeAgency}-renewal-pipeline-${today}.pdf`;
 
     return new NextResponse(pdfBuffer, {
@@ -258,10 +368,10 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: any) {
-    console.error('Renewal pipeline PDF error:', err);
+    console.error('Renewal pipeline report error:', err);
     return NextResponse.json(
       {
-        error: 'Failed to generate PDF',
+        error: 'Failed to generate report',
         details: err?.message || String(err),
       },
       { status: 500 }

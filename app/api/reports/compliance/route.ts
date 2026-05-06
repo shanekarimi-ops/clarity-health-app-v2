@@ -94,11 +94,26 @@ function methodFor(seed: number): string {
   return methods[seed % methods.length];
 }
 
+// ---- CSV HELPERS ----
+function csvCell(v: any): string {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function csvRow(cells: any[]): string {
+  return cells.map(csvCell).join(',');
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const userId: string = body.userId;
     const periodKey: PeriodKey = (body.periodKey as PeriodKey) || 'current';
+    const format: 'pdf' | 'csv' = body.format === 'csv' ? 'csv' : 'pdf';
 
     if (!userId) {
       return NextResponse.json(
@@ -251,7 +266,124 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Render the PDF
+    // 5. Log the activity (once, regardless of format)
+    try {
+      await admin.from('activity_log').insert({
+        agency_id: agencyId,
+        client_id: null,
+        actor_user_id: userId,
+        actor_name: brokerName,
+        event_type: 'report_generated',
+        event_summary: `Generated Compliance Summary report (${periodLabel})`,
+        metadata: {
+          report_type: 'compliance_summary',
+          period_key: periodKey,
+          format,
+          is_sample: true,
+        },
+      });
+    } catch (logErr) {
+      console.warn('Activity log failed (non-blocking):', logErr);
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    // ===== CSV BRANCH =====
+    if (format === 'csv') {
+      const lines: string[] = [];
+
+      // Header block
+      lines.push(csvRow(['Clarity Health — Compliance Summary']));
+      lines.push(csvRow(['Agency', agencyName]));
+      lines.push(csvRow(['Broker', brokerName]));
+      lines.push(csvRow(['Period', periodLabel]));
+      lines.push(csvRow(['Generated', today]));
+      lines.push(csvRow([
+        'Note',
+        'SAMPLE DATA — Compliance statuses are simulated. Real tracking requires carrier portal + IRS integrations.',
+      ]));
+      lines.push('');
+
+      // Summary block
+      lines.push(csvRow(['SUMMARY']));
+      lines.push(csvRow(['Status', 'Count']));
+      lines.push(csvRow(['On Track', totalOnTrack]));
+      lines.push(csvRow(['Action Needed', totalActionNeeded]));
+      lines.push(csvRow(['Overdue', totalOverdue]));
+      lines.push(csvRow(['Total', totalOnTrack + totalActionNeeded + totalOverdue]));
+      lines.push('');
+
+      // ACA section
+      lines.push(csvRow(['ACA REPORTING (FORM 1095-C)']));
+      lines.push(csvRow([
+        'Group',
+        'Employee Count',
+        'ALE Status',
+        'Filing Status',
+        'Deadline',
+      ]));
+      for (const r of acaRows) {
+        lines.push(csvRow([
+          r.groupName,
+          r.employeeCount,
+          r.aleStatus,
+          r.filing1095Label,
+          r.deadline,
+        ]));
+      }
+      lines.push('');
+
+      // SBC section
+      lines.push(csvRow(['SBC DISTRIBUTION LOG']));
+      lines.push(csvRow([
+        'Group',
+        'Sent Date',
+        'Recipients',
+        'Method',
+        'Status',
+      ]));
+      for (const r of sbcRows) {
+        lines.push(csvRow([
+          r.groupName,
+          r.sentDate,
+          r.recipientCount,
+          r.method,
+          r.statusLabel,
+        ]));
+      }
+      lines.push('');
+
+      // 5500 section
+      lines.push(csvRow(['FORM 5500 FILING TRACKER']));
+      lines.push(csvRow([
+        'Group',
+        'Filing Type',
+        'Deadline',
+        'Status',
+        'Notes',
+      ]));
+      for (const r of form5500Rows) {
+        lines.push(csvRow([
+          r.groupName,
+          r.filingType,
+          r.deadline,
+          r.statusLabel,
+          r.notes,
+        ]));
+      }
+
+      const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
+
+      return new NextResponse(csv, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="compliance-summary-${periodKey}.csv"`,
+        },
+      });
+    }
+
+    // ===== PDF BRANCH (default) =====
     const pdfBuffer = await renderToBuffer(
       React.createElement(CompliancePDF, {
         data: {
@@ -266,25 +398,6 @@ export async function POST(req: NextRequest) {
         },
       }) as any
     );
-
-    // 6. Log the activity (best effort)
-    try {
-      await admin.from('activity_log').insert({
-        agency_id: agencyId,
-        client_id: null,
-        actor_user_id: userId,
-        actor_name: brokerName,
-        event_type: 'report_generated',
-        event_summary: `Generated Compliance Summary report (${periodLabel})`,
-        metadata: {
-          report_type: 'compliance_summary',
-          period_key: periodKey,
-          is_sample: true,
-        },
-      });
-    } catch (logErr) {
-      console.warn('Activity log failed (non-blocking):', logErr);
-    }
 
     return new NextResponse(pdfBuffer as any, {
       status: 200,

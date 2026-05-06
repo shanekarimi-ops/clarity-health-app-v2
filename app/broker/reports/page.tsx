@@ -79,6 +79,7 @@ export default function BrokerReportsPage() {
 
   // Renewal Pipeline modal state
   const [showRenewalModal, setShowRenewalModal] = useState(false);
+  const [renewalFormat, setRenewalFormat] = useState<'pdf' | 'csv'>('pdf');
   const [renewalError, setRenewalError] = useState<string>('');
   const [generatingRenewal, setGeneratingRenewal] = useState(false);
 
@@ -98,6 +99,7 @@ export default function BrokerReportsPage() {
   // Compliance Summary modal state
   const [showComplianceModal, setShowComplianceModal] = useState(false);
   const [compliancePeriod, setCompliancePeriod] = useState('current');
+  const [complianceFormat, setComplianceFormat] = useState<'pdf' | 'csv'>('pdf');
   const [complianceError, setComplianceError] = useState<string>('');
   const [generatingCompliance, setGeneratingCompliance] = useState(false);
 
@@ -457,6 +459,7 @@ export default function BrokerReportsPage() {
 
   function openRenewalModal() {
     setShowRenewalModal(true);
+    setRenewalFormat('pdf');
     setRenewalError('');
   }
 
@@ -478,12 +481,12 @@ export default function BrokerReportsPage() {
       const res = await fetch('/api/reports/renewal-pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
+        body: JSON.stringify({ userId, format: renewalFormat }),
       });
 
       if (!res.ok) {
         const errText = await res.text();
-        console.error('Renewal pipeline PDF error response:', errText);
+        console.error('Renewal pipeline error response:', errText);
         let errMsg = `Failed (${res.status})`;
         try {
           const errJson = JSON.parse(errText);
@@ -499,14 +502,16 @@ export default function BrokerReportsPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'renewal-pipeline.pdf';
+      const ext = renewalFormat === 'csv' ? 'csv' : 'pdf';
+      a.download = `renewal-pipeline.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
 
       setShowRenewalModal(false);
-      setToastMessage('✅ Renewal pipeline PDF generated!');
+      const formatLabel = renewalFormat === 'csv' ? 'CSV' : 'PDF';
+      setToastMessage(`✅ Renewal pipeline ${formatLabel} generated!`);
       setTimeout(() => setToastMessage(''), 4000);
 
       loadStats();
@@ -668,6 +673,7 @@ export default function BrokerReportsPage() {
   function openComplianceModal() {
     setShowComplianceModal(true);
     setCompliancePeriod('current');
+    setComplianceFormat('pdf');
     setComplianceError('');
   }
 
@@ -692,12 +698,13 @@ export default function BrokerReportsPage() {
         body: JSON.stringify({
           userId,
           periodKey: compliancePeriod,
+          format: complianceFormat,
         }),
       });
 
       if (!res.ok) {
         const errText = await res.text();
-        console.error('Compliance PDF error response:', errText);
+        console.error('Compliance report error response:', errText);
         let errMsg = `Failed (${res.status})`;
         try {
           const errJson = JSON.parse(errText);
@@ -713,14 +720,16 @@ export default function BrokerReportsPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `compliance-summary-${compliancePeriod}.pdf`;
+      const ext = complianceFormat === 'csv' ? 'csv' : 'pdf';
+      a.download = `compliance-summary-${compliancePeriod}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
 
       setShowComplianceModal(false);
-      setToastMessage('✅ Compliance summary PDF generated!');
+      const formatLabel = complianceFormat === 'csv' ? 'CSV' : 'PDF';
+      setToastMessage(`✅ Compliance summary ${formatLabel} generated!`);
       setTimeout(() => setToastMessage(''), 4000);
 
       loadStats();
@@ -1187,7 +1196,7 @@ export default function BrokerReportsPage() {
               </div>
 
               <div style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5 }}>
-                Generates a PDF showing your clients bucketed by renewal window:
+                Generates a report showing your clients bucketed by renewal window:
                 <ul style={{ marginTop: 8, paddingLeft: 18 }}>
                   <li>🚨 Urgent — Renewing in 30 days</li>
                   <li>⚠️ Renewing in 31–60 days</li>
@@ -1195,6 +1204,19 @@ export default function BrokerReportsPage() {
                 </ul>
                 Each row includes carrier, group size, renewal date, and estimated
                 annual premium.
+              </div>
+
+              <div style={{ ...modalField, marginTop: 16 }}>
+                <label style={modalLabel}>Format</label>
+                <select
+                  value={renewalFormat}
+                  onChange={(e) => setRenewalFormat(e.target.value as 'pdf' | 'csv')}
+                  style={modalSelect}
+                  disabled={generatingRenewal}
+                >
+                  <option value="pdf">📄 PDF — formatted report</option>
+                  <option value="csv">📊 CSV — raw data for accounting</option>
+                </select>
               </div>
 
               {renewalError && (
@@ -1219,7 +1241,9 @@ export default function BrokerReportsPage() {
                 onClick={handleGenerateRenewal}
                 disabled={generatingRenewal}
               >
-                {generatingRenewal ? '⏳ Generating PDF...' : '🎯 Generate PDF'}
+                {generatingRenewal
+                  ? `⏳ Generating ${renewalFormat === 'csv' ? 'CSV' : 'PDF'}...`
+                  : `🎯 Generate ${renewalFormat === 'csv' ? 'CSV' : 'PDF'}`}
               </button>
             </div>
           </div>
@@ -1420,6 +1444,19 @@ export default function BrokerReportsPage() {
                 </select>
               </div>
 
+              <div style={modalField}>
+                <label style={modalLabel}>Format</label>
+                <select
+                  value={complianceFormat}
+                  onChange={(e) => setComplianceFormat(e.target.value as 'pdf' | 'csv')}
+                  style={modalSelect}
+                  disabled={generatingCompliance}
+                >
+                  <option value="pdf">📄 PDF — formatted report</option>
+                  <option value="csv">📊 CSV — raw data for accounting</option>
+                </select>
+              </div>
+
               <div style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5 }}>
                 The report includes:
                 <ul style={{ marginTop: 8, paddingLeft: 18 }}>
@@ -1452,7 +1489,9 @@ export default function BrokerReportsPage() {
                 onClick={handleGenerateCompliance}
                 disabled={generatingCompliance}
               >
-                {generatingCompliance ? '⏳ Generating PDF...' : '📋 Generate PDF'}
+                {generatingCompliance
+                  ? `⏳ Generating ${complianceFormat === 'csv' ? 'CSV' : 'PDF'}...`
+                  : `📋 Generate ${complianceFormat === 'csv' ? 'CSV' : 'PDF'}`}
               </button>
             </div>
           </div>
