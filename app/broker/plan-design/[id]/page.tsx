@@ -10,6 +10,8 @@ import SectionNetwork, { NetworkConfig } from './sections/SectionNetwork';
 import SectionStopLoss, { StopLossConfig } from './sections/SectionStopLoss';
 import SectionTPA, { TPAConfig } from './sections/SectionTPA';
 import SectionPBM, { PBMConfig } from './sections/SectionPBM';
+import SectionEligibility, { EligibilityConfig } from './sections/SectionEligibility';
+import SectionCarveOuts, { CarveOutsConfig } from './sections/SectionCarveOuts';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -239,6 +241,15 @@ export default function PlanDesignWizardPage() {
       const hasCore = p.pbmName && p.pricingModel;
       return hasCore ? 'complete' : 'partial';
     }
+    if (sec.key === 'eligibility') {
+      const e = data as EligibilityConfig;
+      // Required: waiting period choice
+      return e.waitingPeriod ? 'complete' : 'partial';
+    }
+    if (sec.key === 'carveouts') {
+      // Carve-outs is always optional — being touched at all = complete
+      return 'complete';
+    }
     return 'partial';
   }
 
@@ -437,6 +448,16 @@ export default function PlanDesignWizardPage() {
               <SectionPBM
                 data={design.pbm || {}}
                 onChange={(next) => updateDesignSection('pbm', next)}
+              />
+            ) : activeSec.key === 'eligibility' ? (
+              <SectionEligibility
+                data={design.eligibility || {}}
+                onChange={(next) => updateDesignSection('eligibility', next)}
+              />
+            ) : activeSec.key === 'carveouts' ? (
+              <SectionCarveOuts
+                data={design.carveouts || {}}
+                onChange={(next) => updateDesignSection('carveouts', next)}
               />
             ) : (
               <div style={placeholderBox}>
