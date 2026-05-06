@@ -255,17 +255,6 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       const plansData = await plansRes.json();
       const pagePlans = plansData.plans || [];
 
-      // Debug: log the first page so we can confirm pagination is working
-      if (page === 0) {
-        console.log('CMS plans/search response (page 0):', {
-          page,
-          offset,
-          total: plansData.total,
-          returnedCount: pagePlans.length,
-          keys: Object.keys(plansData),
-        });
-      }
-
       if (page === 0 && typeof plansData.total === 'number') {
         totalAvailable = plansData.total;
       }
@@ -277,11 +266,6 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       // Or if we've collected everything per the total count
       if (totalAvailable > 0 && allPlansRaw.length >= totalAvailable) break;
     }
-
-    console.log('Pagination complete:', {
-      totalAvailable,
-      collected: allPlansRaw.length,
-    });
 
     if (allPlansRaw.length === 0) {
       return NextResponse.json({
