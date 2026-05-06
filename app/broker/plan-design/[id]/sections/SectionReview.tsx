@@ -406,10 +406,10 @@ export default function SectionReview({
 function GlanceItem({ label, value }: { label: string; value: string | null }) {
   return (
     <div>
-      <div style={{ fontSize: 11, fontWeight: 600, color: '#7a9b76', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#a8c4a4', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>
         {label}
       </div>
-      <div style={{ fontSize: 14, color: '#1e3a5f', fontWeight: 500, fontFamily: 'Figtree, sans-serif' }}>
+      <div style={{ fontSize: 14, color: '#fff', fontWeight: 500, fontFamily: 'Figtree, sans-serif' }}>
         {value || '—'}
       </div>
     </div>
