@@ -85,6 +85,7 @@ export default function BrokerReportsPage() {
   // Commission Report modal state
   const [showCommissionModal, setShowCommissionModal] = useState(false);
   const [commissionPeriod, setCommissionPeriod] = useState('ytd');
+  const [commissionFormat, setCommissionFormat] = useState<'pdf' | 'csv'>('pdf');
   const [commissionError, setCommissionError] = useState<string>('');
   const [generatingCommission, setGeneratingCommission] = useState(false);
 
@@ -523,6 +524,7 @@ export default function BrokerReportsPage() {
   function openCommissionModal() {
     setShowCommissionModal(true);
     setCommissionPeriod('ytd');
+    setCommissionFormat('pdf');
     setCommissionError('');
   }
 
@@ -547,12 +549,13 @@ export default function BrokerReportsPage() {
         body: JSON.stringify({
           userId,
           period: commissionPeriod,
+          format: commissionFormat,
         }),
       });
 
       if (!res.ok) {
         const errText = await res.text();
-        console.error('Commission PDF error response:', errText);
+        console.error('Commission report error response:', errText);
         let errMsg = `Failed (${res.status})`;
         try {
           const errJson = JSON.parse(errText);
@@ -568,14 +571,16 @@ export default function BrokerReportsPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'commission-report.pdf';
+      const ext = commissionFormat === 'csv' ? 'csv' : 'pdf';
+      a.download = `commission-report.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
 
       setShowCommissionModal(false);
-      setToastMessage('✅ Commission report PDF generated!');
+      const formatLabel = commissionFormat === 'csv' ? 'CSV' : 'PDF';
+      setToastMessage(`✅ Commission report ${formatLabel} generated!`);
       setTimeout(() => setToastMessage(''), 4000);
 
       loadStats();
@@ -925,7 +930,6 @@ export default function BrokerReportsPage() {
             <li>Email reports directly to clients from the platform</li>
             <li>Real commission tracking wired to carrier statements</li>
             <li>Custom report templates with your own fields</li>
-            <li>Export raw data to CSV for accounting integration</li>
           </ul>
         </div>
       </main>
@@ -1259,6 +1263,19 @@ export default function BrokerReportsPage() {
                 </select>
               </div>
 
+              <div style={modalField}>
+                <label style={modalLabel}>Format</label>
+                <select
+                  value={commissionFormat}
+                  onChange={(e) => setCommissionFormat(e.target.value as 'pdf' | 'csv')}
+                  style={modalSelect}
+                  disabled={generatingCommission}
+                >
+                  <option value="pdf">📄 PDF — formatted report</option>
+                  <option value="csv">📊 CSV — raw data for accounting</option>
+                </select>
+              </div>
+
               {commissionError && (
                 <div style={modalErrorBox}>{commissionError}</div>
               )}
@@ -1281,7 +1298,9 @@ export default function BrokerReportsPage() {
                 onClick={handleGenerateCommission}
                 disabled={generatingCommission}
               >
-                {generatingCommission ? '⏳ Generating PDF...' : '💰 Generate PDF'}
+                {generatingCommission
+                  ? `⏳ Generating ${commissionFormat === 'csv' ? 'CSV' : 'PDF'}...`
+                  : `💰 Generate ${commissionFormat === 'csv' ? 'CSV' : 'PDF'}`}
               </button>
             </div>
           </div>

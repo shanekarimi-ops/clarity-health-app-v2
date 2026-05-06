@@ -1,3 +1,4 @@
+// app/api/reports/commission/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { renderToBuffer } from '@react-pdf/renderer';
 import { createClient } from '@supabase/supabase-js';
@@ -9,7 +10,7 @@ import {
 } from '../../../components/pdf/CommissionReportPDF';
 
 // =====================================================
-// COMMISSION REPORT PDF (fully mock data)
+// COMMISSION REPORT (PDF or CSV) — fully mock data
 // Synthesizes plausible commission figures based on
 // the broker's real client roster.
 // =====================================================
@@ -43,14 +44,47 @@ function hashStr(s: string): number {
   return Math.abs(h);
 }
 
+// ---- CSV HELPERS ----
+// RFC 4180 cell escape: wrap in quotes if contains comma/quote/newline,
+// double up internal quotes.
+function csvCell(v: any): string {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function csvRow(cells: any[]): string {
+  return cells.map(csvCell).join(',');
+}
+
+function fmtMoney(n: number): string {
+  // CSV consumers expect plain numbers OR quoted "$X,XXX". We use quoted dollar-formatted
+  // for human readability; Excel still parses neighboring numeric columns fine.
+  return `$${Math.round(n).toLocaleString('en-US')}`;
+}
+
+function fmtRate(r: number): string {
+  return `${(r * 100).toFixed(2)}%`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { userId, period = 'ytd' } = body;
+    const { userId, period = 'ytd', format = 'pdf' } = body;
 
     if (!userId) {
       return NextResponse.json(
         { error: 'userId is required' },
+        { status: 400 }
+      );
+    }
+
+    if (format !== 'pdf' && format !== 'csv') {
+      return NextResponse.json(
+        { error: 'format must be "pdf" or "csv"' },
         { status: 400 }
       );
     }
@@ -211,7 +245,116 @@ export async function POST(req: NextRequest) {
         ? 'Last 12 months'
         : 'Year-to-date';
 
-    // 6. Render
+    const today = new Date().toISOString().slice(0, 10);
+    const safeAgency = agencyName
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    // 7. Log activity (do this once, regardless of format)
+    try {
+      await supabase.from('activity_log').insert({
+        agency_id: agencyId,
+        client_id: null,
+        actor_user_id: userId,
+        event_type: 'report_generated',
+        event_data: {
+          report_type: 'commission_report',
+          is_sample: true,
+          period,
+          format,
+          line_item_count: lineItems.length,
+        },
+      });
+    } catch (logErr) {
+      console.error('Activity log write failed (non-fatal):', logErr);
+    }
+
+    // ===== CSV BRANCH =====
+    if (format === 'csv') {
+      const lines: string[] = [];
+
+      // Header block
+      lines.push(csvRow(['Clarity Health — Commission Report']));
+      lines.push(csvRow(['Agency', agencyName]));
+      lines.push(csvRow(['Broker', brokerName]));
+      lines.push(csvRow(['Period', periodLabel]));
+      lines.push(csvRow(['Generated', today]));
+      lines.push('');
+
+      // Totals block
+      lines.push(csvRow(['TOTALS']));
+      lines.push(csvRow(['Metric', 'Amount']));
+      lines.push(csvRow(['Total Annual Premium', fmtMoney(totalAnnualPremium)]));
+      lines.push(csvRow(['Commission Paid', fmtMoney(totalCommissionPaid)]));
+      lines.push(csvRow(['Commission Pending', fmtMoney(totalCommissionPending)]));
+      lines.push(csvRow(['Commission Projected', fmtMoney(totalCommissionProjected)]));
+      lines.push(csvRow([
+        'Total Commission',
+        fmtMoney(totalCommissionPaid + totalCommissionPending + totalCommissionProjected),
+      ]));
+      lines.push('');
+
+      // Carrier breakdown
+      lines.push(csvRow(['CARRIER BREAKDOWN']));
+      lines.push(csvRow([
+        'Carrier',
+        'Clients',
+        'Total Annual Premium',
+        'Total Commission',
+        'Avg Rate',
+      ]));
+      for (const cb of carrierBreakdowns) {
+        lines.push(csvRow([
+          cb.carrier,
+          cb.clientCount,
+          fmtMoney(cb.totalPremium),
+          fmtMoney(cb.totalCommission),
+          fmtRate(cb.avgRate),
+        ]));
+      }
+      lines.push('');
+
+      // Line items
+      lines.push(csvRow(['LINE ITEMS']));
+      lines.push(csvRow([
+        'Carrier',
+        'Client',
+        'Group Size',
+        'Effective Date',
+        'Annual Premium',
+        'Commission Rate',
+        'Commission Amount',
+        'Status',
+      ]));
+      for (const item of lineItems) {
+        lines.push(csvRow([
+          item.carrier,
+          item.clientName,
+          item.groupSize,
+          item.effectiveDate,
+          fmtMoney(item.annualPremium),
+          fmtRate(item.commissionRate),
+          fmtMoney(item.commissionAmount),
+          item.status,
+        ]));
+      }
+
+      // BOM for Excel UTF-8 compatibility + CRLF line endings (CSV convention)
+      const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
+      const fileName = `${safeAgency}-commission-${today}.csv`;
+
+      return new NextResponse(csv, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${fileName}"`,
+        },
+      });
+    }
+
+    // ===== PDF BRANCH (default) =====
     const doc = React.createElement(CommissionReportPDF, {
       agencyName,
       brokerName,
@@ -225,32 +368,6 @@ export async function POST(req: NextRequest) {
     });
 
     const pdfBuffer = await renderToBuffer(doc as any);
-
-    // 7. Log activity
-    try {
-      await supabase.from('activity_log').insert({
-        agency_id: agencyId,
-        client_id: null,
-        actor_user_id: userId,
-        event_type: 'report_generated',
-        event_data: {
-          report_type: 'commission_report',
-          is_sample: true,
-          period,
-          line_item_count: lineItems.length,
-        },
-      });
-    } catch (logErr) {
-      console.error('Activity log write failed (non-fatal):', logErr);
-    }
-
-    // 8. Filename
-    const today = new Date().toISOString().slice(0, 10);
-    const safeAgency = agencyName
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
     const fileName = `${safeAgency}-commission-${today}.pdf`;
 
     return new NextResponse(pdfBuffer, {
@@ -262,10 +379,10 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: any) {
-    console.error('Commission PDF error:', err);
+    console.error('Commission report error:', err);
     return NextResponse.json(
       {
-        error: 'Failed to generate PDF',
+        error: 'Failed to generate report',
         details: err?.message || String(err),
       },
       { status: 500 }
