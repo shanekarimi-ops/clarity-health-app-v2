@@ -257,6 +257,13 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       const pagePlans = plansData.plans || [];
 
       // CMS returns total in plansData.total (it's the count of all matching plans)
+      console.log('CMS plans/search response:', {
+        page,
+        offset,
+        total: plansData.total,
+        returnedCount: pagePlans.length,
+        keys: Object.keys(plansData),
+      });
       if (page === 0 && typeof plansData.total === 'number') {
         totalAvailable = plansData.total;
       }
