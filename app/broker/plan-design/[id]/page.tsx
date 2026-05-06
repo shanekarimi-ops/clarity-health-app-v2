@@ -8,6 +8,8 @@ import SectionGroup, { GroupBasics } from './sections/SectionGroup';
 import SectionPlan, { PlanStructure } from './sections/SectionPlan';
 import SectionNetwork, { NetworkConfig } from './sections/SectionNetwork';
 import SectionStopLoss, { StopLossConfig } from './sections/SectionStopLoss';
+import SectionTPA, { TPAConfig } from './sections/SectionTPA';
+import SectionPBM, { PBMConfig } from './sections/SectionPBM';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -227,6 +229,16 @@ export default function PlanDesignWizardPage() {
       const hasCore = s.specificDeductible && s.specificCarrier && s.contractType;
       return hasCore ? 'complete' : 'partial';
     }
+    if (sec.key === 'tpa') {
+      const t = data as TPAConfig;
+      const hasCore = t.tpaName && t.adminFeeStructure;
+      return hasCore ? 'complete' : 'partial';
+    }
+    if (sec.key === 'pbm') {
+      const p = data as PBMConfig;
+      const hasCore = p.pbmName && p.pricingModel;
+      return hasCore ? 'complete' : 'partial';
+    }
     return 'partial';
   }
 
@@ -415,6 +427,16 @@ export default function PlanDesignWizardPage() {
               <SectionStopLoss
                 data={design.stoploss || {}}
                 onChange={(next) => updateDesignSection('stoploss', next)}
+              />
+            ) : activeSec.key === 'tpa' ? (
+              <SectionTPA
+                data={design.tpa || {}}
+                onChange={(next) => updateDesignSection('tpa', next)}
+              />
+            ) : activeSec.key === 'pbm' ? (
+              <SectionPBM
+                data={design.pbm || {}}
+                onChange={(next) => updateDesignSection('pbm', next)}
               />
             ) : (
               <div style={placeholderBox}>
