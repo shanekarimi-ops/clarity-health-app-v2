@@ -164,19 +164,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Logo uploaded but URL save failed' }, { status: 500 });
     }
 
-    await logAuditEvent({
-      agency_id: agencyId,
-      event_type: 'branding_updated',
-      actor_user_id: userId,
-      details: {
-        changed_fields: ['logo_url'],
-        logo_url: {
-          before: existingAgency?.logo_url || null,
-          after: logoUrl,
+    await logAuditEvent(admin, {
+        agency_id: agencyId,
+        event_type: 'branding_updated',
+        actor_user_id: userId,
+        details: {
+          changed_fields: ['logo_url'],
+          logo_url: {
+            before: existingAgency?.logo_url || null,
+            after: logoUrl,
+          },
+          action: 'uploaded',
         },
-        action: 'uploaded',
-      },
-    });
+      });
 
     return NextResponse.json({ success: true, logo_url: logoUrl });
   } catch (err: any) {
@@ -258,19 +258,19 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to clear logo URL' }, { status: 500 });
     }
 
-    await logAuditEvent({
-      agency_id: agencyId,
-      event_type: 'branding_updated',
-      actor_user_id: userId,
-      details: {
-        changed_fields: ['logo_url'],
-        logo_url: {
-          before: existingAgency?.logo_url || null,
-          after: null,
+    await logAuditEvent(admin, {
+        agency_id: agencyId,
+        event_type: 'branding_updated',
+        actor_user_id: userId,
+        details: {
+          changed_fields: ['logo_url'],
+          logo_url: {
+            before: existingAgency?.logo_url || null,
+            after: null,
+          },
+          action: 'removed',
         },
-        action: 'removed',
-      },
-    });
+      });
 
     return NextResponse.json({ success: true });
   } catch (err: any) {

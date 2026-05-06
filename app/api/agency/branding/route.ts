@@ -169,22 +169,22 @@ export async function POST(req: NextRequest) {
     }
 
     // Audit log (errors swallowed inside helper)
-    await logAuditEvent({
-      agency_id: agencyId,
-      event_type: 'branding_updated',
-      actor_user_id: userId,
-      details: {
-        changed_fields: ['primary_color', 'accent_color'],
-        primary_color: {
-          before: existing?.primary_color || null,
-          after: primaryCheck.cleaned,
+    await logAuditEvent(admin, {
+        agency_id: agencyId,
+        event_type: 'branding_updated',
+        actor_user_id: userId,
+        details: {
+          changed_fields: ['primary_color', 'accent_color'],
+          primary_color: {
+            before: existing?.primary_color || null,
+            after: primaryCheck.cleaned,
+          },
+          accent_color: {
+            before: existing?.accent_color || null,
+            after: accentCheck.cleaned,
+          },
         },
-        accent_color: {
-          before: existing?.accent_color || null,
-          after: accentCheck.cleaned,
-        },
-      },
-    });
+      });
 
     return NextResponse.json({
       success: true,

@@ -7,7 +7,8 @@ export type AuditEventType =
   | 'role_changed'
   | 'broker_removed'
   | 'ownership_transferred'
-  | 'clients_reassigned';
+  | 'clients_reassigned'
+  | 'branding_updated';
 
 export async function logAuditEvent(
   supabaseAdmin: SupabaseClient,
