@@ -4,6 +4,8 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
+import SectionGroup, { GroupBasics } from './sections/SectionGroup';
+import SectionPlan, { PlanStructure } from './sections/SectionPlan';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -34,7 +36,6 @@ type SectionDef = {
   title: string;
   shortTitle: string;
   description: string;
-  // sections that are bundled (read-only) for level-funded
   bundledForLevelFunded?: boolean;
 };
 
@@ -70,7 +71,6 @@ export default function PlanDesignWizardPage() {
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const lastSaveAtRef = useRef<number>(0);
 
   useEffect(() => {
     if (designId) loadEverything();
@@ -101,7 +101,6 @@ export default function PlanDesignWizardPage() {
       setAgencyName(agency?.name || '');
     }
 
-    // Load the plan design (RLS does the agency check)
     const { data, error } = await supabase
       .from('plan_designs')
       .select(`
@@ -164,7 +163,6 @@ export default function PlanDesignWizardPage() {
             setSaveStatus('error');
             return;
           }
-          lastSaveAtRef.current = Date.now();
           setSaveStatus('saved');
           setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
         } catch (e) {
@@ -181,7 +179,6 @@ export default function PlanDesignWizardPage() {
     if (planDesign && name.trim() && name.trim() !== planDesign.name) {
       triggerAutosave({ name: name.trim() });
     } else if (!name.trim()) {
-      // revert
       setName(planDesign?.name || '');
     }
   }
@@ -201,7 +198,21 @@ export default function PlanDesignWizardPage() {
     }
     const data = design?.[sec.key];
     if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) return 'empty';
-    // Heuristic for now — sections will refine this when they're built
+
+    // Section-specific completion checks
+    if (sec.key === 'group') {
+      const g = data as GroupBasics;
+      const hasAll = g.effectiveDate && g.groupSize;
+      return hasAll ? 'complete' : 'partial';
+    }
+    if (sec.key === 'plan') {
+      const p = data as PlanStructure;
+      const hasCore =
+        p.deductibleInNetSingle && p.deductibleInNetFamily &&
+        p.oopMaxInNetSingle && p.oopMaxInNetFamily &&
+        p.coinsuranceInNet !== undefined;
+      return hasCore ? 'complete' : 'partial';
+    }
     return 'partial';
   }
 
@@ -369,6 +380,18 @@ export default function PlanDesignWizardPage() {
                   this directly — but it will still appear in the final proposal.
                 </p>
               </div>
+            ) : activeSec.key === 'group' ? (
+              <SectionGroup
+                data={design.group || {}}
+                onChange={(next) => updateDesignSection('group', next)}
+                prefilledMemberCount={planDesign.clients?.member_count ?? null}
+                prefilledState={planDesign.clients?.state ?? null}
+              />
+            ) : activeSec.key === 'plan' ? (
+              <SectionPlan
+                data={design.plan || {}}
+                onChange={(next) => updateDesignSection('plan', next)}
+              />
             ) : (
               <div style={placeholderBox}>
                 <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600 }}>
@@ -381,12 +404,6 @@ export default function PlanDesignWizardPage() {
                   This section&apos;s editor lands in a follow-up push. The autosave plumbing, navigation, and persistence are all in place — when the
                   fields go in, they&apos;ll save automatically as you type.
                 </p>
-                <button
-                  style={debugBtn}
-                  onClick={() => updateDesignSection(activeSec.key, { _placeholder: true, touchedAt: new Date().toISOString() })}
-                >
-                  Test autosave (mark this section touched)
-                </button>
               </div>
             )}
 
@@ -606,23 +623,12 @@ const lockedNotice: React.CSSProperties = {
   alignItems: 'center',
 };
 
-const debugBtn: React.CSSProperties = {
-  marginTop: 12,
-  background: '#fff',
-  border: '1px solid #cbd5e0',
-  borderRadius: 6,
-  padding: '6px 12px',
-  fontSize: 12,
-  fontFamily: 'Figtree, sans-serif',
-  color: '#3a4d68',
-  cursor: 'pointer',
-};
-
 const footerNav: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  paddingTop: 16,
+  paddingTop: 24,
+  marginTop: 24,
   borderTop: '1px solid #f1f5f9',
 };
 
