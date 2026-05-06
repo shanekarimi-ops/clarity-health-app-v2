@@ -13,6 +13,7 @@ import SectionPBM, { PBMConfig } from './sections/SectionPBM';
 import SectionEligibility, { EligibilityConfig } from './sections/SectionEligibility';
 import SectionCarveOuts, { CarveOutsConfig } from './sections/SectionCarveOuts';
 import SectionProjection from './sections/SectionProjection';
+import SectionReview from './sections/SectionReview';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -83,6 +84,8 @@ export default function PlanDesignWizardPage() {
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   useEffect(() => {
     if (designId) loadEverything();
@@ -205,7 +208,6 @@ export default function PlanDesignWizardPage() {
     triggerAutosave({ design: next });
   }
 
-  // Reload after AI projection finishes — pulls latest ai_projection + timestamp from DB
   async function reloadProjection() {
     const { data, error } = await supabase
       .from('plan_designs')
@@ -220,6 +222,52 @@ export default function PlanDesignWizardPage() {
   }
 
   // ============================================
+  // Status change (finalize / draft / archive)
+  // ============================================
+  async function handleStatusChange(newStatus: Status) {
+    setStatusUpdating(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        alert('Not authenticated. Please log in again.');
+        setStatusUpdating(false);
+        return;
+      }
+
+      const res = await fetch(`/api/plan-designs/${designId}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: session.access_token,
+          status: newStatus,
+        }),
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        console.error('Status update failed:', json);
+        alert('Failed to update status: ' + (json.error || 'unknown error'));
+        setStatusUpdating(false);
+        return;
+      }
+
+      // If archived, send the broker back to the plan-design list
+      if (newStatus === 'archived') {
+        router.push('/broker/plan-design');
+        return;
+      }
+
+      // Otherwise update local state
+      setPlanDesign(pd => pd ? { ...pd, status: newStatus } : pd);
+      setStatusUpdating(false);
+    } catch (e) {
+      console.error(e);
+      alert('Unexpected error updating status');
+      setStatusUpdating(false);
+    }
+  }
+
+  // ============================================
   // Section completion logic
   // ============================================
   function sectionState(sec: SectionDef): 'empty' | 'partial' | 'complete' | 'locked' {
@@ -230,6 +278,10 @@ export default function PlanDesignWizardPage() {
 
     if (sec.key === 'projection') {
       return aiProjection ? 'complete' : 'empty';
+    }
+    if (sec.key === 'review') {
+      // Review is "complete" when status is finalized
+      return planDesign?.status === 'finalized' ? 'complete' : 'partial';
     }
 
     if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) return 'empty';
@@ -333,6 +385,19 @@ export default function PlanDesignWizardPage() {
   const activeSec = SECTIONS[activeSection];
   const isLocked =
     planDesign.funding_model === 'level_funded' && activeSec.bundledForLevelFunded === true;
+
+  // Pre-compute section states for the Review component
+  const sectionStatesMap = {
+    group: sectionState(SECTIONS[0]),
+    plan: sectionState(SECTIONS[1]),
+    network: sectionState(SECTIONS[2]),
+    stoploss: sectionState(SECTIONS[3]),
+    tpa: sectionState(SECTIONS[4]),
+    pbm: sectionState(SECTIONS[5]),
+    eligibility: sectionState(SECTIONS[6]),
+    carveouts: sectionState(SECTIONS[7]),
+    projection: sectionState(SECTIONS[8]),
+  };
 
   return (
     <div className="dash-layout">
@@ -493,6 +558,19 @@ export default function PlanDesignWizardPage() {
                 generatedAt={aiProjectionGeneratedAt}
                 onProjectionGenerated={reloadProjection}
               />
+            ) : activeSec.key === 'review' ? (
+              <SectionReview
+                design={design}
+                fundingModel={planDesign.funding_model}
+                status={planDesign.status}
+                clientLabel={clientLabel}
+                effectiveDate={planDesign.effective_date}
+                aiProjection={aiProjection}
+                sectionStates={sectionStatesMap}
+                statusUpdating={statusUpdating}
+                onStatusChange={handleStatusChange}
+                onJumpToSection={(idx) => setActiveSection(idx)}
+              />
             ) : (
               <div style={placeholderBox}>
                 <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600 }}>
@@ -502,8 +580,7 @@ export default function PlanDesignWizardPage() {
                   Section {activeSection + 1} — {activeSec.title}
                 </div>
                 <p style={{ color: '#3a4d68', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
-                  This section&apos;s editor lands in a follow-up push. The autosave plumbing, navigation, and persistence are all in place — when the
-                  fields go in, they&apos;ll save automatically as you type.
+                  This section&apos;s editor lands in a follow-up push.
                 </p>
               </div>
             )}
