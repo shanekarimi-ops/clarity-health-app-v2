@@ -5,6 +5,11 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../../supabase';
 import BrokerSidebar from '../../components/BrokerSidebar';
 
+type ClientLite = {
+  id: string;
+  employer_name: string;
+};
+
 type BrokerRow = {
   id: string;
   user_id: string;
@@ -13,6 +18,7 @@ type BrokerRow = {
   first_name: string;
   last_name: string;
   client_count: number;
+  clients: ClientLite[];
   recommendations_count: number;
   finalized_designs_count: number;
   is_you: boolean;
@@ -33,6 +39,7 @@ export default function BrokerTeamPage() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [myUserId, setMyUserId] = useState('');
+  const [myBrokerId, setMyBrokerId] = useState('');
   const [myRole, setMyRole] = useState<'owner' | 'admin' | 'broker'>('broker');
   const [agencyName, setAgencyName] = useState('');
   const [agencyId, setAgencyId] = useState('');
@@ -54,6 +61,12 @@ export default function BrokerTeamPage() {
   const [inviteRole, setInviteRole] = useState<'admin' | 'broker'>('broker');
   const [generatedLink, setGeneratedLink] = useState('');
   const [linkCopied, setLinkCopied] = useState(false);
+
+  // Reassignment expand/select state
+  const [expandedBrokerId, setExpandedBrokerId] = useState<string | null>(null);
+  const [selectedClientIds, setSelectedClientIds] = useState<Set<string>>(new Set());
+  const [bulkTargetBrokerId, setBulkTargetBrokerId] = useState<string>('');
+  const [reassignError, setReassignError] = useState('');
 
   useEffect(() => {
     loadEverything();
@@ -83,13 +96,12 @@ export default function BrokerTeamPage() {
       return;
     }
 
+    setMyBrokerId(myBroker.id);
     setMyRole((myBroker.role || 'broker') as any);
     setAgencyId(myBroker.agency_id);
 
     if (myBroker.agencies) {
-      const agency: any = Array.isArray(myBroker.agencies)
-        ? myBroker.agencies[0]
-        : myBroker.agencies;
+      const agency: any = Array.isArray(myBroker.agencies) ? myBroker.agencies[0] : myBroker.agencies;
       setAgencyName(agency?.name || '');
     }
 
@@ -140,6 +152,86 @@ export default function BrokerTeamPage() {
     setActionLoading(false);
     setGeneratedLink('');
     setLinkCopied(false);
+  }
+
+  function toggleExpand(brokerId: string) {
+    if (expandedBrokerId === brokerId) {
+      setExpandedBrokerId(null);
+      setSelectedClientIds(new Set());
+      setBulkTargetBrokerId('');
+      setReassignError('');
+    } else {
+      setExpandedBrokerId(brokerId);
+      setSelectedClientIds(new Set());
+      setBulkTargetBrokerId('');
+      setReassignError('');
+    }
+  }
+
+  function toggleClientSelected(clientId: string) {
+    const next = new Set(selectedClientIds);
+    if (next.has(clientId)) next.delete(clientId);
+    else next.add(clientId);
+    setSelectedClientIds(next);
+  }
+
+  function toggleAllClientsForBroker(broker: BrokerRow) {
+    const allIds = broker.clients.map(c => c.id);
+    const allSelected = allIds.every(id => selectedClientIds.has(id));
+    const next = new Set(selectedClientIds);
+    if (allSelected) {
+      allIds.forEach(id => next.delete(id));
+    } else {
+      allIds.forEach(id => next.add(id));
+    }
+    setSelectedClientIds(next);
+  }
+
+  // Can the current user reassign clients from this source broker?
+  function canReassignFrom(sourceBroker: BrokerRow): boolean {
+    if (myRole === 'owner' || myRole === 'admin') return true;
+    // Brokers can reassign their own clients
+    return sourceBroker.id === myBrokerId;
+  }
+
+  async function handleReassign(sourceBroker: BrokerRow, clientIds: string[]) {
+    if (!bulkTargetBrokerId) {
+      setReassignError('Pick a destination broker');
+      return;
+    }
+    if (bulkTargetBrokerId === sourceBroker.id) {
+      setReassignError('Destination must be different from source');
+      return;
+    }
+    if (clientIds.length === 0) {
+      setReassignError('No clients selected');
+      return;
+    }
+
+    setActionLoading(true);
+    setReassignError('');
+
+    const res = await fetch('/api/team/reassign-clients', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        caller_user_id: myUserId,
+        client_ids: clientIds,
+        target_broker_id: bulkTargetBrokerId,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      setReassignError(err.error || 'Failed to reassign clients');
+      setActionLoading(false);
+      return;
+    }
+
+    await refreshRoster(agencyId, myUserId);
+    setSelectedClientIds(new Set());
+    setBulkTargetBrokerId('');
+    setActionLoading(false);
   }
 
   async function handleSaveRole() {
@@ -371,9 +463,13 @@ export default function BrokerTeamPage() {
         </div>
 
         <div style={sectionTitle}>Broker Roster</div>
+        <div style={{ ...subhint, marginBottom: 14 }}>
+          Click a broker to view their clients and reassign them.
+        </div>
 
         <div style={tableCard}>
           <div style={tableHeader}>
+            <div style={{ ...tableCol, flex: 0.3 }}></div>
             <div style={{ ...tableCol, flex: 2 }}>Broker</div>
             <div style={{ ...tableCol, flex: 2 }}>Email</div>
             <div style={{ ...tableCol, flex: 1 }}>Role</div>
@@ -392,31 +488,131 @@ export default function BrokerTeamPage() {
           {brokers.map((b) => {
             const initials = `${(b.first_name || '?').charAt(0)}${(b.last_name || '').charAt(0)}`.toUpperCase();
             const showEdit = canEdit && !b.is_you && !(myRole === 'admin' && b.role === 'owner');
+            const isExpanded = expandedBrokerId === b.id;
+            const showCheckboxes = canReassignFrom(b);
+            const allSelected = b.clients.length > 0 && b.clients.every(c => selectedClientIds.has(c.id));
+            const someSelected = b.clients.some(c => selectedClientIds.has(c.id));
+            const otherBrokers = brokers.filter(other => other.id !== b.id);
+
             return (
-              <div key={b.id} style={{ ...tableRow, background: b.is_you ? '#faf7f2' : '#fff' }}>
-                <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={avatarReal}>{initials || '—'}</div>
-                  <div>
-                    <div style={{ fontWeight: 600, color: '#1e3a5f' }}>
-                      {b.first_name || '(no name)'} {b.last_name || ''}
+              <div key={b.id}>
+                <div
+                  style={{
+                    ...tableRow,
+                    background: b.is_you ? '#faf7f2' : '#fff',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                  onClick={() => toggleExpand(b.id)}
+                >
+                  <div style={{ ...tableCol, flex: 0.3, color: '#7a9b76', fontSize: 13 }}>
+                    {isExpanded ? '▾' : '▸'}
+                  </div>
+                  <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={avatarReal}>{initials || '—'}</div>
+                    <div>
+                      <div style={{ fontWeight: 600, color: '#1e3a5f' }}>
+                        {b.first_name || '(no name)'} {b.last_name || ''}
+                      </div>
+                      {b.is_you && <div style={{ fontSize: 12, color: '#7a8a9b' }}>You</div>}
                     </div>
-                    {b.is_you && <div style={{ fontSize: 12, color: '#7a8a9b' }}>You</div>}
+                  </div>
+                  <div style={{ ...tableCol, flex: 2, color: '#3a4d68', fontSize: 13 }}>{b.email || '—'}</div>
+                  <div style={{ ...tableCol, flex: 1 }}>
+                    <span style={roleBadgeStyle(b.role)}>{b.role}</span>
+                  </div>
+                  <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.client_count}</div>
+                  <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.recommendations_count}</div>
+                  <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.finalized_designs_count}</div>
+                  <div style={{ ...tableCol, flex: 1, textAlign: 'right', paddingRight: 12 }} onClick={(e) => e.stopPropagation()}>
+                    {showEdit ? (
+                      <button style={secondaryBtn} onClick={() => openEdit(b)}>Edit</button>
+                    ) : (
+                      <button style={secondaryBtnDisabled} disabled title={b.is_you ? 'You cannot edit yourself' : 'Insufficient permissions'}>Edit</button>
+                    )}
                   </div>
                 </div>
-                <div style={{ ...tableCol, flex: 2, color: '#3a4d68', fontSize: 13 }}>{b.email || '—'}</div>
-                <div style={{ ...tableCol, flex: 1 }}>
-                  <span style={roleBadgeStyle(b.role)}>{b.role}</span>
-                </div>
-                <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.client_count}</div>
-                <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.recommendations_count}</div>
-                <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.finalized_designs_count}</div>
-                <div style={{ ...tableCol, flex: 1, textAlign: 'right', paddingRight: 12 }}>
-                  {showEdit ? (
-                    <button style={secondaryBtn} onClick={() => openEdit(b)}>Edit</button>
-                  ) : (
-                    <button style={secondaryBtnDisabled} disabled title={b.is_you ? 'You cannot edit yourself' : 'Insufficient permissions'}>Edit</button>
-                  )}
-                </div>
+
+                {isExpanded && (
+                  <div style={expandPanel}>
+                    {b.clients.length === 0 ? (
+                      <div style={{ padding: '12px 0', color: '#7a8a9b', fontSize: 13, fontStyle: 'italic' }}>
+                        No clients assigned to this broker yet.
+                      </div>
+                    ) : (
+                      <>
+                        {showCheckboxes && (
+                          <div style={bulkBar}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#3a4d68', cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={allSelected}
+                                onChange={() => toggleAllClientsForBroker(b)}
+                                style={{ accentColor: '#7a9b76', width: 16, height: 16, cursor: 'pointer' }}
+                              />
+                              Select all ({b.clients.length})
+                            </label>
+                            <div style={{ flex: 1 }} />
+                            {someSelected && (
+                              <>
+                                <span style={{ fontSize: 13, color: '#3a4d68', marginRight: 8 }}>
+                                  {b.clients.filter(c => selectedClientIds.has(c.id)).length} selected
+                                </span>
+                                <select
+                                  value={bulkTargetBrokerId}
+                                  onChange={(e) => setBulkTargetBrokerId(e.target.value)}
+                                  style={inlineSelect}
+                                >
+                                  <option value="">Reassign to...</option>
+                                  {otherBrokers.map(ob => (
+                                    <option key={ob.id} value={ob.id}>
+                                      {ob.first_name} {ob.last_name} ({ob.role})
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  style={bulkTargetBrokerId ? primaryBtnSmall : primaryBtnSmallDisabled}
+                                  disabled={!bulkTargetBrokerId || actionLoading}
+                                  onClick={() => handleReassign(b, b.clients.filter(c => selectedClientIds.has(c.id)).map(c => c.id))}
+                                >
+                                  {actionLoading ? 'Reassigning...' : 'Reassign'}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        <div style={clientList}>
+                          {b.clients.map(c => (
+                            <div key={c.id} style={clientRow}>
+                              {showCheckboxes && (
+                                <input
+                                  type="checkbox"
+                                  checked={selectedClientIds.has(c.id)}
+                                  onChange={() => toggleClientSelected(c.id)}
+                                  style={{ accentColor: '#7a9b76', width: 16, height: 16, cursor: 'pointer' }}
+                                />
+                              )}
+                              <div style={{ flex: 1, color: '#1e3a5f', fontWeight: 600, fontSize: 14 }}>
+                                {c.employer_name}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {reassignError && expandedBrokerId === b.id && (
+                          <div style={errorBox}>{reassignError}</div>
+                        )}
+
+                        {!showCheckboxes && (
+                          <div style={{ ...subhint, marginTop: 8 }}>
+                            You can only reassign clients assigned to you.
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -450,12 +646,8 @@ export default function BrokerTeamPage() {
                   <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                     {canInvite && (
                       <>
-                        <button style={secondaryBtn} onClick={() => copyInviteLink(inv.token)}>
-                          Copy link
-                        </button>
-                        <button style={dangerBtn} onClick={() => handleCancelInvite(inv.id)}>
-                          Cancel
-                        </button>
+                        <button style={secondaryBtn} onClick={() => copyInviteLink(inv.token)}>Copy link</button>
+                        <button style={dangerBtn} onClick={() => handleCancelInvite(inv.id)}>Cancel</button>
                       </>
                     )}
                   </div>
@@ -535,9 +727,7 @@ export default function BrokerTeamPage() {
 
                 <div style={modalActions}>
                   <div style={{ flex: 1 }} />
-                  <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>
-                    Cancel
-                  </button>
+                  <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
                   <button style={primaryBtn} onClick={handleSendInvite} disabled={actionLoading}>
                     {actionLoading ? 'Generating...' : 'Generate invite link'}
                   </button>
@@ -650,9 +840,7 @@ export default function BrokerTeamPage() {
                 Remove broker
               </button>
               <div style={{ flex: 1 }} />
-              <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>
-                Cancel
-              </button>
+              <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
               <button
                 style={editTarget.role === 'owner' ? primaryBtnDisabled : primaryBtn}
                 onClick={handleSaveRole}
@@ -691,9 +879,7 @@ export default function BrokerTeamPage() {
 
             <div style={modalActions}>
               <div style={{ flex: 1 }} />
-              <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>
-                Cancel
-              </button>
+              <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
               <button style={dangerBtnFilled} onClick={handleRemoveBroker} disabled={actionLoading}>
                 {actionLoading ? 'Removing...' : 'Remove broker'}
               </button>
@@ -745,9 +931,7 @@ export default function BrokerTeamPage() {
 
             <div style={modalActions}>
               <div style={{ flex: 1 }} />
-              <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>
-                Cancel
-              </button>
+              <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
               <button
                 style={transferConfirmText === 'TRANSFER' ? dangerBtnFilled : primaryBtnDisabled}
                 onClick={handleTransferOwnership}
@@ -773,139 +957,46 @@ function roleBadgeStyle(role: string): React.CSSProperties {
   return { ...base, background: '#eef1f4', color: '#3a4d68' };
 }
 
-const headerRow: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
-  marginBottom: 24, flexWrap: 'wrap', gap: 16,
-};
-const pageTitle: React.CSSProperties = {
-  fontFamily: 'Playfair Display, serif', fontSize: 36, color: '#1e3a5f', margin: 0, marginBottom: 4,
-};
-const pageSubtitle: React.CSSProperties = {
-  fontFamily: 'Figtree, sans-serif', color: '#3a4d68', margin: 0, fontSize: 15,
-};
-const primaryBtn: React.CSSProperties = {
-  background: '#7a9b76', color: '#fff', border: 'none', padding: '12px 22px',
-  borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, cursor: 'pointer',
-};
-const primaryBtnDisabled: React.CSSProperties = {
-  background: '#cbd5e0', color: '#fff', border: 'none', padding: '12px 22px',
-  borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14,
-  cursor: 'not-allowed', opacity: 0.7,
-};
-const secondaryBtn: React.CSSProperties = {
-  background: '#fff', color: '#1e3a5f', border: '1px solid #cbd5e0',
-  padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif',
-  fontSize: 13, fontWeight: 600, cursor: 'pointer',
-};
-const secondaryBtnDisabled: React.CSSProperties = {
-  background: '#fff', color: '#7a8a9b', border: '1px solid #e2e8f0',
-  padding: '6px 12px', borderRadius: 6, fontFamily: 'Figtree, sans-serif',
-  fontSize: 12, cursor: 'not-allowed',
-};
-const dangerBtn: React.CSSProperties = {
-  background: '#fff', color: '#a04444', border: '1px solid #e8c8c8',
-  padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif',
-  fontSize: 13, fontWeight: 600, cursor: 'pointer',
-};
-const dangerBtnFilled: React.CSSProperties = {
-  background: '#a04444', color: '#fff', border: 'none',
-  padding: '12px 22px', borderRadius: 8, fontFamily: 'Figtree, sans-serif',
-  fontWeight: 600, fontSize: 14, cursor: 'pointer',
-};
-const linkBtn: React.CSSProperties = {
-  background: 'transparent', border: 'none', color: '#7a9b76',
-  padding: 0, fontFamily: 'Figtree, sans-serif', fontSize: 13,
-  fontWeight: 600, cursor: 'pointer', textDecoration: 'underline',
-};
-const statsRow: React.CSSProperties = {
-  display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-  gap: 14, marginBottom: 28,
-};
-const statTile: React.CSSProperties = {
-  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 18,
-  fontFamily: 'Figtree, sans-serif',
-};
-const statLabel: React.CSSProperties = {
-  fontSize: 12, color: '#7a8a9b', textTransform: 'uppercase',
-  letterSpacing: 0.5, marginBottom: 6,
-};
-const statValue: React.CSSProperties = {
-  fontSize: 28, fontWeight: 700, color: '#1e3a5f', fontFamily: 'Playfair Display, serif',
-};
-const sectionTitle: React.CSSProperties = {
-  fontFamily: 'Playfair Display, serif', fontSize: 22, color: '#1e3a5f', marginBottom: 14, marginTop: 8,
-};
-const tableCard: React.CSSProperties = {
-  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
-  marginBottom: 28, overflow: 'hidden', fontFamily: 'Figtree, sans-serif',
-};
-const tableHeader: React.CSSProperties = {
-  display: 'flex', background: '#eef1f4', padding: '12px 18px', fontSize: 12,
-  fontWeight: 700, color: '#3a4d68', textTransform: 'uppercase',
-  letterSpacing: 0.5, borderBottom: '1px solid #e2e8f0',
-};
-const tableRow: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', padding: '14px 18px',
-  borderBottom: '1px solid #eef1f4', fontSize: 14,
-};
+const headerRow: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24, flexWrap: 'wrap', gap: 16 };
+const pageTitle: React.CSSProperties = { fontFamily: 'Playfair Display, serif', fontSize: 36, color: '#1e3a5f', margin: 0, marginBottom: 4 };
+const pageSubtitle: React.CSSProperties = { fontFamily: 'Figtree, sans-serif', color: '#3a4d68', margin: 0, fontSize: 15 };
+const subhint: React.CSSProperties = { fontFamily: 'Figtree, sans-serif', color: '#7a8a9b', fontSize: 13 };
+const primaryBtn: React.CSSProperties = { background: '#7a9b76', color: '#fff', border: 'none', padding: '12px 22px', borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, cursor: 'pointer' };
+const primaryBtnDisabled: React.CSSProperties = { background: '#cbd5e0', color: '#fff', border: 'none', padding: '12px 22px', borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, cursor: 'not-allowed', opacity: 0.7 };
+const primaryBtnSmall: React.CSSProperties = { background: '#7a9b76', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
+const primaryBtnSmallDisabled: React.CSSProperties = { background: '#cbd5e0', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 13, cursor: 'not-allowed', opacity: 0.7 };
+const secondaryBtn: React.CSSProperties = { background: '#fff', color: '#1e3a5f', border: '1px solid #cbd5e0', padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif', fontSize: 13, fontWeight: 600, cursor: 'pointer' };
+const secondaryBtnDisabled: React.CSSProperties = { background: '#fff', color: '#7a8a9b', border: '1px solid #e2e8f0', padding: '6px 12px', borderRadius: 6, fontFamily: 'Figtree, sans-serif', fontSize: 12, cursor: 'not-allowed' };
+const dangerBtn: React.CSSProperties = { background: '#fff', color: '#a04444', border: '1px solid #e8c8c8', padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif', fontSize: 13, fontWeight: 600, cursor: 'pointer' };
+const dangerBtnFilled: React.CSSProperties = { background: '#a04444', color: '#fff', border: 'none', padding: '12px 22px', borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, cursor: 'pointer' };
+const linkBtn: React.CSSProperties = { background: 'transparent', border: 'none', color: '#7a9b76', padding: 0, fontFamily: 'Figtree, sans-serif', fontSize: 13, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' };
+const statsRow: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 28 };
+const statTile: React.CSSProperties = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 18, fontFamily: 'Figtree, sans-serif' };
+const statLabel: React.CSSProperties = { fontSize: 12, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 };
+const statValue: React.CSSProperties = { fontSize: 28, fontWeight: 700, color: '#1e3a5f', fontFamily: 'Playfair Display, serif' };
+const sectionTitle: React.CSSProperties = { fontFamily: 'Playfair Display, serif', fontSize: 22, color: '#1e3a5f', marginBottom: 6, marginTop: 8 };
+const tableCard: React.CSSProperties = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, marginBottom: 28, overflow: 'hidden', fontFamily: 'Figtree, sans-serif' };
+const tableHeader: React.CSSProperties = { display: 'flex', background: '#eef1f4', padding: '12px 18px', fontSize: 12, fontWeight: 700, color: '#3a4d68', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e2e8f0' };
+const tableRow: React.CSSProperties = { display: 'flex', alignItems: 'center', padding: '14px 18px', borderBottom: '1px solid #eef1f4', fontSize: 14 };
 const tableCol: React.CSSProperties = { padding: '0 6px' };
-const avatarReal: React.CSSProperties = {
-  width: 36, height: 36, borderRadius: '50%', background: '#7a9b76', color: '#fff',
-  display: 'flex', alignItems: 'center', justifyContent: 'center',
-  fontWeight: 600, fontSize: 13,
-};
+const avatarReal: React.CSSProperties = { width: 36, height: 36, borderRadius: '50%', background: '#7a9b76', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13 };
+const expandPanel: React.CSSProperties = { background: '#fbfaf6', borderBottom: '1px solid #eef1f4', padding: '14px 24px 18px 50px', fontFamily: 'Figtree, sans-serif' };
+const bulkBar: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 12, borderBottom: '1px solid #eef1f4', marginBottom: 12, flexWrap: 'wrap' };
+const inlineSelect: React.CSSProperties = { padding: '6px 10px', borderRadius: 6, border: '1px solid #cbd5e0', fontFamily: 'Figtree, sans-serif', fontSize: 13, color: '#1e3a5f', background: '#fff' };
+const clientList: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
+const clientRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f0eee8' };
 
-const modalOverlay: React.CSSProperties = {
-  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'rgba(30, 58, 95, 0.5)', display: 'flex',
-  alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-};
-const modalCard: React.CSSProperties = {
-  background: '#fff', borderRadius: 12, padding: 28, width: '100%',
-  maxWidth: 520, fontFamily: 'Figtree, sans-serif', maxHeight: '90vh', overflowY: 'auto',
-};
-const modalHeader: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18,
-};
-const modalTitle: React.CSSProperties = {
-  fontFamily: 'Playfair Display, serif', fontSize: 24, color: '#1e3a5f', margin: 0,
-};
-const modalClose: React.CSSProperties = {
-  background: 'transparent', border: 'none', fontSize: 28, color: '#7a8a9b',
-  cursor: 'pointer', padding: 0, lineHeight: 1,
-};
-const modalActions: React.CSSProperties = {
-  display: 'flex', gap: 10, marginTop: 22, alignItems: 'center',
-};
-const fieldLabel: React.CSSProperties = {
-  fontSize: 13, color: '#3a4d68', fontWeight: 600, marginBottom: 6, marginTop: 12,
-};
-const selectStyle: React.CSSProperties = {
-  width: '100%', padding: '10px 12px', borderRadius: 6,
-  border: '1px solid #cbd5e0', fontFamily: 'Figtree, sans-serif',
-  fontSize: 14, color: '#1e3a5f', background: '#fff',
-};
-const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '10px 12px', borderRadius: 6,
-  border: '1px solid #cbd5e0', fontFamily: 'Figtree, sans-serif',
-  fontSize: 14, color: '#1e3a5f', boxSizing: 'border-box',
-};
-const callout: React.CSSProperties = {
-  background: '#faf7f2', border: '1px solid #e8e0d0', borderRadius: 8,
-  padding: 14, fontSize: 13, color: '#3a4d68', marginTop: 12, lineHeight: 1.5,
-};
-const successCallout: React.CSSProperties = {
-  background: '#e6f0e6', border: '1px solid #c4d8c0', borderRadius: 8,
-  padding: 14, fontSize: 14, color: '#3a5a36', marginBottom: 16, lineHeight: 1.5,
-};
-const dangerCallout: React.CSSProperties = {
-  background: '#fef0f0', border: '1px solid #f0c8c8', borderRadius: 8,
-  padding: 14, fontSize: 13, color: '#7a3a3a', marginBottom: 16, lineHeight: 1.5,
-};
-const errorBox: React.CSSProperties = {
-  background: '#fef0f0', border: '1px solid #f0c8c8', borderRadius: 6,
-  padding: '10px 12px', fontSize: 13, color: '#a04444', marginTop: 14,
-};
-const linkBoxRow: React.CSSProperties = {
-  display: 'flex', gap: 8, marginTop: 6,
-};
+const modalOverlay: React.CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(30, 58, 95, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 };
+const modalCard: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 28, width: '100%', maxWidth: 520, fontFamily: 'Figtree, sans-serif', maxHeight: '90vh', overflowY: 'auto' };
+const modalHeader: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 };
+const modalTitle: React.CSSProperties = { fontFamily: 'Playfair Display, serif', fontSize: 24, color: '#1e3a5f', margin: 0 };
+const modalClose: React.CSSProperties = { background: 'transparent', border: 'none', fontSize: 28, color: '#7a8a9b', cursor: 'pointer', padding: 0, lineHeight: 1 };
+const modalActions: React.CSSProperties = { display: 'flex', gap: 10, marginTop: 22, alignItems: 'center' };
+const fieldLabel: React.CSSProperties = { fontSize: 13, color: '#3a4d68', fontWeight: 600, marginBottom: 6, marginTop: 12 };
+const selectStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', borderRadius: 6, border: '1px solid #cbd5e0', fontFamily: 'Figtree, sans-serif', fontSize: 14, color: '#1e3a5f', background: '#fff' };
+const inputStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', borderRadius: 6, border: '1px solid #cbd5e0', fontFamily: 'Figtree, sans-serif', fontSize: 14, color: '#1e3a5f', boxSizing: 'border-box' };
+const callout: React.CSSProperties = { background: '#faf7f2', border: '1px solid #e8e0d0', borderRadius: 8, padding: 14, fontSize: 13, color: '#3a4d68', marginTop: 12, lineHeight: 1.5 };
+const successCallout: React.CSSProperties = { background: '#e6f0e6', border: '1px solid #c4d8c0', borderRadius: 8, padding: 14, fontSize: 14, color: '#3a5a36', marginBottom: 16, lineHeight: 1.5 };
+const dangerCallout: React.CSSProperties = { background: '#fef0f0', border: '1px solid #f0c8c8', borderRadius: 8, padding: 14, fontSize: 13, color: '#7a3a3a', marginBottom: 16, lineHeight: 1.5 };
+const errorBox: React.CSSProperties = { background: '#fef0f0', border: '1px solid #f0c8c8', borderRadius: 6, padding: '10px 12px', fontSize: 13, color: '#a04444', marginTop: 14 };
+const linkBoxRow: React.CSSProperties = { display: 'flex', gap: 8, marginTop: 6 };

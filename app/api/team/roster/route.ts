@@ -60,17 +60,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Full client list (we'll group by assigned_broker_id below)
     const { data: clientRows } = await supabaseAdmin
       .from('clients')
-      .select('id, assigned_broker_id')
+      .select('id, employer_name, assigned_broker_id')
       .eq('agency_id', agency_id)
-      .in('assigned_broker_id', brokerIds);
+      .in('assigned_broker_id', brokerIds)
+      .order('employer_name', { ascending: true });
 
-    const clientCounts: Record<string, number> = {};
+    const clientsByBroker: Record<string, { id: string; employer_name: string }[]> = {};
     (clientRows || []).forEach(c => {
-      if (c.assigned_broker_id) {
-        clientCounts[c.assigned_broker_id] = (clientCounts[c.assigned_broker_id] || 0) + 1;
+      if (!c.assigned_broker_id) return;
+      if (!clientsByBroker[c.assigned_broker_id]) {
+        clientsByBroker[c.assigned_broker_id] = [];
       }
+      clientsByBroker[c.assigned_broker_id].push({
+        id: c.id,
+        employer_name: c.employer_name || '(no name)',
+      });
     });
 
     const recCounts: Record<string, number> = {};
@@ -100,7 +107,8 @@ export async function POST(req: NextRequest) {
       email: userMap[b.user_id]?.email || '',
       first_name: userMap[b.user_id]?.first_name || '',
       last_name: userMap[b.user_id]?.last_name || '',
-      client_count: clientCounts[b.id] || 0,
+      client_count: (clientsByBroker[b.id] || []).length,
+      clients: clientsByBroker[b.id] || [],
       recommendations_count: recCounts[b.user_id] || 0,
       finalized_designs_count: designCounts[b.user_id] || 0,
       is_you: b.user_id === user_id,
@@ -116,7 +124,6 @@ export async function POST(req: NextRequest) {
       return (a.last_name || '').localeCompare(b.last_name || '');
     });
 
-    // Fetch pending invitations
     const { data: invitations } = await supabaseAdmin
       .from('agency_invitations')
       .select('id, invited_email, invited_role, token, expires_at, created_at')
