@@ -10,6 +10,7 @@ type BrokerSidebarProps = {
     | 'plan-design'
     | 'reports'
     | 'team'
+    | 'branding'
     | 'settings'
     | 'billing';
   firstName: string;
@@ -79,6 +80,12 @@ export default function BrokerSidebar({
       <Link href="/broker/team" style={linkReset}>
         <div className={`dash-nav-item ${active === 'team' ? 'active' : ''}`}>
           <div className="dash-nav-icon">👨‍💼</div> Team
+        </div>
+      </Link>
+
+      <Link href="/broker/branding" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'branding' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">🎨</div> Branding
         </div>
       </Link>
 
