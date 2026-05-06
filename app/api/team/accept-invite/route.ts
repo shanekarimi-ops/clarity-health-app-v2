@@ -9,7 +9,7 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// GET — validate a token and return invite info (used by signup page + confirmation page)
+// GET — validate a token and return invite info
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -19,11 +19,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Missing token' }, { status: 400 });
     }
 
-    const { data: invite } = await supabaseAdmin
+    const { data: invite, error: inviteErr } = await supabaseAdmin
       .from('agency_invitations')
-      .select('id, agency_id, invited_email, invited_role, status, expires_at, agencies(name)')
+      .select('id, agency_id, invited_email, invited_role, status, expires_at')
       .eq('token', token)
       .maybeSingle();
+
+    if (inviteErr) {
+      console.error('Invite lookup error:', inviteErr);
+      return NextResponse.json({ error: 'Failed to look up invite' }, { status: 500 });
+    }
 
     if (!invite) {
       return NextResponse.json({ error: 'Invite not found' }, { status: 404 });
@@ -34,7 +39,6 @@ export async function GET(req: NextRequest) {
     }
 
     if (new Date(invite.expires_at) < new Date()) {
-      // Mark expired
       await supabaseAdmin
         .from('agency_invitations')
         .update({ status: 'expired' })
@@ -42,7 +46,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Invite has expired' }, { status: 400 });
     }
 
-    const agency: any = Array.isArray(invite.agencies) ? invite.agencies[0] : invite.agencies;
+    // Fetch the agency name separately (no FK relationship declared)
+    const { data: agency } = await supabaseAdmin
+      .from('agencies')
+      .select('name')
+      .eq('id', invite.agency_id)
+      .maybeSingle();
 
     return NextResponse.json({
       invite: {
@@ -68,7 +77,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing token or user_id' }, { status: 400 });
     }
 
-    // Get the invite
     const { data: invite } = await supabaseAdmin
       .from('agency_invitations')
       .select('id, agency_id, invited_email, invited_role, status, expires_at')
@@ -91,7 +99,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invite has expired' }, { status: 400 });
     }
 
-    // Verify the user's email matches the invited email
     const { data: userData } = await supabaseAdmin.auth.admin.getUserById(user_id);
     if (!userData?.user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
@@ -104,7 +111,6 @@ export async function POST(req: NextRequest) {
       }, { status: 403 });
     }
 
-    // Check if user is already an active broker in this agency
     const { data: existing } = await supabaseAdmin
       .from('brokers')
       .select('id, removed_at')
@@ -116,7 +122,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'You are already a member of this agency' }, { status: 400 });
     }
 
-    // Check if user is already in a DIFFERENT agency (can't be in two)
     const { data: otherAgency } = await supabaseAdmin
       .from('brokers')
       .select('id, agency_id')
@@ -130,9 +135,7 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Insert or restore the broker row
     if (existing && existing.removed_at) {
-      // Reactivate
       const { error: updateErr } = await supabaseAdmin
         .from('brokers')
         .update({
@@ -147,7 +150,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Failed to reactivate broker' }, { status: 500 });
       }
     } else {
-      // Insert new
       const { error: insertErr } = await supabaseAdmin
         .from('brokers')
         .insert({
@@ -162,7 +164,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Mark invite accepted
     await supabaseAdmin
       .from('agency_invitations')
       .update({
