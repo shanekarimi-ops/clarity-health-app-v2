@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const MARKETPLACE_BASE = 'https://marketplace.api.healthcare.gov/api/v1';
-const PLANS_PAGE_SIZE = 100;
-const PLANS_MAX_PAGES = 5; // Safety cap: 500 plans max — way beyond any real county
+const PLANS_PAGE_SIZE = 10; // CMS hard-caps plans/search at 10 per page; pagination via offset
+const PLANS_MAX_PAGES = 30; // Safety cap: 300 plans max — no real US county has more than ~150
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -216,7 +216,7 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
     const countyfips = county.fips;
     const state = county.state;
 
-    // ===== Step 2: CMS plans/search (paginated to grab all plans) =====
+    // ===== Step 2: CMS plans/search (paginated via offset, 10 plans per page) =====
     const people = ages.map((age: number, i: number) => ({
       age: age,
       aptc_eligible: true,
@@ -229,7 +229,6 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       market: 'Individual',
       place: { countyfips: countyfips, state: state, zipcode: zipCode },
       year: 2026,
-      limit: PLANS_PAGE_SIZE,
     };
 
     const allPlansRaw: any[] = [];
@@ -248,7 +247,7 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       if (!plansRes.ok) {
         const text = await plansRes.text();
         return NextResponse.json(
-          { error: 'CMS plans search failed', status: plansRes.status, detail: text },
+          { error: 'CMS plans search failed', status: plansRes.status, detail: text, atOffset: offset },
           { status: 502 }
         );
       }
@@ -256,14 +255,17 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       const plansData = await plansRes.json();
       const pagePlans = plansData.plans || [];
 
-      // CMS returns total in plansData.total (it's the count of all matching plans)
-      console.log('CMS plans/search response:', {
-        page,
-        offset,
-        total: plansData.total,
-        returnedCount: pagePlans.length,
-        keys: Object.keys(plansData),
-      });
+      // Debug: log the first page so we can confirm pagination is working
+      if (page === 0) {
+        console.log('CMS plans/search response (page 0):', {
+          page,
+          offset,
+          total: plansData.total,
+          returnedCount: pagePlans.length,
+          keys: Object.keys(plansData),
+        });
+      }
+
       if (page === 0 && typeof plansData.total === 'number') {
         totalAvailable = plansData.total;
       }
@@ -275,6 +277,11 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       // Or if we've collected everything per the total count
       if (totalAvailable > 0 && allPlansRaw.length >= totalAvailable) break;
     }
+
+    console.log('Pagination complete:', {
+      totalAvailable,
+      collected: allPlansRaw.length,
+    });
 
     if (allPlansRaw.length === 0) {
       return NextResponse.json({
