@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { supabase } from '../../../../supabase';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -18,6 +19,7 @@ type SectionStateMap = {
 };
 
 export default function SectionReview({
+  designId,
   design,
   fundingModel,
   status,
@@ -29,6 +31,7 @@ export default function SectionReview({
   onStatusChange,
   onJumpToSection,
 }: {
+  designId: string;
   design: any;
   fundingModel: FundingModel;
   status: Status;
@@ -41,6 +44,8 @@ export default function SectionReview({
   onJumpToSection: (sectionIndex: number) => void;
 }) {
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
 
   const group = design.group || {};
   const plan = design.plan || {};
@@ -51,13 +56,11 @@ export default function SectionReview({
   const eligibility = design.eligibility || {};
   const carveouts = design.carveouts || {};
 
-  // Section index map for jump-to-fix
   const sectionIndices: Record<keyof SectionStateMap, number> = {
     group: 0, plan: 1, network: 2, stoploss: 3, tpa: 4, pbm: 5,
     eligibility: 6, carveouts: 7, projection: 8,
   };
 
-  // Required sections (vary by funding model)
   const requiredSections: (keyof SectionStateMap)[] =
     fundingModel === 'self_funded'
       ? ['group', 'plan', 'network', 'stoploss', 'tpa', 'pbm', 'eligibility']
@@ -67,6 +70,59 @@ export default function SectionReview({
 
   const completeCount = requiredSections.filter(s => sectionStates[s] === 'complete').length;
   const allRequiredComplete = completeCount === requiredSections.length;
+
+  // ============================================
+  // PDF download handler
+  // ============================================
+  async function handleDownloadPdf() {
+    setDownloading(true);
+    setDownloadError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setDownloadError('Not authenticated. Please log in again.');
+        setDownloading(false);
+        return;
+      }
+
+      const res = await fetch(`/api/plan-designs/${designId}/export-pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: session.access_token }),
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        setDownloadError(json?.error || json?.detail || 'Failed to generate PDF');
+        setDownloading(false);
+        return;
+      }
+
+      // Pull down the PDF blob
+      const blob = await res.blob();
+
+      // Read the filename from the Content-Disposition header if present
+      const contentDisposition = res.headers.get('Content-Disposition') || '';
+      const fileNameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+      const fileName = fileNameMatch ? fileNameMatch[1] : 'plan_design.pdf';
+
+      // Trigger the download
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setDownloading(false);
+    } catch (e: any) {
+      console.error(e);
+      setDownloadError(e?.message || 'Unexpected error');
+      setDownloading(false);
+    }
+  }
 
   return (
     <div>
@@ -340,11 +396,11 @@ export default function SectionReview({
                 {statusUpdating ? 'Finalizing...' : 'Mark as finalized →'}
               </button>
               <button
-                disabled
-                style={{ ...secondaryBtn, opacity: 0.6, cursor: 'not-allowed' }}
-                title="PDF export coming next push"
+                onClick={handleDownloadPdf}
+                disabled={downloading}
+                style={downloading ? { ...secondaryBtn, opacity: 0.6, cursor: 'wait' } : secondaryBtn}
               >
-                Download PDF proposal (coming soon)
+                {downloading ? 'Generating PDF...' : '📄 Download PDF proposal'}
               </button>
             </div>
           </>
@@ -353,16 +409,22 @@ export default function SectionReview({
         {status === 'finalized' && (
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button
-              disabled
-              style={{ ...secondaryBtn, opacity: 0.6, cursor: 'not-allowed' }}
-              title="PDF export coming next push"
+              onClick={handleDownloadPdf}
+              disabled={downloading}
+              style={downloading ? { ...primaryBtn, opacity: 0.6, cursor: 'wait' } : primaryBtn}
             >
-              Download PDF proposal (coming soon)
+              {downloading ? 'Generating PDF...' : '📄 Download PDF proposal'}
             </button>
           </div>
         )}
 
-        {/* Archive section — separate, less prominent */}
+        {downloadError && (
+          <div style={errorBox}>
+            <strong>PDF error:</strong> {downloadError}
+          </div>
+        )}
+
+        {/* Archive section */}
         <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid #f1f5f9' }}>
           <div style={{ fontSize: 12, color: '#94a3b8', fontFamily: 'Figtree, sans-serif', marginBottom: 8 }}>
             Other actions
@@ -801,6 +863,18 @@ const warningBox: React.CSSProperties = {
   fontSize: 13,
   color: '#92400e',
   marginBottom: 14,
+  lineHeight: 1.5,
+};
+
+const errorBox: React.CSSProperties = {
+  background: '#fef2f2',
+  border: '1px solid #fecaca',
+  color: '#991b1b',
+  borderRadius: 8,
+  padding: '10px 14px',
+  marginTop: 12,
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 13,
   lineHeight: 1.5,
 };
 

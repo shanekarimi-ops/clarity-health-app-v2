@@ -558,9 +558,10 @@ export default function PlanDesignWizardPage() {
                 generatedAt={aiProjectionGeneratedAt}
                 onProjectionGenerated={reloadProjection}
               />
-            ) : activeSec.key === 'review' ? (
-              <SectionReview
-                design={design}
+              ) : activeSec.key === 'review' ? (
+                <SectionReview
+                  designId={designId}
+                  design={design}
                 fundingModel={planDesign.funding_model}
                 status={planDesign.status}
                 clientLabel={clientLabel}
