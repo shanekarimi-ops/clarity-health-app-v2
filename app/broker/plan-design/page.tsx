@@ -5,18 +5,44 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../../supabase';
 import BrokerSidebar from '../../components/BrokerSidebar';
 
+type PlanDesign = {
+  id: string;
+  client_id: string;
+  agency_id: string;
+  created_by_user_id: string;
+  name: string;
+  funding_model: 'level_funded' | 'self_funded';
+  status: 'draft' | 'finalized' | 'archived';
+  effective_date: string | null;
+  created_at: string;
+  updated_at: string;
+  clients?: {
+    id: string;
+    employer_name: string | null;
+    first_name: string;
+    last_name: string;
+    member_count: number | null;
+    state: string | null;
+  } | null;
+};
+
 export default function BrokerPlanDesignPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [agencyName, setAgencyName] = useState('');
+  const [agencyId, setAgencyId] = useState('');
+
+  const [designs, setDesigns] = useState<PlanDesign[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    loadUser();
+    loadEverything();
   }, []);
 
-  async function loadUser() {
+  async function loadEverything() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       router.push('/login');
@@ -33,20 +59,61 @@ export default function BrokerPlanDesignPage() {
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (brokerRow?.agencies) {
+    if (!brokerRow) {
+      setLoadError('No broker profile found for your account. Contact your agency admin.');
+      setLoading(false);
+      return;
+    }
+
+    setAgencyId(brokerRow.agency_id);
+
+    if (brokerRow.agencies) {
       const agency: any = Array.isArray(brokerRow.agencies)
         ? brokerRow.agencies[0]
         : brokerRow.agencies;
       setAgencyName(agency?.name || '');
     }
 
+    await loadDesigns();
     setLoading(false);
+  }
+
+  async function loadDesigns() {
+    const { data, error } = await supabase
+      .from('plan_designs')
+      .select(`
+        id, client_id, agency_id, created_by_user_id, name, funding_model,
+        status, effective_date, created_at, updated_at,
+        clients(id, employer_name, first_name, last_name, member_count, state)
+      `)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      console.error('Failed to load plan designs:', error);
+      setLoadError('Could not load plan designs. ' + (error.message || ''));
+      return;
+    }
+
+    setDesigns((data as any) || []);
   }
 
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/login');
   }
+
+  function handleNewDesign() {
+    router.push('/broker/plan-design/new');
+  }
+
+  function handleOpenDesign(id: string) {
+    router.push(`/broker/plan-design/${id}`);
+  }
+
+  // Group designs by status
+  const drafts = designs.filter(d => d.status === 'draft');
+  const finalized = designs.filter(d => d.status === 'finalized');
+  const archived = designs.filter(d => d.status === 'archived');
 
   if (loading) {
     return (
@@ -71,76 +138,179 @@ export default function BrokerPlanDesignPage() {
           <div>
             <h1 style={pageTitle}>Plan Design</h1>
             <p style={pageSubtitle}>
-              Model self-funded plans, build benefit structures, and run scenario analysis
+              Design self-funded health plans for your group clients — model benefits, project costs, export proposals
             </p>
           </div>
-          <button style={primaryBtnDisabled} disabled title="Coming in Sessions 22-23">
+          <button style={primaryBtn} onClick={handleNewDesign}>
             + New Plan Design
           </button>
         </div>
 
-        <div style={comingSoonBanner}>
-          <span style={{ fontSize: 20, marginRight: 10 }}>🚧</span>
-          <strong>Coming in Sessions 22-23</strong>
-          <span style={{ marginLeft: 10, color: '#3a4d68' }}>
-            — Build custom benefit designs, model self-funded vs fully-insured, run claims-based projections
-          </span>
-        </div>
-
-        <div style={cardGrid}>
-          <div style={mockCard}>
-            <div style={cardIconWrap}>📐</div>
-            <h3 style={mockCardTitle}>Plan Builder</h3>
-            <p style={mockCardDesc}>
-              Build custom plan designs with deductibles, copays, coinsurance, and OOP maximums
-            </p>
-            <button style={secondaryBtnDisabled} disabled>Build a Plan</button>
+        {loadError && (
+          <div style={errorBanner}>
+            <strong>Error:</strong> {loadError}
           </div>
+        )}
 
-          <div style={mockCard}>
-            <div style={cardIconWrap}>📊</div>
-            <h3 style={mockCardTitle}>Self-Funded Modeling</h3>
-            <p style={mockCardDesc}>
-              Project claim costs, stop-loss premiums, and break-even thresholds for self-insured groups
+        {/* Empty state */}
+        {!loadError && designs.length === 0 && (
+          <div style={emptyStateCard}>
+            <div style={{ fontSize: 56, marginBottom: 12 }}>📐</div>
+            <h2 style={emptyStateTitle}>Design your first self-funded plan</h2>
+            <p style={emptyStateDesc}>
+              Build a complete plan design from the ground up — pick a client, choose level-funded or full self-funded,
+              and walk through deductibles, networks, stop-loss, TPA, PBM, eligibility, and carve-outs.
+              When you&apos;re ready, our AI will project expected costs and you can export a polished proposal PDF.
             </p>
-            <button style={secondaryBtnDisabled} disabled>Run Model</button>
+            <button style={primaryBtnLarge} onClick={handleNewDesign}>
+              + Start a new plan design
+            </button>
           </div>
+        )}
 
-          <div style={mockCard}>
-            <div style={cardIconWrap}>🎯</div>
-            <h3 style={mockCardTitle}>Scenario Analysis</h3>
-            <p style={mockCardDesc}>
-              Compare 3-5 plan designs side-by-side with projected employer + employee costs
-            </p>
-            <button style={secondaryBtnDisabled} disabled>Compare Scenarios</button>
+        {/* Drafts */}
+        {drafts.length > 0 && (
+          <div style={sectionWrap}>
+            <div style={sectionHeader}>
+              <h2 style={sectionTitle}>Drafts</h2>
+              <span style={countPill}>{drafts.length}</span>
+            </div>
+            <div style={cardGrid}>
+              {drafts.map(d => (
+                <DesignCard key={d.id} design={d} onOpen={() => handleOpenDesign(d.id)} />
+              ))}
+            </div>
           </div>
+        )}
 
-          <div style={mockCard}>
-            <div style={cardIconWrap}>📈</div>
-            <h3 style={mockCardTitle}>Renewal Projections</h3>
-            <p style={mockCardDesc}>
-              Forecast next-year rates based on current claims experience and trend factors
-            </p>
-            <button style={secondaryBtnDisabled} disabled>Project Renewal</button>
+        {/* Finalized */}
+        {finalized.length > 0 && (
+          <div style={sectionWrap}>
+            <div style={sectionHeader}>
+              <h2 style={sectionTitle}>Finalized</h2>
+              <span style={countPill}>{finalized.length}</span>
+            </div>
+            <div style={cardGrid}>
+              {finalized.map(d => (
+                <DesignCard key={d.id} design={d} onOpen={() => handleOpenDesign(d.id)} />
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div style={featureListCard}>
-          <h3 style={featureListTitle}>What you'll be able to do:</h3>
-          <ul style={featureList}>
-            <li>Build custom plan designs with full benefit structure</li>
-            <li>Model fully-insured vs level-funded vs self-funded</li>
-            <li>Project claim costs from group census data</li>
-            <li>Calculate employer vs employee cost-share</li>
-            <li>Run "what-if" scenarios for renewal strategy</li>
-            <li>Export plan summaries as branded PDFs</li>
-          </ul>
-        </div>
+        {/* Archived (collapsed by default) */}
+        {archived.length > 0 && (
+          <div style={sectionWrap}>
+            <button
+              style={archivedToggle}
+              onClick={() => setShowArchived(s => !s)}
+            >
+              {showArchived ? '▼' : '▶'} Archived ({archived.length})
+            </button>
+            {showArchived && (
+              <div style={{ ...cardGrid, marginTop: 12, opacity: 0.65 }}>
+                {archived.map(d => (
+                  <DesignCard key={d.id} design={d} onOpen={() => handleOpenDesign(d.id)} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );
 }
 
+// ============================================
+// Design card component
+// ============================================
+function DesignCard({
+  design,
+  onOpen,
+}: {
+  design: PlanDesign;
+  onOpen: () => void;
+}) {
+  const clientName =
+    design.clients?.employer_name?.trim() ||
+    `${design.clients?.first_name || ''} ${design.clients?.last_name || ''}`.trim() ||
+    'Unknown client';
+
+  const memberCount = design.clients?.member_count;
+  const state = design.clients?.state;
+
+  const fundingLabel = design.funding_model === 'self_funded' ? 'Self-funded' : 'Level-funded';
+  const fundingColor = design.funding_model === 'self_funded' ? '#1e3a5f' : '#7a9b76';
+
+  const statusLabel =
+    design.status === 'draft' ? 'Draft' :
+    design.status === 'finalized' ? 'Finalized' :
+    'Archived';
+  const statusColor =
+    design.status === 'draft' ? '#d97706' :
+    design.status === 'finalized' ? '#7a9b76' :
+    '#94a3b8';
+
+  const lastEdited = formatRelativeTime(design.updated_at);
+
+  return (
+    <div style={designCard} onClick={onOpen} role="button" tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}
+    >
+      <div style={cardTopRow}>
+        <span style={{ ...statusPill, background: statusColor + '22', color: statusColor }}>
+          {statusLabel}
+        </span>
+        <span style={{ ...fundingPill, background: fundingColor + '15', color: fundingColor }}>
+          {fundingLabel}
+        </span>
+      </div>
+
+      <h3 style={designName}>{design.name || 'Untitled plan design'}</h3>
+
+      <div style={clientLine}>
+        <span style={{ fontSize: 13, color: '#3a4d68' }}>👥 {clientName}</span>
+      </div>
+
+      <div style={metaLine}>
+        {memberCount ? <span>{memberCount} members</span> : <span style={{ opacity: 0.5 }}>Members TBD</span>}
+        {state ? <span>· {state}</span> : null}
+      </div>
+
+      <div style={cardFooter}>
+        <span style={{ fontSize: 12, color: '#94a3b8' }}>Updated {lastEdited}</span>
+        <span style={openArrow}>Open →</span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// Helpers
+// ============================================
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const seconds = Math.floor((now - then) / 1000);
+
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 4) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  const years = Math.floor(days / 365);
+  return `${years}y ago`;
+}
+
+// ============================================
+// Styles
+// ============================================
 const headerRow: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
@@ -163,10 +333,11 @@ const pageSubtitle: React.CSSProperties = {
   color: '#3a4d68',
   margin: 0,
   fontSize: 15,
+  maxWidth: 640,
 };
 
-const primaryBtnDisabled: React.CSSProperties = {
-  background: '#cbd5e0',
+const primaryBtn: React.CSSProperties = {
+  background: '#1e3a5f',
   color: '#fff',
   border: 'none',
   padding: '12px 22px',
@@ -174,90 +345,165 @@ const primaryBtnDisabled: React.CSSProperties = {
   fontFamily: 'Figtree, sans-serif',
   fontWeight: 600,
   fontSize: 14,
-  cursor: 'not-allowed',
-  opacity: 0.7,
+  cursor: 'pointer',
 };
 
-const secondaryBtnDisabled: React.CSSProperties = {
-  background: '#fff',
-  color: '#7a8a9b',
-  border: '1px solid #e2e8f0',
-  padding: '10px 16px',
-  borderRadius: 6,
+const primaryBtnLarge: React.CSSProperties = {
+  background: '#1e3a5f',
+  color: '#fff',
+  border: 'none',
+  padding: '14px 28px',
+  borderRadius: 8,
   fontFamily: 'Figtree, sans-serif',
-  fontSize: 13,
-  cursor: 'not-allowed',
-  width: '100%',
+  fontWeight: 600,
+  fontSize: 15,
+  cursor: 'pointer',
 };
 
-const comingSoonBanner: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #faf7f2 0%, #eef1f4 100%)',
-  border: '1px solid #d4dae2',
-  borderRadius: 10,
-  padding: '14px 18px',
-  marginBottom: 28,
+const errorBanner: React.CSSProperties = {
+  background: '#fef2f2',
+  border: '1px solid #fecaca',
+  color: '#991b1b',
+  borderRadius: 8,
+  padding: '12px 16px',
+  marginBottom: 20,
   fontFamily: 'Figtree, sans-serif',
-  color: '#1e3a5f',
   fontSize: 14,
+};
+
+const emptyStateCard: React.CSSProperties = {
+  background: '#fff',
+  border: '1px solid #e2e8f0',
+  borderRadius: 12,
+  padding: '48px 32px',
+  textAlign: 'center',
+  fontFamily: 'Figtree, sans-serif',
+};
+
+const emptyStateTitle: React.CSSProperties = {
+  fontFamily: 'Playfair Display, serif',
+  color: '#1e3a5f',
+  fontSize: 26,
+  margin: '0 0 12px',
+};
+
+const emptyStateDesc: React.CSSProperties = {
+  color: '#3a4d68',
+  fontSize: 14,
+  lineHeight: 1.6,
+  margin: '0 auto 24px',
+  maxWidth: 560,
+};
+
+const sectionWrap: React.CSSProperties = {
+  marginBottom: 32,
+};
+
+const sectionHeader: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  flexWrap: 'wrap',
+  gap: 10,
+  marginBottom: 14,
+};
+
+const sectionTitle: React.CSSProperties = {
+  fontFamily: 'Playfair Display, serif',
+  color: '#1e3a5f',
+  fontSize: 22,
+  margin: 0,
+};
+
+const countPill: React.CSSProperties = {
+  background: '#f1f5f9',
+  color: '#3a4d68',
+  fontFamily: 'Figtree, sans-serif',
+  fontSize: 12,
+  fontWeight: 600,
+  padding: '2px 10px',
+  borderRadius: 999,
 };
 
 const cardGrid: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
   gap: 16,
-  marginBottom: 32,
-  opacity: 0.7,
 };
 
-const mockCard: React.CSSProperties = {
+const designCard: React.CSSProperties = {
   background: '#fff',
   border: '1px solid #e2e8f0',
   borderRadius: 10,
-  padding: 22,
+  padding: 18,
   fontFamily: 'Figtree, sans-serif',
+  cursor: 'pointer',
+  transition: 'border-color 0.15s, transform 0.15s',
 };
 
-const cardIconWrap: React.CSSProperties = {
-  fontSize: 32,
-  marginBottom: 10,
+const cardTopRow: React.CSSProperties = {
+  display: 'flex',
+  gap: 6,
+  marginBottom: 12,
+  flexWrap: 'wrap',
 };
 
-const mockCardTitle: React.CSSProperties = {
+const statusPill: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  padding: '3px 10px',
+  borderRadius: 999,
+  textTransform: 'uppercase',
+  letterSpacing: 0.4,
+};
+
+const fundingPill: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  padding: '3px 10px',
+  borderRadius: 999,
+};
+
+const designName: React.CSSProperties = {
   fontFamily: 'Playfair Display, serif',
   color: '#1e3a5f',
-  fontSize: 20,
-  margin: '0 0 8px',
+  fontSize: 18,
+  margin: '0 0 6px',
+  lineHeight: 1.3,
 };
 
-const mockCardDesc: React.CSSProperties = {
-  color: '#3a4d68',
+const clientLine: React.CSSProperties = {
+  marginBottom: 4,
+};
+
+const metaLine: React.CSSProperties = {
+  fontSize: 12,
+  color: '#94a3b8',
+  marginBottom: 14,
+  display: 'flex',
+  gap: 4,
+  flexWrap: 'wrap',
+};
+
+const cardFooter: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  borderTop: '1px solid #f1f5f9',
+  paddingTop: 10,
+};
+
+const openArrow: React.CSSProperties = {
   fontSize: 13,
-  lineHeight: 1.5,
-  margin: '0 0 14px',
-};
-
-const featureListCard: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #e2e8f0',
-  borderRadius: 10,
-  padding: 24,
-  fontFamily: 'Figtree, sans-serif',
-};
-
-const featureListTitle: React.CSSProperties = {
-  fontFamily: 'Playfair Display, serif',
   color: '#1e3a5f',
-  fontSize: 20,
-  margin: '0 0 14px',
+  fontWeight: 600,
 };
 
-const featureList: React.CSSProperties = {
-  margin: 0,
-  paddingLeft: 22,
+const archivedToggle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
   color: '#3a4d68',
+  fontFamily: 'Figtree, sans-serif',
   fontSize: 14,
-  lineHeight: 1.9,
+  fontWeight: 600,
+  cursor: 'pointer',
+  padding: '6px 0',
 };
