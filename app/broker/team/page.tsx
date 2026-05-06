@@ -5,20 +5,34 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../../supabase';
 import BrokerSidebar from '../../components/BrokerSidebar';
 
+type BrokerRow = {
+  id: string;
+  user_id: string;
+  role: 'owner' | 'admin' | 'broker';
+  email: string;
+  first_name: string;
+  last_name: string;
+  client_count: number;
+  recommendations_count: number;
+  finalized_designs_count: number;
+  is_you: boolean;
+};
+
 export default function BrokerTeamPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  const [email, setEmail] = useState('');
-  const [role, setRole] = useState('');
+  const [myRole, setMyRole] = useState<'owner' | 'admin' | 'broker'>('broker');
   const [agencyName, setAgencyName] = useState('');
+  const [agencyId, setAgencyId] = useState('');
+  const [brokers, setBrokers] = useState<BrokerRow[]>([]);
 
   useEffect(() => {
-    loadUser();
+    loadEverything();
   }, []);
 
-  async function loadUser() {
+  async function loadEverything() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       router.push('/login');
@@ -28,22 +42,53 @@ export default function BrokerTeamPage() {
     const meta = user.user_metadata || {};
     setFirstName(meta.first_name || '');
     setLastName(meta.last_name || '');
-    setEmail(user.email || '');
 
-    const { data: brokerRow } = await supabase
+    // Get my broker row + agency
+    const { data: myBroker } = await supabase
       .from('brokers')
-      .select('agency_id, role, agencies(name)')
+      .select('id, agency_id, role, agencies(name)')
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (brokerRow) {
-      setRole(brokerRow.role || 'broker');
-      if (brokerRow.agencies) {
-        const agency: any = Array.isArray(brokerRow.agencies)
-          ? brokerRow.agencies[0]
-          : brokerRow.agencies;
-        setAgencyName(agency?.name || '');
-      }
+    if (!myBroker) {
+      setLoading(false);
+      return;
+    }
+
+    setMyRole((myBroker.role || 'broker') as any);
+    setAgencyId(myBroker.agency_id);
+
+    if (myBroker.agencies) {
+      const agency: any = Array.isArray(myBroker.agencies)
+        ? myBroker.agencies[0]
+        : myBroker.agencies;
+      setAgencyName(agency?.name || '');
+    }
+
+    // Get all brokers in the agency
+    const { data: allBrokers } = await supabase
+      .from('brokers')
+      .select('id, user_id, role')
+      .eq('agency_id', myBroker.agency_id);
+
+    if (!allBrokers || allBrokers.length === 0) {
+      setLoading(false);
+      return;
+    }
+
+    // Fetch metrics + emails via API route (needs service role for auth.users)
+    const res = await fetch('/api/team/roster', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agency_id: myBroker.agency_id,
+        user_id: user.id,
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      setBrokers(data.brokers || []);
     }
 
     setLoading(false);
@@ -57,13 +102,16 @@ export default function BrokerTeamPage() {
   if (loading) {
     return (
       <div style={{ padding: 40, color: '#1e3a5f', fontFamily: 'Figtree, sans-serif' }}>
-        Loading...
+        Loading team...
       </div>
     );
   }
 
-  const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
-  const isOwner = role === 'owner';
+  const activeBrokers = brokers.length;
+  const totalClients = brokers.reduce((sum, b) => sum + b.client_count, 0);
+  const avgPerBroker = activeBrokers > 0 ? Math.round(totalClients / activeBrokers) : 0;
+
+  const canInvite = myRole === 'owner' || myRole === 'admin';
 
   return (
     <div className="dash-layout">
@@ -83,23 +131,19 @@ export default function BrokerTeamPage() {
               Manage brokers in {agencyName || 'your agency'} — invite teammates, set roles, and assign clients
             </p>
           </div>
-          <button style={primaryBtnDisabled} disabled title="Coming in Session 19">
+          <button
+            style={canInvite ? primaryBtn : primaryBtnDisabled}
+            disabled={!canInvite}
+            title={canInvite ? 'Invite a new broker' : 'Only Owners and Admins can invite'}
+          >
             + Invite Broker
           </button>
-        </div>
-
-        <div style={comingSoonBanner}>
-          <span style={{ fontSize: 20, marginRight: 10 }}>🚧</span>
-          <strong>Coming in Session 19</strong>
-          <span style={{ marginLeft: 10, color: '#3a4d68' }}>
-            — Email-based broker invitations, role management, client assignment, and team activity feeds
-          </span>
         </div>
 
         <div style={statsRow}>
           <div style={statTile}>
             <div style={statLabel}>Active Brokers</div>
-            <div style={statValue}>1</div>
+            <div style={statValue}>{activeBrokers}</div>
           </div>
           <div style={statTile}>
             <div style={statLabel}>Pending Invites</div>
@@ -107,11 +151,11 @@ export default function BrokerTeamPage() {
           </div>
           <div style={statTile}>
             <div style={statLabel}>Total Clients</div>
-            <div style={statValue}>5</div>
+            <div style={statValue}>{totalClients}</div>
           </div>
           <div style={statTile}>
             <div style={statLabel}>Avg per Broker</div>
-            <div style={statValue}>5</div>
+            <div style={statValue}>{avgPerBroker}</div>
           </div>
         </div>
 
@@ -122,77 +166,63 @@ export default function BrokerTeamPage() {
             <div style={{ ...tableCol, flex: 2 }}>Broker</div>
             <div style={{ ...tableCol, flex: 2 }}>Email</div>
             <div style={{ ...tableCol, flex: 1 }}>Role</div>
-            <div style={{ ...tableCol, flex: 1 }}>Clients</div>
-            <div style={{ ...tableCol, flex: 1 }}>Status</div>
+            <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Clients</div>
+            <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Recs</div>
+            <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Designs</div>
             <div style={{ ...tableCol, flex: 1 }}>Actions</div>
           </div>
 
-          <div style={{ ...tableRow, background: '#faf7f2' }}>
-            <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={avatarReal}>{initials}</div>
-              <div>
-                <div style={{ fontWeight: 600, color: '#1e3a5f' }}>{firstName} {lastName}</div>
-                <div style={{ fontSize: 12, color: '#7a8a9b' }}>You</div>
-              </div>
+          {brokers.length === 0 && (
+            <div style={{ padding: 40, textAlign: 'center', color: '#7a8a9b', fontSize: 14 }}>
+              No brokers in your agency yet.
             </div>
-            <div style={{ ...tableCol, flex: 2, color: '#3a4d68' }}>{email}</div>
-            <div style={{ ...tableCol, flex: 1 }}>
-              <span style={isOwner ? roleBadgeOwner : roleBadge}>{role}</span>
-            </div>
-            <div style={{ ...tableCol, flex: 1, color: '#3a4d68' }}>5</div>
-            <div style={{ ...tableCol, flex: 1 }}>
-              <span style={statusActive}>Active</span>
-            </div>
-            <div style={{ ...tableCol, flex: 1 }}>
-              <button style={secondaryBtnDisabled} disabled>Edit</button>
-            </div>
-          </div>
+          )}
 
-          {mockBrokers.map((b, i) => (
-            <div key={i} style={{ ...tableRow, opacity: 0.55 }}>
-              <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={avatarMock}>{b.initials}</div>
-                <div>
-                  <div style={{ fontWeight: 600, color: '#1e3a5f' }}>{b.name}</div>
-                  <div style={{ fontSize: 12, color: '#7a8a9b' }}>Mock data</div>
+          {brokers.map((b) => {
+            const initials = `${(b.first_name || '?').charAt(0)}${(b.last_name || '').charAt(0)}`.toUpperCase();
+            return (
+              <div key={b.id} style={{ ...tableRow, background: b.is_you ? '#faf7f2' : '#fff' }}>
+                <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={avatarReal}>{initials || '—'}</div>
+                  <div>
+                    <div style={{ fontWeight: 600, color: '#1e3a5f' }}>
+                      {b.first_name || '(no name)'} {b.last_name || ''}
+                    </div>
+                    {b.is_you && <div style={{ fontSize: 12, color: '#7a8a9b' }}>You</div>}
+                  </div>
+                </div>
+                <div style={{ ...tableCol, flex: 2, color: '#3a4d68', fontSize: 13 }}>{b.email || '—'}</div>
+                <div style={{ ...tableCol, flex: 1 }}>
+                  <span style={roleBadgeStyle(b.role)}>{b.role}</span>
+                </div>
+                <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.client_count}</div>
+                <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.recommendations_count}</div>
+                <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.finalized_designs_count}</div>
+                <div style={{ ...tableCol, flex: 1 }}>
+                  <button style={secondaryBtnDisabled} disabled title="Coming in P12.2">Edit</button>
                 </div>
               </div>
-              <div style={{ ...tableCol, flex: 2, color: '#3a4d68' }}>{b.email}</div>
-              <div style={{ ...tableCol, flex: 1 }}>
-                <span style={roleBadge}>{b.role}</span>
-              </div>
-              <div style={{ ...tableCol, flex: 1, color: '#3a4d68' }}>{b.clients}</div>
-              <div style={{ ...tableCol, flex: 1 }}>
-                <span style={b.status === 'Active' ? statusActive : statusPending}>{b.status}</span>
-              </div>
-              <div style={{ ...tableCol, flex: 1 }}>
-                <button style={secondaryBtnDisabled} disabled>Edit</button>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div style={featureListCard}>
-          <h3 style={featureListTitle}>What you'll be able to do:</h3>
-          <ul style={featureList}>
-            <li>Invite brokers by email with a single click</li>
-            <li>Assign roles: Owner, Broker, or Admin</li>
-            <li>Reassign clients between brokers in the agency</li>
-            <li>See per-broker performance: clients added, recommendations run, plans sold</li>
-            <li>Remove brokers from the agency (Owner-only)</li>
-            <li>Audit log of every action taken in the agency</li>
-          </ul>
+            );
+          })}
         </div>
       </main>
     </div>
   );
 }
 
-const mockBrokers = [
-  { initials: 'JS', name: 'Jane Smith', email: 'jane@example.com', role: 'broker', clients: 8, status: 'Active' },
-  { initials: 'MR', name: 'Mike Rodriguez', email: 'mike@example.com', role: 'broker', clients: 12, status: 'Active' },
-  { initials: 'TT', name: 'Taylor Tran', email: 'taylor@example.com', role: 'admin', clients: 0, status: 'Pending' },
-];
+function roleBadgeStyle(role: string): React.CSSProperties {
+  const base: React.CSSProperties = {
+    padding: '4px 10px',
+    borderRadius: 12,
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'capitalize',
+    display: 'inline-block',
+  };
+  if (role === 'owner') return { ...base, background: '#e6f0e6', color: '#5a7a56' };
+  if (role === 'admin') return { ...base, background: '#e8eef5', color: '#1e3a5f' };
+  return { ...base, background: '#eef1f4', color: '#3a4d68' };
+}
 
 const headerRow: React.CSSProperties = {
   display: 'flex',
@@ -218,6 +248,18 @@ const pageSubtitle: React.CSSProperties = {
   fontSize: 15,
 };
 
+const primaryBtn: React.CSSProperties = {
+  background: '#7a9b76',
+  color: '#fff',
+  border: 'none',
+  padding: '12px 22px',
+  borderRadius: 8,
+  fontFamily: 'Figtree, sans-serif',
+  fontWeight: 600,
+  fontSize: 14,
+  cursor: 'pointer',
+};
+
 const primaryBtnDisabled: React.CSSProperties = {
   background: '#cbd5e0',
   color: '#fff',
@@ -240,20 +282,6 @@ const secondaryBtnDisabled: React.CSSProperties = {
   fontFamily: 'Figtree, sans-serif',
   fontSize: 12,
   cursor: 'not-allowed',
-};
-
-const comingSoonBanner: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #faf7f2 0%, #eef1f4 100%)',
-  border: '1px solid #d4dae2',
-  borderRadius: 10,
-  padding: '14px 18px',
-  marginBottom: 28,
-  fontFamily: 'Figtree, sans-serif',
-  color: '#1e3a5f',
-  fontSize: 14,
-  display: 'flex',
-  alignItems: 'center',
-  flexWrap: 'wrap',
 };
 
 const statsRow: React.CSSProperties = {
@@ -337,78 +365,4 @@ const avatarReal: React.CSSProperties = {
   justifyContent: 'center',
   fontWeight: 600,
   fontSize: 13,
-};
-
-const avatarMock: React.CSSProperties = {
-  width: 36,
-  height: 36,
-  borderRadius: '50%',
-  background: '#cbd5e0',
-  color: '#fff',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontWeight: 600,
-  fontSize: 13,
-};
-
-const roleBadge: React.CSSProperties = {
-  background: '#eef1f4',
-  color: '#3a4d68',
-  padding: '4px 10px',
-  borderRadius: 12,
-  fontSize: 11,
-  fontWeight: 600,
-  textTransform: 'capitalize',
-};
-
-const roleBadgeOwner: React.CSSProperties = {
-  background: '#e6f0e6',
-  color: '#5a7a56',
-  padding: '4px 10px',
-  borderRadius: 12,
-  fontSize: 11,
-  fontWeight: 600,
-  textTransform: 'capitalize',
-};
-
-const statusActive: React.CSSProperties = {
-  background: '#e6f0e6',
-  color: '#5a7a56',
-  padding: '4px 10px',
-  borderRadius: 12,
-  fontSize: 11,
-  fontWeight: 600,
-};
-
-const statusPending: React.CSSProperties = {
-  background: '#fef3e6',
-  color: '#a06d2a',
-  padding: '4px 10px',
-  borderRadius: 12,
-  fontSize: 11,
-  fontWeight: 600,
-};
-
-const featureListCard: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #e2e8f0',
-  borderRadius: 10,
-  padding: 24,
-  fontFamily: 'Figtree, sans-serif',
-};
-
-const featureListTitle: React.CSSProperties = {
-  fontFamily: 'Playfair Display, serif',
-  color: '#1e3a5f',
-  fontSize: 20,
-  margin: '0 0 14px',
-};
-
-const featureList: React.CSSProperties = {
-  margin: 0,
-  paddingLeft: 22,
-  color: '#3a4d68',
-  fontSize: 14,
-  lineHeight: 1.9,
 };
