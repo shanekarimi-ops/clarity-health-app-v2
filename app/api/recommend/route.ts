@@ -244,53 +244,25 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
     }
 
     const plansData = await plansRes.json();
-    const allPlans = plansData.plans || [];
+    const allPlansRaw = plansData.plans || [];
 
-    if (allPlans.length === 0) {
+    if (allPlansRaw.length === 0) {
       return NextResponse.json({
         success: true,
         county: { fips: countyfips, state: state, name: county.name },
         planCount: 0,
         plans: [],
+        allPlansCount: 0,
         message: 'No plans found for this household.',
         claimsUsed: parsedClaims.length,
       });
     }
 
-    // Take top 10 by lowest premium-with-credit
-    const topPlans = [...allPlans]
-      .sort((a, b) => (a.premium_w_credit ?? a.premium ?? 0) - (b.premium_w_credit ?? b.premium ?? 0))
-      .slice(0, 10);
+    // ===== Simplify ALL plans (with projections) =====
+    const allSimplified = allPlansRaw.map((p: any) => simplifyPlan(p, expectedAnnualMedicalSpend));
 
-    // Simplify + attach projections (Marketplace plans are always whole-household priced)
-    const simplified = topPlans.map((p: any) => {
-      const monthlyPremium = p.premium_w_credit ?? p.premium ?? 0;
-      const annualPremium = monthlyPremium * 12;
-      const deductible = p.deductibles?.[0]?.amount ?? 0;
-      const oopMax = p.moops?.[0]?.amount ?? deductible;
-      const expectedOOP = expectedOOPGivenSpend(expectedAnnualMedicalSpend, deductible, oopMax);
-      const expectedAnnualCost = annualPremium + expectedOOP;
-      const worstCaseAnnualCost = annualPremium + oopMax;
-      return {
-        id: p.id,
-        name: p.name,
-        issuer: p.issuer?.name,
-        type: p.type,
-        metalLevel: p.metal_level,
-        premium: p.premium,
-        premiumWithCredit: p.premium_w_credit,
-        deductible: p.deductibles?.[0]?.amount ?? null,
-        maxOutOfPocket: p.moops?.[0]?.amount ?? null,
-        hsaEligible: p.hsa_eligible ?? false,
-        // Projection fields
-        annualPremium,
-        expectedAnnualCost,
-        worstCaseAnnualCost,
-      };
-    });
-
-    // Compute cost rank (lowest expectedAnnualCost = rank 1)
-    const costRanked = [...simplified]
+    // ===== Compute cost rank across ALL plans =====
+    const costRanked = [...allSimplified]
       .map((p, i) => ({ id: p.id, exp: p.expectedAnnualCost, originalIdx: i }))
       .sort((a, b) => a.exp - b.exp);
     const costRankById: Record<string, number> = {};
@@ -298,7 +270,18 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       costRankById[entry.id] = i + 1;
     });
 
-    // ===== Step 3: Send to Claude for AI ranking =====
+    // Attach cost rank to all plans
+    const allWithCostRank = allSimplified.map((p: any) => ({
+      ...p,
+      costRank: costRankById[p.id] || null,
+    }));
+
+    // ===== Pick top 10 for AI ranking (sort by lowest premium-with-credit, same as before) =====
+    const top10 = [...allWithCostRank]
+      .sort((a, b) => (a.premiumWithCredit ?? a.premium ?? 0) - (b.premiumWithCredit ?? b.premium ?? 0))
+      .slice(0, 10);
+
+    // ===== Step 3: Send top 10 to Claude for AI ranking =====
     const anthropic = new Anthropic({ apiKey: anthropicKey });
 
     const householdProfileText = `
@@ -327,7 +310,7 @@ ${householdMonthlyBudget ? '- Monthly budget target: $' + householdMonthlyBudget
 For each plan, briefly note in claimsInsight which aspect of the claims data influenced its ranking.`
       : `This household has not uploaded any claims yet, so rank based on demographics, household profile, and price. Set claimsInsight to null for each plan.`;
 
-    const prompt = `You are a health insurance advisor helping someone choose a Marketplace plan. Rank these ${simplified.length} plans for this household and explain your reasoning in plain English (no jargon).
+    const prompt = `You are a health insurance advisor helping someone choose a Marketplace plan. Rank these ${top10.length} plans for this household and explain your reasoning in plain English (no jargon).
 
 ${householdProfileText}
 
@@ -336,7 +319,7 @@ ${claimsSummaryText ? claimsSummaryText + '\n' : ''}${claimsAwareGuidance}
 IMPORTANT: The "annualPremium", "expectedAnnualCost", and "worstCaseAnnualCost" fields below have ALREADY been calculated for this household. Use those numbers — do not recalculate. Reference household composition (e.g. "for your family of 4") in your summaries where relevant.
 
 Plans available:
-${JSON.stringify(simplified, null, 2)}
+${JSON.stringify(top10, null, 2)}
 
 Return ONLY a valid JSON object (no markdown, no code fences, no preamble) with this exact shape:
 {
@@ -355,7 +338,7 @@ Return ONLY a valid JSON object (no markdown, no code fences, no preamble) with 
 }
 
 Rules:
-- Rank ALL ${simplified.length} plans (rank 1 = best).
+- Rank ALL ${top10.length} plans (rank 1 = best).
 - matchScore 0-100, where 100 = perfect fit. Spread the scores realistically (don't cluster everyone at 90+).
 - The match score reflects overall fit — NOT just cost. Cost projection rank is calculated separately and shown to the user.
 - Keep all text concise and free of insurance jargon.
@@ -391,15 +374,14 @@ Rules:
       );
     }
 
-    // Merge Claude's rankings with the original plan data + projections + cost rank
+    // Merge Claude's rankings with the top-10 plan data + projections + cost rank
     const rankedWithDetails = (claudeData.rankedPlans || [])
       .map((ranking: any) => {
-        const planDetails = simplified.find((p: any) => p.id === ranking.id);
+        const planDetails = top10.find((p: any) => p.id === ranking.id);
         if (!planDetails) return null;
         return {
           ...planDetails,
           ...ranking,
-          costRank: costRankById[planDetails.id] || null,
         };
       })
       .filter(Boolean)
@@ -422,10 +404,11 @@ Rules:
             annual_income: annualIncome,
             ages: ages,
             uses_tobacco: !!usesTobacco,
-            total_plans_available: allPlans.length,
+            total_plans_available: allPlansRaw.length,
             overall_advice: claudeData.overallAdvice || '',
             plans: rankedWithDetails,
-            // P6 new fields
+            all_plans: allWithCostRank,
+            // P6 fields
             coverage_scope: coverageScope,
             utilization_level: utilizationLevel,
             expected_annual_medical_spend: expectedAnnualMedicalSpend,
@@ -447,9 +430,10 @@ Rules:
       success: true,
       recommendationId: savedRecId,
       county: { fips: countyfips, state: state, name: county.name },
-      totalPlansAvailable: allPlans.length,
+      totalPlansAvailable: allPlansRaw.length,
       planCount: rankedWithDetails.length,
       plans: rankedWithDetails,
+      allPlansCount: allWithCostRank.length,
       overallAdvice: claudeData.overallAdvice || '',
       coverageScope,
       utilizationLevel,
@@ -466,6 +450,35 @@ Rules:
       { status: 500 }
     );
   }
+}
+
+// ============================================================
+// PLAN SHAPING HELPER
+// ============================================================
+
+function simplifyPlan(p: any, expectedAnnualMedicalSpend: number) {
+  const monthlyPremium = p.premium_w_credit ?? p.premium ?? 0;
+  const annualPremium = monthlyPremium * 12;
+  const deductible = p.deductibles?.[0]?.amount ?? 0;
+  const oopMax = p.moops?.[0]?.amount ?? deductible;
+  const expectedOOP = expectedOOPGivenSpend(expectedAnnualMedicalSpend, deductible, oopMax);
+  const expectedAnnualCost = annualPremium + expectedOOP;
+  const worstCaseAnnualCost = annualPremium + oopMax;
+  return {
+    id: p.id,
+    name: p.name,
+    issuer: p.issuer?.name,
+    type: p.type,
+    metalLevel: p.metal_level,
+    premium: p.premium,
+    premiumWithCredit: p.premium_w_credit,
+    deductible: p.deductibles?.[0]?.amount ?? null,
+    maxOutOfPocket: p.moops?.[0]?.amount ?? null,
+    hsaEligible: p.hsa_eligible ?? false,
+    annualPremium,
+    expectedAnnualCost,
+    worstCaseAnnualCost,
+  };
 }
 
 // ============================================================
