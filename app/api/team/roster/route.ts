@@ -17,7 +17,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing agency_id or user_id' }, { status: 400 });
     }
 
-    // Verify caller is in the agency (and active)
     const { data: caller } = await supabaseAdmin
       .from('brokers')
       .select('id')
@@ -30,7 +29,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Not authorized for this agency' }, { status: 403 });
     }
 
-    // Fetch all ACTIVE brokers in the agency
     const { data: brokerRows, error: brokerErr } = await supabaseAdmin
       .from('brokers')
       .select('id, user_id, role')
@@ -43,13 +41,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (!brokerRows || brokerRows.length === 0) {
-      return NextResponse.json({ brokers: [] });
+      return NextResponse.json({ brokers: [], pending_invitations: [] });
     }
 
     const brokerIds = brokerRows.map(b => b.id);
     const userIds = brokerRows.map(b => b.user_id);
 
-    // Fetch user emails + metadata via auth admin
     const userMap: Record<string, { email: string; first_name: string; last_name: string }> = {};
     for (const uid of userIds) {
       const { data: userData } = await supabaseAdmin.auth.admin.getUserById(uid);
@@ -63,7 +60,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Client counts (joined on broker.id)
     const { data: clientRows } = await supabaseAdmin
       .from('clients')
       .select('id, assigned_broker_id')
@@ -77,7 +73,6 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    // Recommendations count (recommendations.user_id is the broker who ran it)
     const recCounts: Record<string, number> = {};
     for (const uid of userIds) {
       const { count } = await supabaseAdmin
@@ -87,7 +82,6 @@ export async function POST(req: NextRequest) {
       recCounts[uid] = count || 0;
     }
 
-    // Finalized plan designs count
     const designCounts: Record<string, number> = {};
     for (const uid of userIds) {
       const { count } = await supabaseAdmin
@@ -112,7 +106,6 @@ export async function POST(req: NextRequest) {
       is_you: b.user_id === user_id,
     }));
 
-    // Sort: you first, then owner, then admin, then broker, then alphabetical by last name
     brokers.sort((a, b) => {
       if (a.is_you && !b.is_you) return -1;
       if (!a.is_you && b.is_you) return 1;
@@ -123,7 +116,27 @@ export async function POST(req: NextRequest) {
       return (a.last_name || '').localeCompare(b.last_name || '');
     });
 
-    return NextResponse.json({ brokers });
+    // Fetch pending invitations
+    const { data: invitations } = await supabaseAdmin
+      .from('agency_invitations')
+      .select('id, invited_email, invited_role, token, expires_at, created_at')
+      .eq('agency_id', agency_id)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+
+    const now = new Date();
+    const pending_invitations = (invitations || [])
+      .filter(inv => new Date(inv.expires_at) > now)
+      .map(inv => ({
+        id: inv.id,
+        invited_email: inv.invited_email,
+        invited_role: inv.invited_role,
+        token: inv.token,
+        expires_at: inv.expires_at,
+        created_at: inv.created_at,
+      }));
+
+    return NextResponse.json({ brokers, pending_invitations });
   } catch (err: any) {
     console.error('Team roster error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

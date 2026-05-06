@@ -18,6 +18,15 @@ type BrokerRow = {
   is_you: boolean;
 };
 
+type InvitationRow = {
+  id: string;
+  invited_email: string;
+  invited_role: 'admin' | 'broker';
+  token: string;
+  expires_at: string;
+  created_at: string;
+};
+
 export default function BrokerTeamPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -28,15 +37,23 @@ export default function BrokerTeamPage() {
   const [agencyName, setAgencyName] = useState('');
   const [agencyId, setAgencyId] = useState('');
   const [brokers, setBrokers] = useState<BrokerRow[]>([]);
+  const [invitations, setInvitations] = useState<InvitationRow[]>([]);
 
   // Modal state
   const [editTarget, setEditTarget] = useState<BrokerRow | null>(null);
   const [transferTarget, setTransferTarget] = useState<BrokerRow | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<BrokerRow | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const [pendingRole, setPendingRole] = useState<'admin' | 'broker'>('broker');
   const [transferConfirmText, setTransferConfirmText] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState('');
+
+  // Invite form state
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'admin' | 'broker'>('broker');
+  const [generatedLink, setGeneratedLink] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     loadEverything();
@@ -89,6 +106,7 @@ export default function BrokerTeamPage() {
     if (res.ok) {
       const data = await res.json();
       setBrokers(data.brokers || []);
+      setInvitations(data.pending_invitations || []);
     }
   }
 
@@ -103,13 +121,25 @@ export default function BrokerTeamPage() {
     setActionError('');
   }
 
+  function openInviteModal() {
+    setShowInviteModal(true);
+    setInviteEmail('');
+    setInviteRole('broker');
+    setGeneratedLink('');
+    setLinkCopied(false);
+    setActionError('');
+  }
+
   function closeAllModals() {
     setEditTarget(null);
     setTransferTarget(null);
     setConfirmRemove(null);
+    setShowInviteModal(false);
     setTransferConfirmText('');
     setActionError('');
     setActionLoading(false);
+    setGeneratedLink('');
+    setLinkCopied(false);
   }
 
   async function handleSaveRole() {
@@ -189,9 +219,93 @@ export default function BrokerTeamPage() {
       return;
     }
 
-    // Re-load full state — your role changed
     await loadEverything();
     closeAllModals();
+  }
+
+  async function handleSendInvite() {
+    if (!inviteEmail.trim()) {
+      setActionError('Email is required');
+      return;
+    }
+    setActionLoading(true);
+    setActionError('');
+
+    const res = await fetch('/api/team/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        caller_user_id: myUserId,
+        agency_id: agencyId,
+        invited_email: inviteEmail.trim(),
+        invited_role: inviteRole,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      setActionError(err.error || 'Failed to create invite');
+      setActionLoading(false);
+      return;
+    }
+
+    const body = await res.json();
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    setGeneratedLink(`${baseUrl}/invite/${body.token}`);
+    await refreshRoster(agencyId, myUserId);
+    setActionLoading(false);
+  }
+
+  async function handleCancelInvite(inviteId: string) {
+    if (!confirm('Cancel this invitation? The link will stop working.')) return;
+
+    const res = await fetch('/api/team/cancel-invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        caller_user_id: myUserId,
+        invite_id: inviteId,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || 'Failed to cancel invite');
+      return;
+    }
+
+    await refreshRoster(agencyId, myUserId);
+  }
+
+  function copyLink() {
+    if (!generatedLink) return;
+    navigator.clipboard.writeText(generatedLink);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }
+
+  function copyInviteLink(token: string) {
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    navigator.clipboard.writeText(`${baseUrl}/invite/${token}`);
+  }
+
+  function formatRelativeTime(iso: string): string {
+    const ms = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d ago`;
+  }
+
+  function formatExpiry(iso: string): string {
+    const ms = new Date(iso).getTime() - Date.now();
+    const days = Math.floor(ms / 86400000);
+    if (days < 1) return 'expires today';
+    if (days === 1) return 'expires in 1 day';
+    return `expires in ${days} days`;
   }
 
   if (loading) {
@@ -230,6 +344,7 @@ export default function BrokerTeamPage() {
           <button
             style={canInvite ? primaryBtn : primaryBtnDisabled}
             disabled={!canInvite}
+            onClick={canInvite ? openInviteModal : undefined}
             title={canInvite ? 'Invite a new broker' : 'Only Owners and Admins can invite'}
           >
             + Invite Broker
@@ -243,7 +358,7 @@ export default function BrokerTeamPage() {
           </div>
           <div style={statTile}>
             <div style={statLabel}>Pending Invites</div>
-            <div style={statValue}>—</div>
+            <div style={statValue}>{invitations.length || '—'}</div>
           </div>
           <div style={statTile}>
             <div style={statLabel}>Total Clients</div>
@@ -307,7 +422,49 @@ export default function BrokerTeamPage() {
           })}
         </div>
 
-        {/* Owner-only: transfer ownership of self */}
+        {invitations.length > 0 && (
+          <>
+            <div style={sectionTitle}>Pending Invitations</div>
+            <div style={tableCard}>
+              <div style={tableHeader}>
+                <div style={{ ...tableCol, flex: 3 }}>Email</div>
+                <div style={{ ...tableCol, flex: 1 }}>Role</div>
+                <div style={{ ...tableCol, flex: 2 }}>Sent</div>
+                <div style={{ ...tableCol, flex: 2 }}>Status</div>
+                <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12 }}>Actions</div>
+              </div>
+              {invitations.map((inv) => (
+                <div key={inv.id} style={{ ...tableRow, background: '#fff' }}>
+                  <div style={{ ...tableCol, flex: 3, color: '#1e3a5f', fontWeight: 600, fontSize: 13 }}>
+                    {inv.invited_email}
+                  </div>
+                  <div style={{ ...tableCol, flex: 1 }}>
+                    <span style={roleBadgeStyle(inv.invited_role)}>{inv.invited_role}</span>
+                  </div>
+                  <div style={{ ...tableCol, flex: 2, color: '#7a8a9b', fontSize: 13 }}>
+                    {formatRelativeTime(inv.created_at)}
+                  </div>
+                  <div style={{ ...tableCol, flex: 2, color: '#a06d2a', fontSize: 13 }}>
+                    {formatExpiry(inv.expires_at)}
+                  </div>
+                  <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    {canInvite && (
+                      <>
+                        <button style={secondaryBtn} onClick={() => copyInviteLink(inv.token)}>
+                          Copy link
+                        </button>
+                        <button style={dangerBtn} onClick={() => handleCancelInvite(inv.id)}>
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         {myRole === 'owner' && brokers.length > 1 && (
           <div style={{ marginBottom: 24, color: '#7a8a9b', fontSize: 13, fontFamily: 'Figtree, sans-serif' }}>
             Need to step down as Owner?{' '}
@@ -326,6 +483,99 @@ export default function BrokerTeamPage() {
           </div>
         )}
       </main>
+
+      {/* Invite Modal */}
+      {showInviteModal && (
+        <div style={modalOverlay} onClick={closeAllModals}>
+          <div style={modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeader}>
+              <h2 style={modalTitle}>Invite a broker</h2>
+              <button style={modalClose} onClick={closeAllModals}>×</button>
+            </div>
+
+            {!generatedLink ? (
+              <>
+                <div style={fieldLabel}>Email address</div>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="newbroker@example.com"
+                  style={inputStyle}
+                  autoFocus
+                />
+
+                <div style={fieldLabel}>Role</div>
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as 'admin' | 'broker')}
+                  style={selectStyle}
+                  disabled={myRole === 'admin'}
+                >
+                  <option value="broker">Broker</option>
+                  {myRole === 'owner' && <option value="admin">Admin</option>}
+                </select>
+                {myRole === 'admin' && (
+                  <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 6 }}>
+                    Only Owners can invite Admins.
+                  </div>
+                )}
+
+                <div style={callout}>
+                  <strong>How it works:</strong>
+                  <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
+                    <li>An invite link is generated that you can copy and share</li>
+                    <li>Only this email address can claim the invite</li>
+                    <li>The link expires in 7 days</li>
+                    <li>Email-based invites coming soon</li>
+                  </ul>
+                </div>
+
+                {actionError && <div style={errorBox}>{actionError}</div>}
+
+                <div style={modalActions}>
+                  <div style={{ flex: 1 }} />
+                  <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>
+                    Cancel
+                  </button>
+                  <button style={primaryBtn} onClick={handleSendInvite} disabled={actionLoading}>
+                    {actionLoading ? 'Generating...' : 'Generate invite link'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={successCallout}>
+                  ✓ Invite created for <strong>{inviteEmail}</strong>
+                </div>
+
+                <div style={fieldLabel}>Share this link with them:</div>
+                <div style={linkBoxRow}>
+                  <input
+                    type="text"
+                    value={generatedLink}
+                    readOnly
+                    style={{ ...inputStyle, fontSize: 12, fontFamily: 'monospace' }}
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                  />
+                  <button style={primaryBtn} onClick={copyLink}>
+                    {linkCopied ? '✓ Copied' : 'Copy'}
+                  </button>
+                </div>
+
+                <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 10, lineHeight: 1.5 }}>
+                  Send this link via email, Slack, or text. Only {inviteEmail} can use it. Expires in 7 days.
+                </div>
+
+                <div style={modalActions}>
+                  <div style={{ flex: 1 }} />
+                  <button style={primaryBtn} onClick={closeAllModals}>Done</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Edit Modal */}
       {editTarget && (
@@ -515,12 +765,8 @@ export default function BrokerTeamPage() {
 
 function roleBadgeStyle(role: string): React.CSSProperties {
   const base: React.CSSProperties = {
-    padding: '4px 10px',
-    borderRadius: 12,
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: 'capitalize',
-    display: 'inline-block',
+    padding: '4px 10px', borderRadius: 12, fontSize: 11,
+    fontWeight: 600, textTransform: 'capitalize', display: 'inline-block',
   };
   if (role === 'owner') return { ...base, background: '#e6f0e6', color: '#5a7a56' };
   if (role === 'admin') return { ...base, background: '#e8eef5', color: '#1e3a5f' };
@@ -587,7 +833,7 @@ const statValue: React.CSSProperties = {
   fontSize: 28, fontWeight: 700, color: '#1e3a5f', fontFamily: 'Playfair Display, serif',
 };
 const sectionTitle: React.CSSProperties = {
-  fontFamily: 'Playfair Display, serif', fontSize: 22, color: '#1e3a5f', marginBottom: 14,
+  fontFamily: 'Playfair Display, serif', fontSize: 22, color: '#1e3a5f', marginBottom: 14, marginTop: 8,
 };
 const tableCard: React.CSSProperties = {
   background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
@@ -616,7 +862,7 @@ const modalOverlay: React.CSSProperties = {
 };
 const modalCard: React.CSSProperties = {
   background: '#fff', borderRadius: 12, padding: 28, width: '100%',
-  maxWidth: 480, fontFamily: 'Figtree, sans-serif', maxHeight: '90vh', overflowY: 'auto',
+  maxWidth: 520, fontFamily: 'Figtree, sans-serif', maxHeight: '90vh', overflowY: 'auto',
 };
 const modalHeader: React.CSSProperties = {
   display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18,
@@ -648,6 +894,10 @@ const callout: React.CSSProperties = {
   background: '#faf7f2', border: '1px solid #e8e0d0', borderRadius: 8,
   padding: 14, fontSize: 13, color: '#3a4d68', marginTop: 12, lineHeight: 1.5,
 };
+const successCallout: React.CSSProperties = {
+  background: '#e6f0e6', border: '1px solid #c4d8c0', borderRadius: 8,
+  padding: 14, fontSize: 14, color: '#3a5a36', marginBottom: 16, lineHeight: 1.5,
+};
 const dangerCallout: React.CSSProperties = {
   background: '#fef0f0', border: '1px solid #f0c8c8', borderRadius: 8,
   padding: 14, fontSize: 13, color: '#7a3a3a', marginBottom: 16, lineHeight: 1.5,
@@ -655,4 +905,7 @@ const dangerCallout: React.CSSProperties = {
 const errorBox: React.CSSProperties = {
   background: '#fef0f0', border: '1px solid #f0c8c8', borderRadius: 6,
   padding: '10px 12px', fontSize: 13, color: '#a04444', marginTop: 14,
+};
+const linkBoxRow: React.CSSProperties = {
+  display: 'flex', gap: 8, marginTop: 6,
 };
