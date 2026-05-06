@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { logAuditEvent } from '../_audit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -59,6 +60,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'You cannot change your own role' }, { status: 400 });
     }
 
+    // Update
     const { error: updateErr } = await supabaseAdmin
       .from('brokers')
       .update({ role: new_role })
@@ -68,6 +70,18 @@ export async function POST(req: NextRequest) {
       console.error('Role update error:', updateErr);
       return NextResponse.json({ error: 'Failed to update role' }, { status: 500 });
     }
+
+    await logAuditEvent(supabaseAdmin, {
+      agency_id: target.agency_id,
+      event_type: 'role_changed',
+      actor_user_id: caller_user_id,
+      details: {
+        target_broker_id,
+        target_user_id: target.user_id,
+        old_role: target.role,
+        new_role,
+      },
+    });
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
