@@ -921,18 +921,19 @@ function sectionHeader(num: string, title: string) {
   );
 }
 
-function rowEl(label: string, value: string, opts: { bold?: boolean; last?: boolean } = {}) {
-  return React.createElement(
-    View,
-    { style: combine(styles.row, opts.last ? styles.rowLast : null) },
-    React.createElement(Text, { style: styles.rowLabel }, label),
-    React.createElement(
-      Text,
-      { style: combine(styles.rowValue, opts.bold ? { fontWeight: 'bold' } : null) },
-      value,
-    ),
-  );
-}
+function rowEl(label: string, value: string | null | undefined, opts: { bold?: boolean; last?: boolean } = {}) {
+    const displayValue = value ?? '—';
+    return React.createElement(
+      View,
+      { style: combine(styles.row, opts.last ? styles.rowLast : null) },
+      React.createElement(Text, { style: styles.rowLabel }, label),
+      React.createElement(
+        Text,
+        { style: combine(styles.rowValue, opts.bold ? { fontWeight: 'bold' } : null) },
+        displayValue,
+      ),
+    );
+  }
 
 function summaryCardEl(label: string, value: string, sub: string, highlight: boolean = false) {
   return React.createElement(
