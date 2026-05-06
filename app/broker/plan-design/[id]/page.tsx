@@ -6,6 +6,8 @@ import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 import SectionGroup, { GroupBasics } from './sections/SectionGroup';
 import SectionPlan, { PlanStructure } from './sections/SectionPlan';
+import SectionNetwork, { NetworkConfig } from './sections/SectionNetwork';
+import SectionStopLoss, { StopLossConfig } from './sections/SectionStopLoss';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -199,7 +201,6 @@ export default function PlanDesignWizardPage() {
     const data = design?.[sec.key];
     if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) return 'empty';
 
-    // Section-specific completion checks
     if (sec.key === 'group') {
       const g = data as GroupBasics;
       const hasAll = g.effectiveDate && g.groupSize;
@@ -211,6 +212,19 @@ export default function PlanDesignWizardPage() {
         p.deductibleInNetSingle && p.deductibleInNetFamily &&
         p.oopMaxInNetSingle && p.oopMaxInNetFamily &&
         p.coinsuranceInNet !== undefined;
+      return hasCore ? 'complete' : 'partial';
+    }
+    if (sec.key === 'network') {
+      const n = data as NetworkConfig;
+      if (!n.networkType) return 'partial';
+      if (n.networkType === 'rbp') {
+        return n.rbpMultiplier ? 'complete' : 'partial';
+      }
+      return (n.networkCarrier && n.networkTier) ? 'complete' : 'partial';
+    }
+    if (sec.key === 'stoploss') {
+      const s = data as StopLossConfig;
+      const hasCore = s.specificDeductible && s.specificCarrier && s.contractType;
       return hasCore ? 'complete' : 'partial';
     }
     return 'partial';
@@ -391,6 +405,16 @@ export default function PlanDesignWizardPage() {
               <SectionPlan
                 data={design.plan || {}}
                 onChange={(next) => updateDesignSection('plan', next)}
+              />
+            ) : activeSec.key === 'network' ? (
+              <SectionNetwork
+                data={design.network || {}}
+                onChange={(next) => updateDesignSection('network', next)}
+              />
+            ) : activeSec.key === 'stoploss' ? (
+              <SectionStopLoss
+                data={design.stoploss || {}}
+                onChange={(next) => updateDesignSection('stoploss', next)}
               />
             ) : (
               <div style={placeholderBox}>
