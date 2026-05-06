@@ -12,6 +12,7 @@ import SectionTPA, { TPAConfig } from './sections/SectionTPA';
 import SectionPBM, { PBMConfig } from './sections/SectionPBM';
 import SectionEligibility, { EligibilityConfig } from './sections/SectionEligibility';
 import SectionCarveOuts, { CarveOutsConfig } from './sections/SectionCarveOuts';
+import SectionProjection from './sections/SectionProjection';
 
 type FundingModel = 'level_funded' | 'self_funded';
 type Status = 'draft' | 'finalized' | 'archived';
@@ -25,6 +26,8 @@ type PlanDesign = {
   status: Status;
   effective_date: string | null;
   design: any;
+  ai_projection: any;
+  ai_projection_generated_at: string | null;
   created_at: string;
   updated_at: string;
   clients?: {
@@ -75,6 +78,9 @@ export default function PlanDesignWizardPage() {
   const [design, setDesign] = useState<any>({});
   const [activeSection, setActiveSection] = useState(0);
 
+  const [aiProjection, setAiProjection] = useState<any>(null);
+  const [aiProjectionGeneratedAt, setAiProjectionGeneratedAt] = useState<string | null>(null);
+
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -111,7 +117,8 @@ export default function PlanDesignWizardPage() {
       .from('plan_designs')
       .select(`
         id, client_id, agency_id, name, funding_model, status, effective_date,
-        design, created_at, updated_at,
+        design, ai_projection, ai_projection_generated_at,
+        created_at, updated_at,
         clients(id, employer_name, first_name, last_name, member_count, state)
       `)
       .eq('id', designId)
@@ -129,9 +136,12 @@ export default function PlanDesignWizardPage() {
       return;
     }
 
-    setPlanDesign(data as any);
-    setName((data as any).name || '');
-    setDesign((data as any).design || {});
+    const pd = data as any;
+    setPlanDesign(pd);
+    setName(pd.name || '');
+    setDesign(pd.design || {});
+    setAiProjection(pd.ai_projection || null);
+    setAiProjectionGeneratedAt(pd.ai_projection_generated_at || null);
     setLoading(false);
   }
 
@@ -195,6 +205,20 @@ export default function PlanDesignWizardPage() {
     triggerAutosave({ design: next });
   }
 
+  // Reload after AI projection finishes — pulls latest ai_projection + timestamp from DB
+  async function reloadProjection() {
+    const { data, error } = await supabase
+      .from('plan_designs')
+      .select('ai_projection, ai_projection_generated_at')
+      .eq('id', designId)
+      .maybeSingle();
+
+    if (!error && data) {
+      setAiProjection((data as any).ai_projection || null);
+      setAiProjectionGeneratedAt((data as any).ai_projection_generated_at || null);
+    }
+  }
+
   // ============================================
   // Section completion logic
   // ============================================
@@ -203,6 +227,11 @@ export default function PlanDesignWizardPage() {
       return 'locked';
     }
     const data = design?.[sec.key];
+
+    if (sec.key === 'projection') {
+      return aiProjection ? 'complete' : 'empty';
+    }
+
     if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) return 'empty';
 
     if (sec.key === 'group') {
@@ -243,11 +272,9 @@ export default function PlanDesignWizardPage() {
     }
     if (sec.key === 'eligibility') {
       const e = data as EligibilityConfig;
-      // Required: waiting period choice
       return e.waitingPeriod ? 'complete' : 'partial';
     }
     if (sec.key === 'carveouts') {
-      // Carve-outs is always optional — being touched at all = complete
       return 'complete';
     }
     return 'partial';
@@ -458,6 +485,13 @@ export default function PlanDesignWizardPage() {
               <SectionCarveOuts
                 data={design.carveouts || {}}
                 onChange={(next) => updateDesignSection('carveouts', next)}
+              />
+            ) : activeSec.key === 'projection' ? (
+              <SectionProjection
+                designId={designId}
+                projection={aiProjection}
+                generatedAt={aiProjectionGeneratedAt}
+                onProjectionGenerated={reloadProjection}
               />
             ) : (
               <div style={placeholderBox}>
