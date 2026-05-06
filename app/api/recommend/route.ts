@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const MARKETPLACE_BASE = 'https://marketplace.api.healthcare.gov/api/v1';
+const PLANS_PAGE_SIZE = 100;
+const PLANS_MAX_PAGES = 5; // Safety cap: 500 plans max — way beyond any real county
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -214,7 +216,7 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
     const countyfips = county.fips;
     const state = county.state;
 
-    // ===== Step 2: CMS plans/search =====
+    // ===== Step 2: CMS plans/search (paginated to grab all plans) =====
     const people = ages.map((age: number, i: number) => ({
       age: age,
       aptc_eligible: true,
@@ -222,29 +224,50 @@ ${summaries.length > 0 ? '\nNotes from documents:\n' + summaries.map((s) => `- $
       uses_tobacco: i === 0 ? !!usesTobacco : false,
     }));
 
-    const searchPayload = {
+    const baseSearchPayload = {
       household: { income: annualIncome, people: people },
       market: 'Individual',
       place: { countyfips: countyfips, state: state, zipcode: zipCode },
       year: 2026,
+      limit: PLANS_PAGE_SIZE,
     };
 
-    const plansRes = await fetch(`${MARKETPLACE_BASE}/plans/search?apikey=${marketplaceKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(searchPayload),
-    });
+    const allPlansRaw: any[] = [];
+    let totalAvailable = 0;
 
-    if (!plansRes.ok) {
-      const text = await plansRes.text();
-      return NextResponse.json(
-        { error: 'CMS plans search failed', status: plansRes.status, detail: text },
-        { status: 502 }
-      );
+    for (let page = 0; page < PLANS_MAX_PAGES; page++) {
+      const offset = page * PLANS_PAGE_SIZE;
+      const pagePayload = { ...baseSearchPayload, offset };
+
+      const plansRes = await fetch(`${MARKETPLACE_BASE}/plans/search?apikey=${marketplaceKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pagePayload),
+      });
+
+      if (!plansRes.ok) {
+        const text = await plansRes.text();
+        return NextResponse.json(
+          { error: 'CMS plans search failed', status: plansRes.status, detail: text },
+          { status: 502 }
+        );
+      }
+
+      const plansData = await plansRes.json();
+      const pagePlans = plansData.plans || [];
+
+      // CMS returns total in plansData.total (it's the count of all matching plans)
+      if (page === 0 && typeof plansData.total === 'number') {
+        totalAvailable = plansData.total;
+      }
+
+      allPlansRaw.push(...pagePlans);
+
+      // Stop if we got fewer than a full page (means no more pages)
+      if (pagePlans.length < PLANS_PAGE_SIZE) break;
+      // Or if we've collected everything per the total count
+      if (totalAvailable > 0 && allPlansRaw.length >= totalAvailable) break;
     }
-
-    const plansData = await plansRes.json();
-    const allPlansRaw = plansData.plans || [];
 
     if (allPlansRaw.length === 0) {
       return NextResponse.json({
