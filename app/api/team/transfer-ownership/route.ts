@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { logAuditEvent } from '../_audit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -87,9 +88,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to demote previous Owner — transfer reverted' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true });
-  } catch (err: any) {
-    console.error('transfer-ownership error:', err);
+    await logAuditEvent(supabaseAdmin, {
+        agency_id: target.agency_id,
+        event_type: 'ownership_transferred',
+        actor_user_id: caller_user_id,
+        details: {
+          previous_owner_user_id: caller_user_id,
+          new_owner_broker_id: target_broker_id,
+          new_owner_user_id: target.user_id,
+        },
+      });
+  
+      return NextResponse.json({ success: true });
+    } catch (err: any) {
+      console.error('transfer-ownership error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

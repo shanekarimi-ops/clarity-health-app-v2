@@ -33,6 +33,19 @@ type InvitationRow = {
   created_at: string;
 };
 
+type AuditEvent = {
+  id: string;
+  event_type: string;
+  actor_user_id: string;
+  actor_first_name: string;
+  actor_last_name: string;
+  actor_email: string;
+  details: Record<string, any>;
+  created_at: string;
+};
+
+type TabId = 'roster' | 'audit';
+
 export default function BrokerTeamPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -45,6 +58,12 @@ export default function BrokerTeamPage() {
   const [agencyId, setAgencyId] = useState('');
   const [brokers, setBrokers] = useState<BrokerRow[]>([]);
   const [invitations, setInvitations] = useState<InvitationRow[]>([]);
+
+  // Tab + audit log
+  const [activeTab, setActiveTab] = useState<TabId>('roster');
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditLoaded, setAuditLoaded] = useState(false);
 
   // Modal state
   const [editTarget, setEditTarget] = useState<BrokerRow | null>(null);
@@ -71,6 +90,12 @@ export default function BrokerTeamPage() {
   useEffect(() => {
     loadEverything();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'audit' && !auditLoaded && agencyId) {
+      loadAuditLog();
+    }
+  }, [activeTab, agencyId]);
 
   async function loadEverything() {
     const { data: { user } } = await supabase.auth.getUser();
@@ -119,6 +144,28 @@ export default function BrokerTeamPage() {
       const data = await res.json();
       setBrokers(data.brokers || []);
       setInvitations(data.pending_invitations || []);
+    }
+  }
+
+  async function loadAuditLog() {
+    setAuditLoading(true);
+    const res = await fetch('/api/team/audit-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agency_id: agencyId, user_id: myUserId, limit: 100 }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setAuditEvents(data.events || []);
+      setAuditLoaded(true);
+    }
+    setAuditLoading(false);
+  }
+
+  // Refetch audit log after any mutation if audit was previously loaded
+  async function maybeRefreshAudit() {
+    if (auditLoaded) {
+      await loadAuditLog();
     }
   }
 
@@ -187,10 +234,8 @@ export default function BrokerTeamPage() {
     setSelectedClientIds(next);
   }
 
-  // Can the current user reassign clients from this source broker?
   function canReassignFrom(sourceBroker: BrokerRow): boolean {
     if (myRole === 'owner' || myRole === 'admin') return true;
-    // Brokers can reassign their own clients
     return sourceBroker.id === myBrokerId;
   }
 
@@ -229,6 +274,7 @@ export default function BrokerTeamPage() {
     }
 
     await refreshRoster(agencyId, myUserId);
+    await maybeRefreshAudit();
     setSelectedClientIds(new Set());
     setBulkTargetBrokerId('');
     setActionLoading(false);
@@ -257,6 +303,7 @@ export default function BrokerTeamPage() {
     }
 
     await refreshRoster(agencyId, myUserId);
+    await maybeRefreshAudit();
     closeAllModals();
   }
 
@@ -282,6 +329,7 @@ export default function BrokerTeamPage() {
     }
 
     await refreshRoster(agencyId, myUserId);
+    await maybeRefreshAudit();
     closeAllModals();
   }
 
@@ -312,6 +360,7 @@ export default function BrokerTeamPage() {
     }
 
     await loadEverything();
+    await maybeRefreshAudit();
     closeAllModals();
   }
 
@@ -345,6 +394,7 @@ export default function BrokerTeamPage() {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
     setGeneratedLink(`${baseUrl}/invite/${body.token}`);
     await refreshRoster(agencyId, myUserId);
+    await maybeRefreshAudit();
     setActionLoading(false);
   }
 
@@ -367,6 +417,7 @@ export default function BrokerTeamPage() {
     }
 
     await refreshRoster(agencyId, myUserId);
+    await maybeRefreshAudit();
   }
 
   function copyLink() {
@@ -398,6 +449,53 @@ export default function BrokerTeamPage() {
     if (days < 1) return 'expires today';
     if (days === 1) return 'expires in 1 day';
     return `expires in ${days} days`;
+  }
+
+  // Resolve a broker_id (broker.id) to a name from the current roster
+  function brokerNameById(brokerId: string): string {
+    const b = brokers.find(x => x.id === brokerId);
+    if (!b) return '(unknown broker)';
+    return `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+  }
+
+  function describeAuditEvent(e: AuditEvent): string {
+    const actor = `${e.actor_first_name || ''} ${e.actor_last_name || ''}`.trim() || e.actor_email || '(unknown)';
+    const d = e.details || {};
+
+    switch (e.event_type) {
+      case 'broker_invited':
+        return `${actor} invited ${d.invited_email || '(unknown)'} as ${d.invited_role || 'broker'}`;
+      case 'invite_cancelled':
+        return `${actor} cancelled an invitation`;
+      case 'invite_accepted':
+        return `${d.invited_email || actor} accepted an invitation as ${d.invited_role || 'broker'}`;
+      case 'role_changed':
+        return `${actor} changed a broker's role from ${d.old_role || '?'} to ${d.new_role || '?'}`;
+      case 'broker_removed':
+        return `${actor} removed a broker (${d.target_role || '?'})`;
+      case 'ownership_transferred':
+        return `${actor} transferred ownership of the agency`;
+      case 'clients_reassigned': {
+        const count = d.client_count ?? 0;
+        const target = d.target_broker_id ? brokerNameById(d.target_broker_id) : '(unknown)';
+        return `${actor} reassigned ${count} client${count === 1 ? '' : 's'} to ${target}`;
+      }
+      default:
+        return `${actor} performed ${e.event_type}`;
+    }
+  }
+
+  function eventIcon(type: string): string {
+    switch (type) {
+      case 'broker_invited': return '📨';
+      case 'invite_cancelled': return '🚫';
+      case 'invite_accepted': return '✓';
+      case 'role_changed': return '🔧';
+      case 'broker_removed': return '➖';
+      case 'ownership_transferred': return '👑';
+      case 'clients_reassigned': return '↔️';
+      default: return '•';
+    }
   }
 
   if (loading) {
@@ -443,236 +541,286 @@ export default function BrokerTeamPage() {
           </button>
         </div>
 
-        <div style={statsRow}>
-          <div style={statTile}>
-            <div style={statLabel}>Active Brokers</div>
-            <div style={statValue}>{activeBrokers}</div>
-          </div>
-          <div style={statTile}>
-            <div style={statLabel}>Pending Invites</div>
-            <div style={statValue}>{invitations.length || '—'}</div>
-          </div>
-          <div style={statTile}>
-            <div style={statLabel}>Total Clients</div>
-            <div style={statValue}>{totalClients}</div>
-          </div>
-          <div style={statTile}>
-            <div style={statLabel}>Avg per Broker</div>
-            <div style={statValue}>{avgPerBroker}</div>
-          </div>
+        {/* Tabs */}
+        <div style={tabBar}>
+          <button
+            style={activeTab === 'roster' ? tabActive : tabInactive}
+            onClick={() => setActiveTab('roster')}
+          >
+            Roster
+          </button>
+          <button
+            style={activeTab === 'audit' ? tabActive : tabInactive}
+            onClick={() => setActiveTab('audit')}
+          >
+            Audit log
+          </button>
         </div>
 
-        <div style={sectionTitle}>Broker Roster</div>
-        <div style={{ ...subhint, marginBottom: 14 }}>
-          Click a broker to view their clients and reassign them.
-        </div>
-
-        <div style={tableCard}>
-          <div style={tableHeader}>
-            <div style={{ ...tableCol, flex: 0.3 }}></div>
-            <div style={{ ...tableCol, flex: 2 }}>Broker</div>
-            <div style={{ ...tableCol, flex: 2 }}>Email</div>
-            <div style={{ ...tableCol, flex: 1 }}>Role</div>
-            <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Clients</div>
-            <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Recs</div>
-            <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Designs</div>
-            <div style={{ ...tableCol, flex: 1, textAlign: 'right', paddingRight: 12 }}>Actions</div>
-          </div>
-
-          {brokers.length === 0 && (
-            <div style={{ padding: 40, textAlign: 'center', color: '#7a8a9b', fontSize: 14 }}>
-              No brokers in your agency yet.
-            </div>
-          )}
-
-          {brokers.map((b) => {
-            const initials = `${(b.first_name || '?').charAt(0)}${(b.last_name || '').charAt(0)}`.toUpperCase();
-            const showEdit = canEdit && !b.is_you && !(myRole === 'admin' && b.role === 'owner');
-            const isExpanded = expandedBrokerId === b.id;
-            const showCheckboxes = canReassignFrom(b);
-            const allSelected = b.clients.length > 0 && b.clients.every(c => selectedClientIds.has(c.id));
-            const someSelected = b.clients.some(c => selectedClientIds.has(c.id));
-            const otherBrokers = brokers.filter(other => other.id !== b.id);
-
-            return (
-              <div key={b.id}>
-                <div
-                  style={{
-                    ...tableRow,
-                    background: b.is_you ? '#faf7f2' : '#fff',
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                  }}
-                  onClick={() => toggleExpand(b.id)}
-                >
-                  <div style={{ ...tableCol, flex: 0.3, color: '#7a9b76', fontSize: 13 }}>
-                    {isExpanded ? '▾' : '▸'}
-                  </div>
-                  <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={avatarReal}>{initials || '—'}</div>
-                    <div>
-                      <div style={{ fontWeight: 600, color: '#1e3a5f' }}>
-                        {b.first_name || '(no name)'} {b.last_name || ''}
-                      </div>
-                      {b.is_you && <div style={{ fontSize: 12, color: '#7a8a9b' }}>You</div>}
-                    </div>
-                  </div>
-                  <div style={{ ...tableCol, flex: 2, color: '#3a4d68', fontSize: 13 }}>{b.email || '—'}</div>
-                  <div style={{ ...tableCol, flex: 1 }}>
-                    <span style={roleBadgeStyle(b.role)}>{b.role}</span>
-                  </div>
-                  <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.client_count}</div>
-                  <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.recommendations_count}</div>
-                  <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.finalized_designs_count}</div>
-                  <div style={{ ...tableCol, flex: 1, textAlign: 'right', paddingRight: 12 }} onClick={(e) => e.stopPropagation()}>
-                    {showEdit ? (
-                      <button style={secondaryBtn} onClick={() => openEdit(b)}>Edit</button>
-                    ) : (
-                      <button style={secondaryBtnDisabled} disabled title={b.is_you ? 'You cannot edit yourself' : 'Insufficient permissions'}>Edit</button>
-                    )}
-                  </div>
-                </div>
-
-                {isExpanded && (
-                  <div style={expandPanel}>
-                    {b.clients.length === 0 ? (
-                      <div style={{ padding: '12px 0', color: '#7a8a9b', fontSize: 13, fontStyle: 'italic' }}>
-                        No clients assigned to this broker yet.
-                      </div>
-                    ) : (
-                      <>
-                        {showCheckboxes && (
-                          <div style={bulkBar}>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#3a4d68', cursor: 'pointer' }}>
-                              <input
-                                type="checkbox"
-                                checked={allSelected}
-                                onChange={() => toggleAllClientsForBroker(b)}
-                                style={{ accentColor: '#7a9b76', width: 16, height: 16, cursor: 'pointer' }}
-                              />
-                              Select all ({b.clients.length})
-                            </label>
-                            <div style={{ flex: 1 }} />
-                            {someSelected && (
-                              <>
-                                <span style={{ fontSize: 13, color: '#3a4d68', marginRight: 8 }}>
-                                  {b.clients.filter(c => selectedClientIds.has(c.id)).length} selected
-                                </span>
-                                <select
-                                  value={bulkTargetBrokerId}
-                                  onChange={(e) => setBulkTargetBrokerId(e.target.value)}
-                                  style={inlineSelect}
-                                >
-                                  <option value="">Reassign to...</option>
-                                  {otherBrokers.map(ob => (
-                                    <option key={ob.id} value={ob.id}>
-                                      {ob.first_name} {ob.last_name} ({ob.role})
-                                    </option>
-                                  ))}
-                                </select>
-                                <button
-                                  style={bulkTargetBrokerId ? primaryBtnSmall : primaryBtnSmallDisabled}
-                                  disabled={!bulkTargetBrokerId || actionLoading}
-                                  onClick={() => handleReassign(b, b.clients.filter(c => selectedClientIds.has(c.id)).map(c => c.id))}
-                                >
-                                  {actionLoading ? 'Reassigning...' : 'Reassign'}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        )}
-
-                        <div style={clientList}>
-                          {b.clients.map(c => (
-                            <div key={c.id} style={clientRow}>
-                              {showCheckboxes && (
-                                <input
-                                  type="checkbox"
-                                  checked={selectedClientIds.has(c.id)}
-                                  onChange={() => toggleClientSelected(c.id)}
-                                  style={{ accentColor: '#7a9b76', width: 16, height: 16, cursor: 'pointer' }}
-                                />
-                              )}
-                              <div style={{ flex: 1, color: '#1e3a5f', fontWeight: 600, fontSize: 14 }}>
-                                {c.employer_name}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-
-                        {reassignError && expandedBrokerId === b.id && (
-                          <div style={errorBox}>{reassignError}</div>
-                        )}
-
-                        {!showCheckboxes && (
-                          <div style={{ ...subhint, marginTop: 8 }}>
-                            You can only reassign clients assigned to you.
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {invitations.length > 0 && (
+        {activeTab === 'roster' && (
           <>
-            <div style={sectionTitle}>Pending Invitations</div>
+            <div style={statsRow}>
+              <div style={statTile}>
+                <div style={statLabel}>Active Brokers</div>
+                <div style={statValue}>{activeBrokers}</div>
+              </div>
+              <div style={statTile}>
+                <div style={statLabel}>Pending Invites</div>
+                <div style={statValue}>{invitations.length || '—'}</div>
+              </div>
+              <div style={statTile}>
+                <div style={statLabel}>Total Clients</div>
+                <div style={statValue}>{totalClients}</div>
+              </div>
+              <div style={statTile}>
+                <div style={statLabel}>Avg per Broker</div>
+                <div style={statValue}>{avgPerBroker}</div>
+              </div>
+            </div>
+
+            <div style={sectionTitle}>Broker Roster</div>
+            <div style={{ ...subhint, marginBottom: 14 }}>
+              Click a broker to view their clients and reassign them.
+            </div>
+
             <div style={tableCard}>
               <div style={tableHeader}>
-                <div style={{ ...tableCol, flex: 3 }}>Email</div>
+                <div style={{ ...tableCol, flex: 0.3 }}></div>
+                <div style={{ ...tableCol, flex: 2 }}>Broker</div>
+                <div style={{ ...tableCol, flex: 2 }}>Email</div>
                 <div style={{ ...tableCol, flex: 1 }}>Role</div>
-                <div style={{ ...tableCol, flex: 2 }}>Sent</div>
-                <div style={{ ...tableCol, flex: 2 }}>Status</div>
-                <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12 }}>Actions</div>
+                <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Clients</div>
+                <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Recs</div>
+                <div style={{ ...tableCol, flex: 1, textAlign: 'right' }}>Designs</div>
+                <div style={{ ...tableCol, flex: 1, textAlign: 'right', paddingRight: 12 }}>Actions</div>
               </div>
-              {invitations.map((inv) => (
-                <div key={inv.id} style={{ ...tableRow, background: '#fff' }}>
-                  <div style={{ ...tableCol, flex: 3, color: '#1e3a5f', fontWeight: 600, fontSize: 13 }}>
-                    {inv.invited_email}
-                  </div>
-                  <div style={{ ...tableCol, flex: 1 }}>
-                    <span style={roleBadgeStyle(inv.invited_role)}>{inv.invited_role}</span>
-                  </div>
-                  <div style={{ ...tableCol, flex: 2, color: '#7a8a9b', fontSize: 13 }}>
-                    {formatRelativeTime(inv.created_at)}
-                  </div>
-                  <div style={{ ...tableCol, flex: 2, color: '#a06d2a', fontSize: 13 }}>
-                    {formatExpiry(inv.expires_at)}
-                  </div>
-                  <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                    {canInvite && (
-                      <>
-                        <button style={secondaryBtn} onClick={() => copyInviteLink(inv.token)}>Copy link</button>
-                        <button style={dangerBtn} onClick={() => handleCancelInvite(inv.id)}>Cancel</button>
-                      </>
+
+              {brokers.length === 0 && (
+                <div style={{ padding: 40, textAlign: 'center', color: '#7a8a9b', fontSize: 14 }}>
+                  No brokers in your agency yet.
+                </div>
+              )}
+
+              {brokers.map((b) => {
+                const initials = `${(b.first_name || '?').charAt(0)}${(b.last_name || '').charAt(0)}`.toUpperCase();
+                const showEdit = canEdit && !b.is_you && !(myRole === 'admin' && b.role === 'owner');
+                const isExpanded = expandedBrokerId === b.id;
+                const showCheckboxes = canReassignFrom(b);
+                const allSelected = b.clients.length > 0 && b.clients.every(c => selectedClientIds.has(c.id));
+                const someSelected = b.clients.some(c => selectedClientIds.has(c.id));
+                const otherBrokers = brokers.filter(other => other.id !== b.id);
+
+                return (
+                  <div key={b.id}>
+                    <div
+                      style={{ ...tableRow, background: b.is_you ? '#faf7f2' : '#fff', cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => toggleExpand(b.id)}
+                    >
+                      <div style={{ ...tableCol, flex: 0.3, color: '#7a9b76', fontSize: 13 }}>{isExpanded ? '▾' : '▸'}</div>
+                      <div style={{ ...tableCol, flex: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={avatarReal}>{initials || '—'}</div>
+                        <div>
+                          <div style={{ fontWeight: 600, color: '#1e3a5f' }}>
+                            {b.first_name || '(no name)'} {b.last_name || ''}
+                          </div>
+                          {b.is_you && <div style={{ fontSize: 12, color: '#7a8a9b' }}>You</div>}
+                        </div>
+                      </div>
+                      <div style={{ ...tableCol, flex: 2, color: '#3a4d68', fontSize: 13 }}>{b.email || '—'}</div>
+                      <div style={{ ...tableCol, flex: 1 }}>
+                        <span style={roleBadgeStyle(b.role)}>{b.role}</span>
+                      </div>
+                      <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.client_count}</div>
+                      <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.recommendations_count}</div>
+                      <div style={{ ...tableCol, flex: 1, color: '#3a4d68', textAlign: 'right' }}>{b.finalized_designs_count}</div>
+                      <div style={{ ...tableCol, flex: 1, textAlign: 'right', paddingRight: 12 }} onClick={(e) => e.stopPropagation()}>
+                        {showEdit ? (
+                          <button style={secondaryBtn} onClick={() => openEdit(b)}>Edit</button>
+                        ) : (
+                          <button style={secondaryBtnDisabled} disabled title={b.is_you ? 'You cannot edit yourself' : 'Insufficient permissions'}>Edit</button>
+                        )}
+                      </div>
+                    </div>
+
+                    {isExpanded && (
+                      <div style={expandPanel}>
+                        {b.clients.length === 0 ? (
+                          <div style={{ padding: '12px 0', color: '#7a8a9b', fontSize: 13, fontStyle: 'italic' }}>
+                            No clients assigned to this broker yet.
+                          </div>
+                        ) : (
+                          <>
+                            {showCheckboxes && (
+                              <div style={bulkBar}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#3a4d68', cursor: 'pointer' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={allSelected}
+                                    onChange={() => toggleAllClientsForBroker(b)}
+                                    style={{ accentColor: '#7a9b76', width: 16, height: 16, cursor: 'pointer' }}
+                                  />
+                                  Select all ({b.clients.length})
+                                </label>
+                                <div style={{ flex: 1 }} />
+                                {someSelected && (
+                                  <>
+                                    <span style={{ fontSize: 13, color: '#3a4d68', marginRight: 8 }}>
+                                      {b.clients.filter(c => selectedClientIds.has(c.id)).length} selected
+                                    </span>
+                                    <select
+                                      value={bulkTargetBrokerId}
+                                      onChange={(e) => setBulkTargetBrokerId(e.target.value)}
+                                      style={inlineSelect}
+                                    >
+                                      <option value="">Reassign to...</option>
+                                      {otherBrokers.map(ob => (
+                                        <option key={ob.id} value={ob.id}>
+                                          {ob.first_name} {ob.last_name} ({ob.role})
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      style={bulkTargetBrokerId ? primaryBtnSmall : primaryBtnSmallDisabled}
+                                      disabled={!bulkTargetBrokerId || actionLoading}
+                                      onClick={() => handleReassign(b, b.clients.filter(c => selectedClientIds.has(c.id)).map(c => c.id))}
+                                    >
+                                      {actionLoading ? 'Reassigning...' : 'Reassign'}
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            )}
+
+                            <div style={clientList}>
+                              {b.clients.map(c => (
+                                <div key={c.id} style={clientRow}>
+                                  {showCheckboxes && (
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedClientIds.has(c.id)}
+                                      onChange={() => toggleClientSelected(c.id)}
+                                      style={{ accentColor: '#7a9b76', width: 16, height: 16, cursor: 'pointer' }}
+                                    />
+                                  )}
+                                  <div style={{ flex: 1, color: '#1e3a5f', fontWeight: 600, fontSize: 14 }}>
+                                    {c.employer_name}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            {reassignError && expandedBrokerId === b.id && (
+                              <div style={errorBox}>{reassignError}</div>
+                            )}
+
+                            {!showCheckboxes && (
+                              <div style={{ ...subhint, marginTop: 8 }}>
+                                You can only reassign clients assigned to you.
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
+
+            {invitations.length > 0 && (
+              <>
+                <div style={sectionTitle}>Pending Invitations</div>
+                <div style={tableCard}>
+                  <div style={tableHeader}>
+                    <div style={{ ...tableCol, flex: 3 }}>Email</div>
+                    <div style={{ ...tableCol, flex: 1 }}>Role</div>
+                    <div style={{ ...tableCol, flex: 2 }}>Sent</div>
+                    <div style={{ ...tableCol, flex: 2 }}>Status</div>
+                    <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12 }}>Actions</div>
+                  </div>
+                  {invitations.map((inv) => (
+                    <div key={inv.id} style={{ ...tableRow, background: '#fff' }}>
+                      <div style={{ ...tableCol, flex: 3, color: '#1e3a5f', fontWeight: 600, fontSize: 13 }}>
+                        {inv.invited_email}
+                      </div>
+                      <div style={{ ...tableCol, flex: 1 }}>
+                        <span style={roleBadgeStyle(inv.invited_role)}>{inv.invited_role}</span>
+                      </div>
+                      <div style={{ ...tableCol, flex: 2, color: '#7a8a9b', fontSize: 13 }}>{formatRelativeTime(inv.created_at)}</div>
+                      <div style={{ ...tableCol, flex: 2, color: '#a06d2a', fontSize: 13 }}>{formatExpiry(inv.expires_at)}</div>
+                      <div style={{ ...tableCol, flex: 2, textAlign: 'right', paddingRight: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                        {canInvite && (
+                          <>
+                            <button style={secondaryBtn} onClick={() => copyInviteLink(inv.token)}>Copy link</button>
+                            <button style={dangerBtn} onClick={() => handleCancelInvite(inv.id)}>Cancel</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {myRole === 'owner' && brokers.length > 1 && (
+              <div style={{ marginBottom: 24, color: '#7a8a9b', fontSize: 13, fontFamily: 'Figtree, sans-serif' }}>
+                Need to step down as Owner?{' '}
+                <button
+                  style={linkBtn}
+                  onClick={() => {
+                    const candidates = brokers.filter(b => !b.is_you);
+                    if (candidates.length > 0) {
+                      setTransferTarget(candidates[0]);
+                      setActionError('');
+                    }
+                  }}
+                >
+                  Transfer ownership →
+                </button>
+              </div>
+            )}
           </>
         )}
 
-        {myRole === 'owner' && brokers.length > 1 && (
-          <div style={{ marginBottom: 24, color: '#7a8a9b', fontSize: 13, fontFamily: 'Figtree, sans-serif' }}>
-            Need to step down as Owner?{' '}
-            <button
-              style={linkBtn}
-              onClick={() => {
-                const candidates = brokers.filter(b => !b.is_you);
-                if (candidates.length > 0) {
-                  setTransferTarget(candidates[0]);
-                  setActionError('');
-                }
-              }}
-            >
-              Transfer ownership →
-            </button>
-          </div>
+        {activeTab === 'audit' && (
+          <>
+            <div style={sectionTitle}>Audit Log</div>
+            <div style={{ ...subhint, marginBottom: 14 }}>
+              Every action taken in your agency. Most recent first.
+            </div>
+
+            {auditLoading && (
+              <div style={{ padding: 30, textAlign: 'center', color: '#7a8a9b', fontSize: 14, fontFamily: 'Figtree, sans-serif' }}>
+                Loading audit log...
+              </div>
+            )}
+
+            {!auditLoading && auditEvents.length === 0 && (
+              <div style={tableCard}>
+                <div style={{ padding: 40, textAlign: 'center', color: '#7a8a9b', fontSize: 14 }}>
+                  No events yet. Audit events will appear here as actions are taken in your agency.
+                </div>
+              </div>
+            )}
+
+            {!auditLoading && auditEvents.length > 0 && (
+              <div style={tableCard}>
+                {auditEvents.map(e => (
+                  <div key={e.id} style={auditRow}>
+                    <div style={auditIcon}>{eventIcon(e.event_type)}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, color: '#1e3a5f', fontSize: 14, marginBottom: 4 }}>
+                        {describeAuditEvent(e)}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#7a8a9b' }}>
+                        {formatRelativeTime(e.created_at)} · {new Date(e.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </main>
 
@@ -696,7 +844,6 @@ export default function BrokerTeamPage() {
                   style={inputStyle}
                   autoFocus
                 />
-
                 <div style={fieldLabel}>Role</div>
                 <select
                   value={inviteRole}
@@ -708,11 +855,8 @@ export default function BrokerTeamPage() {
                   {myRole === 'owner' && <option value="admin">Admin</option>}
                 </select>
                 {myRole === 'admin' && (
-                  <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 6 }}>
-                    Only Owners can invite Admins.
-                  </div>
+                  <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 6 }}>Only Owners can invite Admins.</div>
                 )}
-
                 <div style={callout}>
                   <strong>How it works:</strong>
                   <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
@@ -722,9 +866,7 @@ export default function BrokerTeamPage() {
                     <li>Email-based invites coming soon</li>
                   </ul>
                 </div>
-
                 {actionError && <div style={errorBox}>{actionError}</div>}
-
                 <div style={modalActions}>
                   <div style={{ flex: 1 }} />
                   <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
@@ -735,10 +877,7 @@ export default function BrokerTeamPage() {
               </>
             ) : (
               <>
-                <div style={successCallout}>
-                  ✓ Invite created for <strong>{inviteEmail}</strong>
-                </div>
-
+                <div style={successCallout}>✓ Invite created for <strong>{inviteEmail}</strong></div>
                 <div style={fieldLabel}>Share this link with them:</div>
                 <div style={linkBoxRow}>
                   <input
@@ -748,15 +887,11 @@ export default function BrokerTeamPage() {
                     style={{ ...inputStyle, fontSize: 12, fontFamily: 'monospace' }}
                     onClick={(e) => (e.target as HTMLInputElement).select()}
                   />
-                  <button style={primaryBtn} onClick={copyLink}>
-                    {linkCopied ? '✓ Copied' : 'Copy'}
-                  </button>
+                  <button style={primaryBtn} onClick={copyLink}>{linkCopied ? '✓ Copied' : 'Copy'}</button>
                 </div>
-
                 <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 10, lineHeight: 1.5 }}>
                   Send this link via email, Slack, or text. Only {inviteEmail} can use it. Expires in 7 days.
                 </div>
-
                 <div style={modalActions}>
                   <div style={{ flex: 1 }} />
                   <button style={primaryBtn} onClick={closeAllModals}>Done</button>
@@ -775,7 +910,6 @@ export default function BrokerTeamPage() {
               <h2 style={modalTitle}>Edit broker</h2>
               <button style={modalClose} onClick={closeAllModals}>×</button>
             </div>
-
             <div style={{ marginBottom: 18 }}>
               <div style={{ fontWeight: 600, color: '#1e3a5f', fontSize: 16 }}>
                 {editTarget.first_name} {editTarget.last_name}
@@ -861,11 +995,9 @@ export default function BrokerTeamPage() {
               <h2 style={modalTitle}>Remove broker</h2>
               <button style={modalClose} onClick={closeAllModals}>×</button>
             </div>
-
             <div style={{ marginBottom: 18, color: '#3a4d68', fontSize: 14, lineHeight: 1.6 }}>
               You're about to remove <strong>{confirmRemove.first_name} {confirmRemove.last_name}</strong> from {agencyName}.
             </div>
-
             <div style={callout}>
               <strong>What happens:</strong>
               <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
@@ -874,9 +1006,7 @@ export default function BrokerTeamPage() {
                 <li>Their broker record is preserved for audit purposes</li>
               </ul>
             </div>
-
             {actionError && <div style={errorBox}>{actionError}</div>}
-
             <div style={modalActions}>
               <div style={{ flex: 1 }} />
               <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
@@ -896,18 +1026,15 @@ export default function BrokerTeamPage() {
               <h2 style={modalTitle}>Transfer ownership</h2>
               <button style={modalClose} onClick={closeAllModals}>×</button>
             </div>
-
             <div style={{ marginBottom: 14, color: '#3a4d68', fontSize: 14, lineHeight: 1.6 }}>
               You're transferring ownership of <strong>{agencyName}</strong> to:
             </div>
-
             <div style={{ background: '#faf7f2', borderRadius: 8, padding: 12, marginBottom: 16 }}>
               <div style={{ fontWeight: 600, color: '#1e3a5f' }}>
                 {transferTarget.first_name} {transferTarget.last_name}
               </div>
               <div style={{ color: '#7a8a9b', fontSize: 13 }}>{transferTarget.email}</div>
             </div>
-
             <div style={dangerCallout}>
               <strong>This is permanent and irreversible from this UI.</strong>
               <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
@@ -916,7 +1043,6 @@ export default function BrokerTeamPage() {
                 <li>Only the new Owner can transfer ownership back</li>
               </ul>
             </div>
-
             <div style={fieldLabel}>Type <strong>TRANSFER</strong> to confirm:</div>
             <input
               type="text"
@@ -926,9 +1052,7 @@ export default function BrokerTeamPage() {
               style={inputStyle}
               autoFocus
             />
-
             {actionError && <div style={errorBox}>{actionError}</div>}
-
             <div style={modalActions}>
               <div style={{ flex: 1 }} />
               <button style={secondaryBtn} onClick={closeAllModals} disabled={actionLoading}>Cancel</button>
@@ -961,6 +1085,9 @@ const headerRow: React.CSSProperties = { display: 'flex', justifyContent: 'space
 const pageTitle: React.CSSProperties = { fontFamily: 'Playfair Display, serif', fontSize: 36, color: '#1e3a5f', margin: 0, marginBottom: 4 };
 const pageSubtitle: React.CSSProperties = { fontFamily: 'Figtree, sans-serif', color: '#3a4d68', margin: 0, fontSize: 15 };
 const subhint: React.CSSProperties = { fontFamily: 'Figtree, sans-serif', color: '#7a8a9b', fontSize: 13 };
+const tabBar: React.CSSProperties = { display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 24 };
+const tabActive: React.CSSProperties = { background: 'transparent', border: 'none', borderBottom: '2px solid #7a9b76', padding: '10px 18px', fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, color: '#1e3a5f', cursor: 'pointer', marginBottom: -1 };
+const tabInactive: React.CSSProperties = { background: 'transparent', border: 'none', borderBottom: '2px solid transparent', padding: '10px 18px', fontFamily: 'Figtree, sans-serif', fontWeight: 500, fontSize: 14, color: '#7a8a9b', cursor: 'pointer', marginBottom: -1 };
 const primaryBtn: React.CSSProperties = { background: '#7a9b76', color: '#fff', border: 'none', padding: '12px 22px', borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, cursor: 'pointer' };
 const primaryBtnDisabled: React.CSSProperties = { background: '#cbd5e0', color: '#fff', border: 'none', padding: '12px 22px', borderRadius: 8, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 14, cursor: 'not-allowed', opacity: 0.7 };
 const primaryBtnSmall: React.CSSProperties = { background: '#7a9b76', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: 6, fontFamily: 'Figtree, sans-serif', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
@@ -985,6 +1112,8 @@ const bulkBar: React.CSSProperties = { display: 'flex', alignItems: 'center', ga
 const inlineSelect: React.CSSProperties = { padding: '6px 10px', borderRadius: 6, border: '1px solid #cbd5e0', fontFamily: 'Figtree, sans-serif', fontSize: 13, color: '#1e3a5f', background: '#fff' };
 const clientList: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
 const clientRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f0eee8' };
+const auditRow: React.CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 14, padding: '14px 18px', borderBottom: '1px solid #eef1f4', fontFamily: 'Figtree, sans-serif' };
+const auditIcon: React.CSSProperties = { fontSize: 18, width: 28, textAlign: 'center', flexShrink: 0 };
 
 const modalOverlay: React.CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(30, 58, 95, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 };
 const modalCard: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 28, width: '100%', maxWidth: 520, fontFamily: 'Figtree, sans-serif', maxHeight: '90vh', overflowY: 'auto' };

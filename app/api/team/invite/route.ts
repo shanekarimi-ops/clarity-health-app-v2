@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { logAuditEvent } from '../_audit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -95,12 +96,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to create invite' }, { status: 500 });
     }
 
-    return NextResponse.json({
-      success: true,
-      invite_id: invite.id,
-      token: invite.token,
-      expires_at: invite.expires_at,
-    });
+    await logAuditEvent(supabaseAdmin, {
+        agency_id,
+        event_type: 'broker_invited',
+        actor_user_id: caller_user_id,
+        details: {
+          invited_email: normalizedEmail,
+          invited_role,
+        },
+      });
+  
+      return NextResponse.json({
+        success: true,
+        invite_id: invite.id,
+        token: invite.token,
+        expires_at: invite.expires_at,
+      });
   } catch (err: any) {
     console.error('invite error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

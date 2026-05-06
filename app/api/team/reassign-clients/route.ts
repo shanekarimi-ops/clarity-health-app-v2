@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { logAuditEvent } from '../_audit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -85,6 +86,22 @@ export async function POST(req: NextRequest) {
       console.error('Reassignment error:', updateErr);
       return NextResponse.json({ error: 'Failed to reassign clients' }, { status: 500 });
     }
+
+    // Determine source brokers (could be multiple if Owner/Admin reassigned a mixed batch)
+    const sourceBrokerIds = Array.from(new Set(clients.map(c => c.assigned_broker_id).filter(Boolean)));
+
+    await logAuditEvent(supabaseAdmin, {
+      agency_id: caller.agency_id,
+      event_type: 'clients_reassigned',
+      actor_user_id: caller_user_id,
+      details: {
+        source_broker_ids: sourceBrokerIds,
+        target_broker_id,
+        client_count: client_ids.length,
+        client_ids,
+        client_names: clients.map(c => c.employer_name),
+      },
+    });
 
     return NextResponse.json({
       success: true,

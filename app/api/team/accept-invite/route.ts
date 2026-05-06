@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { logAuditEvent } from '../_audit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -172,6 +173,16 @@ export async function POST(req: NextRequest) {
         accepted_by_user_id: user_id,
       })
       .eq('id', invite.id);
+
+    await logAuditEvent(supabaseAdmin, {
+      agency_id: invite.agency_id,
+      event_type: 'invite_accepted',
+      actor_user_id: user_id,
+      details: {
+        invited_email: invite.invited_email,
+        invited_role: invite.invited_role,
+      },
+    });
 
     return NextResponse.json({ success: true, agency_id: invite.agency_id });
   } catch (err: any) {
