@@ -37,6 +37,7 @@ export default function BrokerPlanDesignPage() {
   const [designs, setDesigns] = useState<PlanDesign[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   useEffect(() => {
     loadEverything();
@@ -110,6 +111,42 @@ export default function BrokerPlanDesignPage() {
     router.push(`/broker/plan-design/${id}`);
   }
 
+  async function handleRestore(id: string) {
+    setRestoringId(id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        alert('Not authenticated. Please log in again.');
+        setRestoringId(null);
+        return;
+      }
+
+      const res = await fetch(`/api/plan-designs/${id}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: session.access_token,
+          status: 'draft',
+        }),
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        alert('Failed to restore: ' + (json?.error || 'unknown error'));
+        setRestoringId(null);
+        return;
+      }
+
+      // Reload the list
+      await loadDesigns();
+      setRestoringId(null);
+    } catch (e) {
+      console.error(e);
+      alert('Unexpected error restoring design');
+      setRestoringId(null);
+    }
+  }
+
   // Group designs by status
   const drafts = designs.filter(d => d.status === 'draft');
   const finalized = designs.filter(d => d.status === 'finalized');
@@ -177,7 +214,11 @@ export default function BrokerPlanDesignPage() {
             </div>
             <div style={cardGrid}>
               {drafts.map(d => (
-                <DesignCard key={d.id} design={d} onOpen={() => handleOpenDesign(d.id)} />
+                <DesignCard
+                  key={d.id}
+                  design={d}
+                  onOpen={() => handleOpenDesign(d.id)}
+                />
               ))}
             </div>
           </div>
@@ -192,13 +233,17 @@ export default function BrokerPlanDesignPage() {
             </div>
             <div style={cardGrid}>
               {finalized.map(d => (
-                <DesignCard key={d.id} design={d} onOpen={() => handleOpenDesign(d.id)} />
+                <DesignCard
+                  key={d.id}
+                  design={d}
+                  onOpen={() => handleOpenDesign(d.id)}
+                />
               ))}
             </div>
           </div>
         )}
 
-        {/* Archived (collapsed by default) */}
+        {/* Archived */}
         {archived.length > 0 && (
           <div style={sectionWrap}>
             <button
@@ -208,9 +253,15 @@ export default function BrokerPlanDesignPage() {
               {showArchived ? '▼' : '▶'} Archived ({archived.length})
             </button>
             {showArchived && (
-              <div style={{ ...cardGrid, marginTop: 12, opacity: 0.65 }}>
+              <div style={{ ...cardGrid, marginTop: 12, opacity: 0.85 }}>
                 {archived.map(d => (
-                  <DesignCard key={d.id} design={d} onOpen={() => handleOpenDesign(d.id)} />
+                  <DesignCard
+                    key={d.id}
+                    design={d}
+                    onOpen={() => handleOpenDesign(d.id)}
+                    onRestore={() => handleRestore(d.id)}
+                    restoring={restoringId === d.id}
+                  />
                 ))}
               </div>
             )}
@@ -222,14 +273,18 @@ export default function BrokerPlanDesignPage() {
 }
 
 // ============================================
-// Design card component
+// Design card
 // ============================================
 function DesignCard({
   design,
   onOpen,
+  onRestore,
+  restoring,
 }: {
   design: PlanDesign;
   onOpen: () => void;
+  onRestore?: () => void;
+  restoring?: boolean;
 }) {
   const clientName =
     design.clients?.employer_name?.trim() ||
@@ -279,7 +334,17 @@ function DesignCard({
 
       <div style={cardFooter}>
         <span style={{ fontSize: 12, color: '#94a3b8' }}>Updated {lastEdited}</span>
-        <span style={openArrow}>Open →</span>
+        {onRestore ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRestore(); }}
+            disabled={restoring}
+            style={restoreCardBtn}
+          >
+            {restoring ? 'Restoring...' : '↺ Restore'}
+          </button>
+        ) : (
+          <span style={openArrow}>Open →</span>
+        )}
       </div>
     </div>
   );
@@ -495,6 +560,18 @@ const openArrow: React.CSSProperties = {
   fontSize: 13,
   color: '#1e3a5f',
   fontWeight: 600,
+};
+
+const restoreCardBtn: React.CSSProperties = {
+  background: '#fff',
+  border: '1px solid #cbd5e0',
+  color: '#1e3a5f',
+  padding: '4px 10px',
+  borderRadius: 6,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'Figtree, sans-serif',
 };
 
 const archivedToggle: React.CSSProperties = {

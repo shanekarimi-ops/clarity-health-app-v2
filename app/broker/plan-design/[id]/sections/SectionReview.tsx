@@ -98,15 +98,12 @@ export default function SectionReview({
         return;
       }
 
-      // Pull down the PDF blob
       const blob = await res.blob();
 
-      // Read the filename from the Content-Disposition header if present
       const contentDisposition = res.headers.get('Content-Disposition') || '';
       const fileNameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
       const fileName = fileNameMatch ? fileNameMatch[1] : 'plan_design.pdf';
 
-      // Trigger the download
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -126,7 +123,7 @@ export default function SectionReview({
 
   return (
     <div>
-      {/* Status banner */}
+      {/* Status banners */}
       {status === 'finalized' && (
         <div style={finalizedBanner}>
           <span style={{ fontSize: 22 }}>✓</span>
@@ -144,6 +141,27 @@ export default function SectionReview({
             style={revertBtn}
           >
             {statusUpdating ? 'Updating...' : 'Revert to draft'}
+          </button>
+        </div>
+      )}
+
+      {status === 'archived' && (
+        <div style={archivedBanner}>
+          <span style={{ fontSize: 22 }}>📦</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: 'Playfair Display, serif', fontSize: 16, color: '#475569' }}>
+              This design is archived
+            </div>
+            <div style={{ fontSize: 12, color: '#3a4d68', marginTop: 2 }}>
+              Archived designs are hidden from the main list but kept for reference. You can restore it anytime.
+            </div>
+          </div>
+          <button
+            onClick={() => onStatusChange('draft')}
+            disabled={statusUpdating}
+            style={restoreBtn}
+          >
+            {statusUpdating ? 'Restoring...' : 'Restore to draft'}
           </button>
         </div>
       )}
@@ -202,7 +220,6 @@ export default function SectionReview({
       {/* Read-only summary */}
       <h3 style={summaryHeading}>Design summary</h3>
 
-      {/* Group */}
       <SummaryBlock title="Group basics" onEdit={() => onJumpToSection(0)}>
         <SummaryRow label="Effective date" value={fmtDate(group.effectiveDate)} />
         <SummaryRow label="Plan year type" value={planYearLabel(group.planYear)} />
@@ -215,7 +232,6 @@ export default function SectionReview({
         {group.notes && <SummaryRow label="Notes" value={group.notes} multiline />}
       </SummaryBlock>
 
-      {/* Plan structure */}
       <SummaryBlock title="Plan structure" onEdit={() => onJumpToSection(1)}>
         <SummaryRow label="Deductible structure" value={plan.deductibleStructure ? cap(plan.deductibleStructure) : null} />
         <SummaryRow label="In-network deductible" value={dollarPair(plan.deductibleInNetSingle, plan.deductibleInNetFamily)} />
@@ -246,7 +262,6 @@ export default function SectionReview({
         )}
       </SummaryBlock>
 
-      {/* Network — self-funded only */}
       {fundingModel === 'self_funded' && (
         <SummaryBlock title="Network" onEdit={() => onJumpToSection(2)}>
           <SummaryRow label="Type" value={networkTypeLabel(network.networkType)} />
@@ -270,7 +285,6 @@ export default function SectionReview({
         </SummaryBlock>
       )}
 
-      {/* Stop-loss — self-funded only */}
       {fundingModel === 'self_funded' && (
         <SummaryBlock title="Stop-loss" onEdit={() => onJumpToSection(3)}>
           <SummaryRow label="Specific deductible" value={stoploss.specificDeductible ? `$${Number(stoploss.specificDeductible).toLocaleString()}` : null} />
@@ -288,7 +302,6 @@ export default function SectionReview({
         </SummaryBlock>
       )}
 
-      {/* TPA — self-funded only */}
       {fundingModel === 'self_funded' && (
         <SummaryBlock title="TPA" onEdit={() => onJumpToSection(4)}>
           <SummaryRow label="TPA" value={tpa.tpaNameOther || tpaLabel(tpa.tpaName)} />
@@ -301,7 +314,6 @@ export default function SectionReview({
         </SummaryBlock>
       )}
 
-      {/* PBM — self-funded only */}
       {fundingModel === 'self_funded' && (
         <SummaryBlock title="PBM" onEdit={() => onJumpToSection(5)}>
           <SummaryRow label="PBM" value={pbm.pbmNameOther || pbmLabel(pbm.pbmName)} />
@@ -315,7 +327,6 @@ export default function SectionReview({
         </SummaryBlock>
       )}
 
-      {/* Eligibility */}
       <SummaryBlock title="Eligibility" onEdit={() => onJumpToSection(6)}>
         <SummaryRow label="Waiting period" value={waitingPeriodLabel(eligibility)} />
         <SummaryRow label="Max dependent age" value={eligibility.dependentMaxAge || '26'} />
@@ -330,7 +341,6 @@ export default function SectionReview({
         {eligibility.hasMultipleClasses && <SummaryRow label="Multiple classes" value="Yes" />}
       </SummaryBlock>
 
-      {/* Carve-outs */}
       <SummaryBlock title="Carve-outs" onEdit={() => onJumpToSection(7)}>
         {!hasAnyCarveouts(carveouts) && <SummaryRow label="" value="No carve-outs configured" />}
         {carveouts.dentalEnabled && <SummaryRow label="Dental" value={`${carveouts.dentalCarrier || '—'}${carveouts.dentalEmployerContribution ? ` (${carveouts.dentalEmployerContribution}% employer)` : ''}`} />}
@@ -357,7 +367,6 @@ export default function SectionReview({
         )}
       </SummaryBlock>
 
-      {/* Projection summary */}
       {aiProjection && (
         <SummaryBlock title="AI cost projection" onEdit={() => onJumpToSection(8)}>
           <SummaryRow label="Headline" value={aiProjection.summary?.headline} />
@@ -372,18 +381,18 @@ export default function SectionReview({
       {/* Action panel */}
       <div style={actionPanel}>
         <h3 style={{ fontFamily: 'Playfair Display, serif', fontSize: 18, color: '#1e3a5f', margin: '0 0 12px' }}>
-          Finalize this design
+          {status === 'archived' ? 'Archived design' : 'Finalize this design'}
         </h3>
 
-        {!allRequiredComplete && status === 'draft' && (
-          <div style={warningBox}>
-            ⚠️ {requiredSections.length - completeCount} required section{requiredSections.length - completeCount === 1 ? '' : 's'} still incomplete.
-            You can finalize anyway, but consider filling them in first.
-          </div>
-        )}
-
+        {/* Draft state */}
         {status === 'draft' && (
           <>
+            {!allRequiredComplete && (
+              <div style={warningBox}>
+                ⚠️ {requiredSections.length - completeCount} required section{requiredSections.length - completeCount === 1 ? '' : 's'} still incomplete.
+                You can finalize anyway, but consider filling them in first.
+              </div>
+            )}
             <p style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5, margin: '0 0 16px' }}>
               Finalizing marks this design as ready to present to the client. You can still edit it after finalizing — just revert to draft when you need to make changes.
             </p>
@@ -406,6 +415,7 @@ export default function SectionReview({
           </>
         )}
 
+        {/* Finalized state */}
         {status === 'finalized' && (
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button
@@ -418,45 +428,72 @@ export default function SectionReview({
           </div>
         )}
 
+        {/* Archived state */}
+        {status === 'archived' && (
+          <>
+            <p style={{ fontSize: 13, color: '#3a4d68', lineHeight: 1.5, margin: '0 0 16px' }}>
+              You can still download the PDF or restore this design to draft to make further changes.
+            </p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                onClick={() => onStatusChange('draft')}
+                disabled={statusUpdating}
+                style={primaryBtn}
+              >
+                {statusUpdating ? 'Restoring...' : '↺ Restore to draft'}
+              </button>
+              <button
+                onClick={handleDownloadPdf}
+                disabled={downloading}
+                style={downloading ? { ...secondaryBtn, opacity: 0.6, cursor: 'wait' } : secondaryBtn}
+              >
+                {downloading ? 'Generating PDF...' : '📄 Download PDF proposal'}
+              </button>
+            </div>
+          </>
+        )}
+
         {downloadError && (
           <div style={errorBox}>
             <strong>PDF error:</strong> {downloadError}
           </div>
         )}
 
-        {/* Archive section */}
-        <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid #f1f5f9' }}>
-          <div style={{ fontSize: 12, color: '#94a3b8', fontFamily: 'Figtree, sans-serif', marginBottom: 8 }}>
-            Other actions
-          </div>
-          {!confirmArchive ? (
-            <button
-              onClick={() => setConfirmArchive(true)}
-              style={archiveLink}
-            >
-              Archive this design
-            </button>
-          ) : (
-            <div style={confirmRow}>
-              <span style={{ fontSize: 13, color: '#3a4d68' }}>
-                Archive this design? It&apos;ll be hidden from the main list.
-              </span>
-              <button
-                onClick={() => onStatusChange('archived')}
-                disabled={statusUpdating}
-                style={confirmYesBtn}
-              >
-                Yes, archive
-              </button>
-              <button
-                onClick={() => setConfirmArchive(false)}
-                style={confirmNoBtn}
-              >
-                Cancel
-              </button>
+        {/* Archive action — only show on draft or finalized, not when already archived */}
+        {status !== 'archived' && (
+          <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid #f1f5f9' }}>
+            <div style={{ fontSize: 12, color: '#94a3b8', fontFamily: 'Figtree, sans-serif', marginBottom: 8 }}>
+              Other actions
             </div>
-          )}
-        </div>
+            {!confirmArchive ? (
+              <button
+                onClick={() => setConfirmArchive(true)}
+                style={archiveLink}
+              >
+                Archive this design
+              </button>
+            ) : (
+              <div style={confirmRow}>
+                <span style={{ fontSize: 13, color: '#3a4d68' }}>
+                  Archive this design? It&apos;ll be hidden from the main list.
+                </span>
+                <button
+                  onClick={() => onStatusChange('archived')}
+                  disabled={statusUpdating}
+                  style={confirmYesBtn}
+                >
+                  Yes, archive
+                </button>
+                <button
+                  onClick={() => setConfirmArchive(false)}
+                  style={confirmNoBtn}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -736,10 +773,34 @@ const finalizedBanner: React.CSSProperties = {
   fontFamily: 'Figtree, sans-serif',
 };
 
+const archivedBanner: React.CSSProperties = {
+  background: '#f8fafc',
+  border: '1px solid #cbd5e0',
+  borderRadius: 10,
+  padding: 14,
+  marginBottom: 20,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  fontFamily: 'Figtree, sans-serif',
+};
+
 const revertBtn: React.CSSProperties = {
   background: '#fff',
   border: '1px solid #bbf7d0',
   color: '#166534',
+  padding: '6px 12px',
+  borderRadius: 6,
+  fontSize: 12,
+  fontWeight: 600,
+  fontFamily: 'Figtree, sans-serif',
+  cursor: 'pointer',
+};
+
+const restoreBtn: React.CSSProperties = {
+  background: '#fff',
+  border: '1px solid #cbd5e0',
+  color: '#1e3a5f',
   padding: '6px 12px',
   borderRadius: 6,
   fontSize: 12,
