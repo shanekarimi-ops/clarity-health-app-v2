@@ -5,6 +5,7 @@ import {
   reportStyles,
   PDF_COLORS,
 } from './BrandedPDF';
+import type { Branding } from './_branding';
 
 // =====================================================
 // RENEWAL PIPELINE PDF
@@ -32,6 +33,7 @@ interface RenewalPipelinePDFProps {
   renewals30: RenewalRow[];
   renewals60: RenewalRow[];
   renewals90: RenewalRow[];
+  branding?: Branding;
 }
 
 function fmtMoney(n: number | null | undefined): string {
@@ -242,6 +244,7 @@ export function RenewalPipelinePDF({
   renewals30,
   renewals60,
   renewals90,
+  branding,
 }: RenewalPipelinePDFProps) {
   const totalEstPremium30 = renewals30.reduce(
     (sum, r) => sum + Number(r.estPremium || 0),
@@ -258,10 +261,16 @@ export function RenewalPipelinePDF({
 
   return (
     <BrandedPDF
-      agencyName={agencyName}
+      agencyName={branding?.agencyName || agencyName}
       reportTitle="Renewal Pipeline"
       reportSubtitle="Upcoming client renewals by 30/60/90-day windows"
       isSample={isSample}
+      logoBytes={branding?.logoBytes ?? null}
+      logoFormat={
+        branding?.logoFormat === 'svg' ? null : branding?.logoFormat ?? null
+      }
+      primaryColor={branding?.primaryColor}
+      accentColor={branding?.accentColor}
     >
       {/* Summary stats */}
       <View style={s.statsGrid}>

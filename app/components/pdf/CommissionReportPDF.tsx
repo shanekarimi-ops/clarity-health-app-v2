@@ -5,6 +5,7 @@ import {
   reportStyles,
   PDF_COLORS,
 } from './BrandedPDF';
+import type { Branding } from './_branding';
 
 // =====================================================
 // COMMISSION REPORT PDF
@@ -41,6 +42,7 @@ interface CommissionReportPDFProps {
   totalAnnualPremium: number;
   carrierBreakdowns: CarrierBreakdown[];
   lineItems: CommissionLineItem[];
+  branding?: Branding;
 }
 
 function fmtMoney(n: number): string {
@@ -245,6 +247,7 @@ export function CommissionReportPDF({
   totalAnnualPremium,
   carrierBreakdowns,
   lineItems,
+  branding,
 }: CommissionReportPDFProps) {
   const totalEarned =
     totalCommissionPaid + totalCommissionPending + totalCommissionProjected;
@@ -255,10 +258,16 @@ export function CommissionReportPDF({
 
   return (
     <BrandedPDF
-      agencyName={agencyName}
+      agencyName={branding?.agencyName || agencyName}
       reportTitle="Commission Report"
       reportSubtitle={`${periodLabel} · Carrier-level commission breakdown`}
       isSample={true}
+      logoBytes={branding?.logoBytes ?? null}
+      logoFormat={
+        branding?.logoFormat === 'svg' ? null : branding?.logoFormat ?? null
+      }
+      primaryColor={branding?.primaryColor}
+      accentColor={branding?.accentColor}
     >
       {/* Headline number */}
       <View style={s.headlineBox}>

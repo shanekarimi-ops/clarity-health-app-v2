@@ -1,6 +1,7 @@
 import React from 'react';
 import { Text, View, StyleSheet } from '@react-pdf/renderer';
 import { BrandedPDF, PDF_COLORS } from './BrandedPDF';
+import type { Branding } from './_branding';
 
 type ComplianceStatus = 'on_track' | 'action_needed' | 'overdue';
 
@@ -237,13 +238,25 @@ function StatusPill({ status, label }: { status: ComplianceStatus; label: string
   );
 }
 
-export default function CompliancePDF({ data }: { data: ComplianceData }) {
+export default function CompliancePDF({
+  data,
+  branding,
+}: {
+  data: ComplianceData;
+  branding?: Branding;
+}) {
   return (
     <BrandedPDF
-      agencyName={data.agencyName}
+      agencyName={branding?.agencyName || data.agencyName}
       reportTitle="Compliance Summary"
       reportSubtitle={`ACA reporting, SBC distribution, and 5500 filings · ${data.periodLabel}`}
       isSample={true}
+      logoBytes={branding?.logoBytes ?? null}
+      logoFormat={
+        branding?.logoFormat === 'svg' ? null : branding?.logoFormat ?? null
+      }
+      primaryColor={branding?.primaryColor}
+      accentColor={branding?.accentColor}
     >
       {/* 3 stat tiles */}
       <View style={styles.statsRow}>

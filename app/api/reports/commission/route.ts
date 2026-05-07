@@ -8,6 +8,7 @@ import {
   CommissionLineItem,
   CarrierBreakdown,
 } from '../../../components/pdf/CommissionReportPDF';
+import { loadBrandingForAgency } from '../../../components/pdf/_branding';
 
 // =====================================================
 // COMMISSION REPORT (PDF or CSV) — fully mock data
@@ -355,6 +356,8 @@ export async function POST(req: NextRequest) {
     }
 
     // ===== PDF BRANCH (default) =====
+    const branding = await loadBrandingForAgency(supabase, agencyId);
+
     const doc = React.createElement(CommissionReportPDF, {
       agencyName,
       brokerName,
@@ -365,6 +368,7 @@ export async function POST(req: NextRequest) {
       totalAnnualPremium,
       carrierBreakdowns,
       lineItems,
+      branding,
     });
 
     const pdfBuffer = await renderToBuffer(doc as any);

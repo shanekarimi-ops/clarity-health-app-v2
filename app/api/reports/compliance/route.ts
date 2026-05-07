@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { renderToBuffer } from '@react-pdf/renderer';
 import React from 'react';
 import CompliancePDF from '../../../components/pdf/CompliancePDF';
+import { loadBrandingForAgency } from '../../../components/pdf/_branding';
 
 export const maxDuration = 60;
 
@@ -384,6 +385,8 @@ export async function POST(req: NextRequest) {
     }
 
     // ===== PDF BRANCH (default) =====
+    const branding = await loadBrandingForAgency(admin, agencyId);
+
     const pdfBuffer = await renderToBuffer(
       React.createElement(CompliancePDF, {
         data: {
@@ -396,6 +399,7 @@ export async function POST(req: NextRequest) {
           sbcRows,
           form5500Rows,
         },
+        branding,
       }) as any
     );
 
