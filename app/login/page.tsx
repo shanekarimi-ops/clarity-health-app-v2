@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { supabase } from '../supabase';
-import { getAccountType, dashboardPathFor } from '../lib/account';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -23,16 +22,41 @@ export default function LoginPage() {
       password,
     });
 
-    setLoading(false);
-
     if (error) {
+      setLoading(false);
       setErrorMsg(error.message);
       return;
     }
 
-    if (data.user) {
-      const accountType = getAccountType(data.user);
-      router.push(dashboardPathFor(accountType));
+    if (!data.session) {
+      setLoading(false);
+      setErrorMsg('Sign in failed. Please try again.');
+      return;
+    }
+
+    // Ask the server where to send this user based on profiles.user_type.
+    try {
+      const res = await fetch('/api/auth/route-user', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${data.session.access_token}`,
+        },
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.error('route-user failed', body);
+        setLoading(false);
+        setErrorMsg('Could not determine your dashboard. Please try again.');
+        return;
+      }
+
+      const { destination } = await res.json();
+      router.push(destination || '/individual/dashboard');
+    } catch (err) {
+      console.error('route-user network error', err);
+      setLoading(false);
+      setErrorMsg('Network error. Please try again.');
     }
   }
 
