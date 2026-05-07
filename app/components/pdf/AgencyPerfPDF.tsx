@@ -5,6 +5,7 @@ import {
   reportStyles,
   PDF_COLORS,
 } from './BrandedPDF';
+import type { Branding } from './_branding';
 
 // =====================================================
 // AGENCY PERFORMANCE DASHBOARD PDF
@@ -54,6 +55,7 @@ interface AgencyPerfPDFProps {
   clients: AgencyClientRow[];
   activity: AgencyActivityRow[];
   topCarriers: CarrierStat[];
+  branding?: Branding;
 }
 
 // ---- Helpers ----
@@ -322,6 +324,7 @@ export function AgencyPerfPDF({
   clients,
   activity,
   topCarriers,
+  branding,
 }: AgencyPerfPDFProps) {
   const today = new Date();
   const startDate = new Date();
@@ -331,9 +334,15 @@ export function AgencyPerfPDF({
 
   return (
     <BrandedPDF
-      agencyName={agencyName}
+      agencyName={branding?.agencyName || agencyName}
       reportTitle="Agency Performance Dashboard"
       reportSubtitle={`${rangeLabel} · Prepared for ${agencyName}`}
+      logoBytes={branding?.logoBytes ?? null}
+      logoFormat={
+        branding?.logoFormat === 'svg' ? null : branding?.logoFormat ?? null
+      }
+      primaryColor={branding?.primaryColor}
+      accentColor={branding?.accentColor}
     >
       {/* Range header */}
       <View style={s.rangeHeader}>

@@ -3,6 +3,7 @@ import { renderToBuffer } from '@react-pdf/renderer';
 import { createClient } from '@supabase/supabase-js';
 import React from 'react';
 import { AgencyPerfPDF } from '../../../components/pdf/AgencyPerfPDF';
+import { loadBrandingForAgency } from '../../../components/pdf/_branding';
 
 // =====================================================
 // AGENCY PERFORMANCE DASHBOARD PDF
@@ -188,6 +189,8 @@ export async function POST(req: NextRequest) {
       .sort((a, b) => b.count - a.count);
 
     // 7. Render the PDF
+    const branding = await loadBrandingForAgency(supabase, agencyId);
+
     const doc = React.createElement(AgencyPerfPDF, {
       agencyName,
       brokerName,
@@ -204,6 +207,7 @@ export async function POST(req: NextRequest) {
       clients: clients as any,
       activity: enrichedActivity as any,
       topCarriers,
+      branding,
     });
 
     const pdfBuffer = await renderToBuffer(doc as any);

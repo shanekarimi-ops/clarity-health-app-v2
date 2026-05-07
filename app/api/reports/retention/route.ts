@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { renderToBuffer } from '@react-pdf/renderer';
 import React from 'react';
 import RetentionAnalyticsPDF from '../../../components/pdf/RetentionAnalyticsPDF';
+import { loadBrandingForAgency } from '../../../components/pdf/_branding';
 
 export const maxDuration = 60;
 
@@ -174,6 +175,8 @@ export async function POST(req: NextRequest) {
     ];
 
     // 5. Render the PDF
+    const branding = await loadBrandingForAgency(admin, agencyId);
+
     const pdfBuffer = await renderToBuffer(
       React.createElement(RetentionAnalyticsPDF, {
         data: {
@@ -188,6 +191,7 @@ export async function POST(req: NextRequest) {
           churnReasons,
           ltvSegments,
         },
+        branding,
       }) as any
     );
 

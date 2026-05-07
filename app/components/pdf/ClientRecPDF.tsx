@@ -5,6 +5,7 @@ import {
   reportStyles,
   PDF_COLORS,
 } from './BrandedPDF';
+import type { Branding } from './_branding';
 
 // =====================================================
 // CLIENT RECOMMENDATION PDF
@@ -76,6 +77,7 @@ interface ClientRecPDFProps {
   includeClaims: boolean;
   includeReasoning: boolean;
   topN: number;
+  branding?: Branding;
 }
 
 // ---- Helpers ----
@@ -392,6 +394,7 @@ export function ClientRecPDF({
   includeClaims,
   includeReasoning,
   topN,
+  branding,
 }: ClientRecPDFProps) {
   const planList = Array.isArray(rec.plans) ? rec.plans.slice(0, topN) : [];
   const topPlan = planList[0];
@@ -421,11 +424,17 @@ export function ClientRecPDF({
 
   return (
     <BrandedPDF
-      agencyName={agencyName}
+      agencyName={branding?.agencyName || agencyName}
       reportTitle={`Plan Recommendations: ${clientFullName}`}
       reportSubtitle={`Personalized health plan analysis · Run ${formatDate(
         rec.created_at
       )}`}
+      logoBytes={branding?.logoBytes ?? null}
+      logoFormat={
+        branding?.logoFormat === 'svg' ? null : branding?.logoFormat ?? null
+      }
+      primaryColor={branding?.primaryColor}
+      accentColor={branding?.accentColor}
     >
       {/* Client Overview */}
       <View style={s.overviewBox}>

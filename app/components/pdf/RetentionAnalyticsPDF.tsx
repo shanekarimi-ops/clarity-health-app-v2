@@ -1,6 +1,7 @@
 import React from 'react';
 import { Text, View, StyleSheet } from '@react-pdf/renderer';
 import { BrandedPDF, reportStyles, PDF_COLORS } from './BrandedPDF';
+import type { Branding } from './_branding';
 
 type CohortRow = {
   year: number;
@@ -268,15 +269,27 @@ function formatCurrency(n: number): string {
   return `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
-export default function RetentionAnalyticsPDF({ data }: { data: RetentionData }) {
+export default function RetentionAnalyticsPDF({
+  data,
+  branding,
+}: {
+  data: RetentionData;
+  branding?: Branding;
+}) {
   const maxReasonCount = Math.max(...data.churnReasons.map((r) => r.count), 1);
 
   return (
     <BrandedPDF
-      agencyName={data.agencyName}
+      agencyName={branding?.agencyName || data.agencyName}
       reportTitle="Retention Analytics"
       reportSubtitle={`Client retention, churn analysis, and lifetime value · ${data.periodLabel}`}
       isSample={true}
+      logoBytes={branding?.logoBytes ?? null}
+      logoFormat={
+        branding?.logoFormat === 'svg' ? null : branding?.logoFormat ?? null
+      }
+      primaryColor={branding?.primaryColor}
+      accentColor={branding?.accentColor}
     >
       {/* Headline retention */}
       <View style={styles.headline}>

@@ -3,6 +3,7 @@ import { renderToBuffer } from '@react-pdf/renderer';
 import { createClient } from '@supabase/supabase-js';
 import React from 'react';
 import { ClientRecPDF } from '../../../components/pdf/ClientRecPDF';
+import { loadBrandingForAgency } from '../../../components/pdf/_branding';
 
 // =====================================================
 // CLIENT RECOMMENDATION PDF GENERATION
@@ -129,6 +130,8 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Render the PDF
+    const branding = await loadBrandingForAgency(supabase, agencyId);
+
     const doc = React.createElement(ClientRecPDF, {
       agencyName,
       brokerName,
@@ -138,6 +141,7 @@ export async function POST(req: NextRequest) {
       includeClaims,
       includeReasoning,
       topN,
+      branding,
     });
 
     const pdfBuffer = await renderToBuffer(doc as any);
