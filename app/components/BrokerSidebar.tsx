@@ -4,15 +4,25 @@ import Link from 'next/link';
 
 type BrokerSidebarProps = {
   active:
+    // Workflow
     | 'dashboard'
+    | 'rfps'
+    | 'quotes'
+    | 'presentations'
+    | 'packages'
+    // Directory
     | 'clients'
-    | 'groups'
-    | 'plan-design'
+    | 'carriers'
+    // Insights
     | 'reports'
+    // Agency
     | 'team'
     | 'branding'
     | 'settings'
-    | 'billing';
+    | 'billing'
+    // Legacy (still rendered by existing pages but hidden from sidebar)
+    | 'groups'
+    | 'plan-design';
   firstName: string;
   lastName: string;
   agencyName: string;
@@ -43,13 +53,41 @@ export default function BrokerSidebar({
         </span>
       </a>
 
-      <div className="dash-section-label">Broker</div>
+      {/* === WORKFLOW === */}
+      <div className="dash-section-label">Workflow</div>
 
       <Link href="/broker/dashboard" style={linkReset}>
         <div className={`dash-nav-item ${active === 'dashboard' ? 'active' : ''}`}>
-          <div className="dash-nav-icon">🏠</div> Dashboard
+          <div className="dash-nav-icon">📊</div> Dashboard
         </div>
       </Link>
+
+      <Link href="/broker/rfps" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'rfps' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">📄</div> RFPs
+        </div>
+      </Link>
+
+      <Link href="/broker/quotes" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'quotes' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">💬</div> Quotes
+        </div>
+      </Link>
+
+      <Link href="/broker/presentations" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'presentations' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">📑</div> Presentations
+        </div>
+      </Link>
+
+      <Link href="/broker/packages" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'packages' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">📦</div> Packages
+        </div>
+      </Link>
+
+      {/* === DIRECTORY === */}
+      <div className="dash-section-label">Directory</div>
 
       <Link href="/broker/clients" style={linkReset}>
         <div className={`dash-nav-item ${active === 'clients' ? 'active' : ''}`}>
@@ -57,24 +95,22 @@ export default function BrokerSidebar({
         </div>
       </Link>
 
-      <Link href="/broker/groups" style={linkReset}>
-        <div className={`dash-nav-item ${active === 'groups' ? 'active' : ''}`}>
-          <div className="dash-nav-icon">🏢</div> Groups
+      <Link href="/broker/carriers" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'carriers' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">🏢</div> Carriers
         </div>
       </Link>
 
-      <Link href="/broker/plan-design" style={linkReset}>
-        <div className={`dash-nav-item ${active === 'plan-design' ? 'active' : ''}`}>
-          <div className="dash-nav-icon">📐</div> Plan Design
-        </div>
-      </Link>
+      {/* === INSIGHTS === */}
+      <div className="dash-section-label">Insights</div>
 
       <Link href="/broker/reports" style={linkReset}>
         <div className={`dash-nav-item ${active === 'reports' ? 'active' : ''}`}>
-          <div className="dash-nav-icon">📊</div> Reports
+          <div className="dash-nav-icon">📈</div> Reports
         </div>
       </Link>
 
+      {/* === AGENCY === */}
       <div className="dash-section-label">Agency</div>
 
       <Link href="/broker/team" style={linkReset}>
