@@ -16,14 +16,21 @@ type RouteResult = {
 };
 
 function destinationFor(
-  userType: RouteResult['user_type'],
-  activeProduct: RouteResult['active_product']
-): string {
-  if (userType === 'multi') return '/select-product';
-  if (userType === 'broker') return '/broker/dashboard';
-  if (userType === 'carrier_user') return '/carrier/dashboard';
-  return '/individual/dashboard';
-}
+    userType: RouteResult['user_type'],
+    activeProduct: RouteResult['active_product']
+  ): string {
+    if (userType === 'multi') {
+      // Multi-role users: respect their last choice if set.
+      if (activeProduct === 'broker') return '/broker/dashboard';
+      if (activeProduct === 'carrier') return '/carrier/dashboard';
+      if (activeProduct === 'individual') return '/individual/dashboard';
+      // No previous choice (or unknown value): show the picker.
+      return '/select-product';
+    }
+    if (userType === 'broker') return '/broker/dashboard';
+    if (userType === 'carrier_user') return '/carrier/dashboard';
+    return '/individual/dashboard';
+  }
 
 export async function POST(request: Request) {
   try {
