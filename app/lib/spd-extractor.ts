@@ -73,7 +73,7 @@ function scorePage(text: string): number {
 
 export async function extractPages(buffer: Buffer): Promise<PageText[]> {
     const data = new Uint8Array(buffer);
-    const doc = await getDocument({ data, useSystemFonts: true }).promise;
+    const doc = await getDocumentProxy(data);
     const pages: PageText[] = [];
   
     for (let i = 1; i <= doc.numPages; i++) {
