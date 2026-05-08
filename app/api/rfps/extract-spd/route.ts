@@ -5,7 +5,6 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20 MB hard cap (Anthropic PDF limit is 32 MB; we leave headroom)
-const MIN_TEXT_CHARS = 500; // below this, we treat the PDF as scanned / image-only and reject
 
 const EXTRACTION_PROMPT = `You are extracting structured benefits data from a Summary Plan Description (SPD) or benefits guide PDF. The reader will use this to prefill an RFP wizard, so accuracy matters more than completeness — when in doubt, mark a field as low confidence rather than guessing.
 
@@ -104,6 +103,7 @@ Rules:
 - For 'source_pages': use 1-indexed page numbers as they appear in the PDF.
 - 'warnings' should call out: missing sections, ambiguous values, multi-tier complexity (e.g. union plans with retiree carve-outs), unusual structures.
 - If the document is not a benefits SPD or guide at all, return: {"error": "not_a_benefits_document", "reason": "<short explanation>"}
+- If the document appears to be scanned with no extractable text, return: {"error": "no_extractable_text", "reason": "<short explanation>"}
 - If the document is a benefits guide but is missing the Summary of Benefits section entirely, return what you can with low confidence and a warning.
 
 Return ONLY the JSON. No preamble. No markdown fences.`;
@@ -140,49 +140,16 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Sanity-check: does the PDF have extractable text? If not, it's likely a scanned image
-    // PDF and we should reject before burning Anthropic tokens. We do a cheap text scan
-    // for common SPD keywords. If the PDF is genuinely a benefits guide it will contain
-    // at least one of these. Use a try/catch in case pdf-parse chokes on the file.
-    try {
-      const pdfParse = (await import('pdf-parse')).default;
-      const parsed = await pdfParse(buffer);
-      const text = (parsed.text || '').toLowerCase();
-
-      if (text.length < MIN_TEXT_CHARS) {
-        return NextResponse.json(
-          {
-            error: 'no_extractable_text',
-            message:
-              'This PDF appears to be scanned or image-based and has no extractable text. Please upload a text-based PDF.',
-          },
-          { status: 422 }
-        );
-      }
-
-      const looksLikeBenefitsDoc = [
-        'deductible',
-        'coinsurance',
-        'copay',
-        'in-network',
-        'out-of-network',
-        'plan year',
-        'benefit',
-      ].some((kw) => text.includes(kw));
-
-      if (!looksLikeBenefitsDoc) {
-        return NextResponse.json(
-          {
-            error: 'not_a_benefits_document',
-            message:
-              'This PDF does not appear to be a benefits SPD or summary. Please upload a Summary Plan Description, benefits guide, or carrier proposal.',
-          },
-          { status: 422 }
-        );
-      }
-    } catch (preflightErr) {
-      // pdf-parse failed — log and continue. Anthropic may still handle it fine.
-      console.error('SPD preflight pdf-parse failed:', preflightErr);
+    // Lightweight PDF magic-byte check: real PDFs start with "%PDF-"
+    const header = buffer.slice(0, 5).toString('ascii');
+    if (header !== '%PDF-') {
+      return NextResponse.json(
+        {
+          error: 'invalid_file_type',
+          message: 'File is not a valid PDF (missing PDF header).',
+        },
+        { status: 400 }
+      );
     }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -247,11 +214,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // AI-flagged structural errors get surfaced as 422s
     if (extracted.error === 'not_a_benefits_document') {
       return NextResponse.json(
         {
           error: 'not_a_benefits_document',
           message: extracted.reason || 'This document does not appear to be a benefits SPD.',
+        },
+        { status: 422 }
+      );
+    }
+    if (extracted.error === 'no_extractable_text') {
+      return NextResponse.json(
+        {
+          error: 'no_extractable_text',
+          message: extracted.reason || 'This PDF appears to be scanned with no extractable text.',
         },
         { status: 422 }
       );
