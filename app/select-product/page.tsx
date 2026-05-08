@@ -79,7 +79,7 @@ export default function SelectProductPage() {
     // Route to that product's dashboard
     if (product === 'broker') router.push('/broker/dashboard');
     else if (product === 'carrier') router.push('/carrier/dashboard');
-    else router.push('/individual/dashboard');
+    else router.push('/individual/profile');
   }
 
   if (loading) {

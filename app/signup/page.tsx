@@ -191,7 +191,7 @@ function SignUpInner() {
     // Branch 3: individual signup
     await ensureIndividualProfile(data.user.id, email, fullName);
     setLoading(false);
-    router.push('/individual/dashboard');
+    router.push('/individual/profile');
   }
 
   if (inviteToken && inviteError) {
