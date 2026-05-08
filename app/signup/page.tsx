@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
 import Link from 'next/link';
 import { supabase } from '../supabase';
-import { dashboardPathFor } from '../lib/account';
 
 function SignUpInner() {
   const router = useRouter();
@@ -16,7 +15,7 @@ function SignUpInner() {
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState('Individual');
+  const [role, setRole] = useState<'Individual' | 'Broker'>('Individual');
   const [agencyName, setAgencyName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -58,10 +57,24 @@ function SignUpInner() {
     setInviteLoading(false);
   }
 
-  function roleToAccountType(r: string): 'individual' | 'broker' | 'hr_employer' {
-    if (r === 'Broker') return 'broker';
-    if (r === 'HR') return 'hr_employer';
-    return 'individual';
+  async function ensureIndividualProfile(userId: string, userEmail: string, fullName: string) {
+    // For individual signups: create a profiles row directly.
+    // (Broker signups use /api/signup-broker which handles this server-side.)
+    const { error } = await supabase
+      .from('profiles')
+      .upsert({
+        id: userId,
+        email: userEmail,
+        full_name: fullName,
+        user_type: 'individual',
+        active_product: 'individual',
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('individual profile upsert error', error);
+      // Non-fatal: route-user will lazily create the profile on next login.
+    }
   }
 
   async function handleSignUp(e: React.FormEvent) {
@@ -85,7 +98,7 @@ function SignUpInner() {
     setLoading(true);
     setErrorMsg('');
 
-    const accountType = roleToAccountType(role);
+    const accountType: 'individual' | 'broker' = role === 'Broker' ? 'broker' : 'individual';
 
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -106,7 +119,16 @@ function SignUpInner() {
       return;
     }
 
-    if (inviteData && data.user) {
+    if (!data.user) {
+      setLoading(false);
+      setErrorMsg('Account created, but we could not sign you in. Please try logging in.');
+      return;
+    }
+
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim() || email;
+
+    // Branch 1: invite-based broker signup
+    if (inviteData) {
       try {
         const res = await fetch('/api/team/accept-invite', {
           method: 'POST',
@@ -123,13 +145,22 @@ function SignUpInner() {
           setErrorMsg(body?.error || 'Failed to join agency.');
           return;
         }
+
+        // Note: accept-invite should handle the broker + profiles rows.
+        // We don't insert profiles here to avoid stepping on its logic.
       } catch (apiErr: any) {
         setLoading(false);
         setErrorMsg('Failed to join agency: ' + (apiErr?.message || 'network error'));
         return;
       }
+
+      setLoading(false);
+      router.push('/broker/dashboard');
+      return;
     }
-    else if (role === 'Broker' && data.user) {
+
+    // Branch 2: standalone broker signup (creates new agency)
+    if (role === 'Broker') {
       try {
         const res = await fetch('/api/signup-broker', {
           method: 'POST',
@@ -141,7 +172,6 @@ function SignUpInner() {
         });
 
         const body = await res.json();
-
         if (!res.ok || !body?.success) {
           setLoading(false);
           setErrorMsg(body?.error || 'Broker setup failed.');
@@ -152,10 +182,16 @@ function SignUpInner() {
         setErrorMsg('Broker setup failed: ' + (apiErr?.message || 'network error'));
         return;
       }
+
+      setLoading(false);
+      router.push('/broker/dashboard');
+      return;
     }
 
+    // Branch 3: individual signup
+    await ensureIndividualProfile(data.user.id, email, fullName);
     setLoading(false);
-    router.push(dashboardPathFor(accountType));
+    router.push('/individual/dashboard');
   }
 
   if (inviteToken && inviteError) {
@@ -195,12 +231,12 @@ function SignUpInner() {
         </a>
         <div className="auth-left-body">
           <h2>The smarter way to pick a <em>health plan</em></h2>
-          <p>Join thousands of individuals, HR teams, and brokers who use Clarity Health to match plans to real health data — not guesswork.</p>
+          <p>Join individuals and benefits brokers who use Clarity Health to match plans to real health data — not guesswork.</p>
           <div className="auth-left-bullets">
             <div className="auth-bullet"><div className="auth-bullet-dot"></div><div className="auth-bullet-text">Claims-based matching — not averages</div></div>
             <div className="auth-bullet"><div className="auth-bullet-dot"></div><div className="auth-bullet-text">Live data from Healthcare.gov + group plans</div></div>
             <div className="auth-bullet"><div className="auth-bullet-dot"></div><div className="auth-bullet-text">HIPAA-compliant. Your data stays yours.</div></div>
-            <div className="auth-bullet"><div className="auth-bullet-dot"></div><div className="auth-bullet-text">Free for individuals. Team plans available.</div></div>
+            <div className="auth-bullet"><div className="auth-bullet-dot"></div><div className="auth-bullet-text">Free for individuals. Broker plans available.</div></div>
           </div>
         </div>
         <div className="auth-left-footer">
@@ -241,10 +277,6 @@ function SignUpInner() {
                   <div className={`role-btn ${role === 'Individual' ? 'selected' : ''}`} onClick={() => setRole('Individual')}>
                     <div className="role-btn-icon">👤</div>
                     <div className="role-btn-label">Individual</div>
-                  </div>
-                  <div className={`role-btn ${role === 'HR' ? 'selected' : ''}`} onClick={() => setRole('HR')}>
-                    <div className="role-btn-icon">🏢</div>
-                    <div className="role-btn-label">HR / Employer</div>
                   </div>
                   <div className={`role-btn ${role === 'Broker' ? 'selected' : ''}`} onClick={() => setRole('Broker')}>
                     <div className="role-btn-icon">📋</div>
