@@ -18,13 +18,13 @@ export type WizardData = {
   clientId: string | null;
   rfpName: string;
   planYear: number;
-  effectiveDate: string; // ISO YYYY-MM-DD
+  effectiveDate: string;
   censusSize: number | null;
-  // Step 2 (Push 3 will populate)
+  // Step 2
   spdFilename: string | null;
   spdStoragePath: string | null;
   extractedData: any | null;
-  // Step 3-4 (Push 3 will populate)
+  // Step 3-4
   planOptions: any[];
   rx: any;
   dental: any;
@@ -33,14 +33,7 @@ export type WizardData = {
 };
 
 const TOTAL_STEPS = 5;
-
-const STEP_LABELS = [
-  'Basics',
-  'Upload SPD',
-  'Plan design',
-  'Ancillary',
-  'Review',
-];
+const STEP_LABELS = ['Basics', 'Upload SPD', 'Plan design', 'Ancillary', 'Review'];
 
 export default function RFPWizard({
   startMode,
@@ -105,12 +98,14 @@ export default function RFPWizard({
     setData((prev) => ({
       ...prev,
       clientId,
-      rfpName: prev.rfpName === '' && client
-        ? `${client.employer_name || `${client.first_name} ${client.last_name}`} ${prev.planYear} Renewal`
-        : prev.rfpName,
-      censusSize: prev.censusSize === null && client?.member_count
-        ? client.member_count
-        : prev.censusSize,
+      rfpName:
+        prev.rfpName === '' && client
+          ? `${client.employer_name || `${client.first_name} ${client.last_name}`} ${prev.planYear} Renewal`
+          : prev.rfpName,
+      censusSize:
+        prev.censusSize === null && client?.member_count
+          ? client.member_count
+          : prev.censusSize,
     }));
   }
 
@@ -118,9 +113,10 @@ export default function RFPWizard({
     setData((prev) => ({
       ...prev,
       planYear: year,
-      effectiveDate: prev.effectiveDate === `${prev.planYear}-01-01`
-        ? `${year}-01-01`
-        : prev.effectiveDate,
+      effectiveDate:
+        prev.effectiveDate === `${prev.planYear}-01-01`
+          ? `${year}-01-01`
+          : prev.effectiveDate,
     }));
   }
 
@@ -196,7 +192,14 @@ export default function RFPWizard({
             onPlanYearChange={handlePlanYearChange}
           />
         )}
-        {step === 2 && <Step2UploadSPD startMode={startMode} />}
+        {step === 2 && (
+          <Step2UploadSPD
+            startMode={startMode}
+            data={data}
+            updateField={updateField}
+            onAutoAdvance={() => setStep(3)}
+          />
+        )}
         {step === 3 && <Step3PlanDesign />}
         {step === 4 && <Step4Ancillary />}
         {step === 5 && <Step5Review data={data} />}
@@ -449,7 +452,104 @@ function Step1Basics({
   );
 }
 
-function Step2UploadSPD({ startMode }: { startMode: StartMode }) {
+function Step2UploadSPD({
+  startMode,
+  data,
+  updateField,
+  onAutoAdvance,
+}: {
+  startMode: StartMode;
+  data: WizardData;
+  updateField: <K extends keyof WizardData>(k: K, v: WizardData[K]) => void;
+  onAutoAdvance: () => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+
+  const hasExtracted = !!data.extractedData;
+
+  async function handleFile(file: File) {
+    setError(null);
+
+    if (file.type !== 'application/pdf') {
+      setError('Please upload a PDF file.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setError('PDF must be under 20 MB.');
+      return;
+    }
+
+    setUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/rfps/extract-spd', {
+        method: 'POST',
+        body: formData,
+      });
+      const result = await res.json();
+
+      if (!res.ok) {
+        const msg = result.message || result.error || 'Extraction failed.';
+        setError(msg);
+        setUploading(false);
+        return;
+      }
+
+      updateField('spdFilename', file.name);
+      updateField('extractedData', result.extracted);
+      updateField('planOptions', result.extracted?.plan_options || []);
+      updateField('rx', result.extracted?.rx || null);
+      updateField('dental', result.extracted?.dental || null);
+      updateField('vision', result.extracted?.vision || null);
+      updateField('life', result.extracted?.life || null);
+
+      setUploading(false);
+      setTimeout(() => onAutoAdvance(), 800);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed.';
+      setError(msg);
+      setUploading(false);
+    }
+  }
+
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleFile(file);
+  }
+
+  function onDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragActive(true);
+  }
+
+  function onDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragActive(false);
+  }
+
+  function onFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) handleFile(file);
+  }
+
+  function clearAndRetry() {
+    updateField('spdFilename', null);
+    updateField('extractedData', null);
+    updateField('planOptions', []);
+    updateField('rx', null);
+    updateField('dental', null);
+    updateField('vision', null);
+    updateField('life', null);
+    setError(null);
+  }
+
   return (
     <div>
       <h2
@@ -464,10 +564,260 @@ function Step2UploadSPD({ startMode }: { startMode: StartMode }) {
       </h2>
       <p style={{ color: '#3a4d68', fontSize: 14, marginTop: 0, marginBottom: 24 }}>
         {startMode === 'from-spd'
-          ? "Upload the client's Summary Plan Description. We'll extract plan design with AI."
-          : "Optional: drop in an SPD if you have one. Otherwise, skip to enter the plan design manually."}
+          ? "Upload the client's Summary Plan Description. We'll extract the plan design with AI."
+          : 'Optional: drop in an SPD if you have one. Otherwise click Next to enter the plan design manually.'}
       </p>
-      <SkeletonNote text="Upload UI lands in the next push. For now you can just click Next." />
+
+      {hasExtracted && !uploading && (
+        <div
+          style={{
+            background: '#f0f7ee',
+            border: '1px solid #c9dec4',
+            borderRadius: 12,
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                background: '#7a9b76',
+                color: 'white',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 18,
+                fontWeight: 700,
+              }}
+            >
+              ✓
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, color: '#1e3a5f', fontSize: 15 }}>
+                Extracted from {data.spdFilename}
+              </div>
+              <div style={{ color: '#3a4d68', fontSize: 13 }}>
+                Plan design ready to review on the next step.
+              </div>
+            </div>
+          </div>
+
+          <ExtractionSummary extracted={data.extractedData} />
+
+          <button
+            onClick={clearAndRetry}
+            style={{
+              marginTop: 16,
+              background: 'transparent',
+              border: '1px solid #c9dec4',
+              color: '#3a4d68',
+              padding: '8px 16px',
+              borderRadius: 6,
+              fontSize: 13,
+              cursor: 'pointer',
+              fontFamily: 'Figtree, sans-serif',
+            }}
+          >
+            Upload a different SPD
+          </button>
+        </div>
+      )}
+
+      {uploading && (
+        <div
+          style={{
+            border: '2px dashed #7a9b76',
+            borderRadius: 12,
+            padding: '60px 24px',
+            textAlign: 'center',
+            background: '#faf7f2',
+          }}
+        >
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              border: '3px solid #e6e6e6',
+              borderTopColor: '#7a9b76',
+              borderRadius: '50%',
+              margin: '0 auto 16px',
+              animation: 'spin 1s linear infinite',
+            }}
+          />
+          <div
+            style={{
+              color: '#1e3a5f',
+              fontSize: 15,
+              fontWeight: 600,
+              marginBottom: 4,
+            }}
+          >
+            Extracting plan design with AI...
+          </div>
+          <div style={{ color: '#3a4d68', fontSize: 13 }}>
+            This usually takes 20–40 seconds for a large SPD.
+          </div>
+          <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {!hasExtracted && !uploading && (
+        <>
+          <div
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            style={{
+              border: `2px dashed ${dragActive ? '#7a9b76' : '#d4d4d4'}`,
+              background: dragActive ? '#f0f7ee' : '#faf7f2',
+              borderRadius: 12,
+              padding: '48px 24px',
+              textAlign: 'center',
+              transition: 'background 0.15s, border-color 0.15s',
+            }}
+          >
+            <div
+              style={{
+                width: 56,
+                height: 56,
+                background: '#e8f0e6',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 16px',
+              }}
+            >
+              <svg
+                width={24}
+                height={24}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#5a7857"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1={12} y1={3} x2={12} y2={15} />
+              </svg>
+            </div>
+            <div
+              style={{
+                color: '#1e3a5f',
+                fontSize: 16,
+                fontWeight: 600,
+                marginBottom: 6,
+              }}
+            >
+              Drop your SPD here
+            </div>
+            <div style={{ color: '#3a4d68', fontSize: 13, marginBottom: 16 }}>or</div>
+            <label
+              style={{
+                display: 'inline-block',
+                background: '#7a9b76',
+                color: 'white',
+                padding: '10px 22px',
+                borderRadius: 8,
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'Figtree, sans-serif',
+              }}
+            >
+              Browse files
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={onFilePick}
+                style={{ display: 'none' }}
+              />
+            </label>
+            <div style={{ color: '#3a4d68', fontSize: 12, marginTop: 16 }}>
+              PDF only · Max 20 MB
+            </div>
+          </div>
+
+          {error && (
+            <div
+              style={{
+                marginTop: 16,
+                padding: 14,
+                background: '#fde8e8',
+                border: '1px solid #f5b7b7',
+                borderRadius: 8,
+                color: '#9b2c2c',
+                fontSize: 14,
+              }}
+            >
+              <strong>Couldn't extract this PDF:</strong> {error}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExtractionSummary({ extracted }: { extracted: any }) {
+  if (!extracted) return null;
+
+  const planCount = extracted.plan_options?.length || 0;
+  const tierCount = (extracted.plan_options || []).reduce(
+    (sum: number, p: any) => sum + (p.tiers?.length || 0),
+    0
+  );
+  const hasRx = !!extracted.rx?.carrier;
+  const hasDental = !!extracted.dental?.carrier;
+  const hasVision = !!extracted.vision?.carrier;
+  const hasLife = extracted.life?.amount != null;
+  const warnings = extracted.warnings?.length || 0;
+
+  return (
+    <div
+      style={{
+        background: 'white',
+        border: '1px solid #eef1f4',
+        borderRadius: 8,
+        padding: 14,
+        fontSize: 13,
+        color: '#1e3a5f',
+      }}
+    >
+      <div style={{ marginBottom: 8 }}>
+        <strong>Found:</strong> {planCount} medical {planCount === 1 ? 'plan' : 'plans'} (
+        {tierCount} {tierCount === 1 ? 'tier' : 'tiers'})
+        {hasRx ? ', Rx' : ''}
+        {hasDental ? ', dental' : ''}
+        {hasVision ? ', vision' : ''}
+        {hasLife ? ', life' : ''}
+      </div>
+      {extracted.employer_name && (
+        <div style={{ color: '#3a4d68' }}>
+          Employer: <strong style={{ color: '#1e3a5f' }}>{extracted.employer_name}</strong>
+        </div>
+      )}
+      {extracted.plan_year && (
+        <div style={{ color: '#3a4d68' }}>
+          Plan year: <strong style={{ color: '#1e3a5f' }}>{extracted.plan_year}</strong>
+        </div>
+      )}
+      {warnings > 0 && (
+        <div style={{ color: '#665028', marginTop: 8, fontSize: 12 }}>
+          {warnings} {warnings === 1 ? 'item' : 'items'} flagged for review on the next step.
+        </div>
+      )}
     </div>
   );
 }
@@ -535,6 +885,7 @@ function Step5Review({ data }: { data: WizardData }) {
       <ReviewRow label="Plan year" value={String(data.planYear)} />
       <ReviewRow label="Effective date" value={data.effectiveDate} />
       <ReviewRow label="Census size" value={data.censusSize ? `${data.censusSize} members` : '—'} />
+      <ReviewRow label="SPD" value={data.spdFilename || '— (none uploaded)'} />
 
       <div
         style={{
@@ -547,7 +898,7 @@ function Step5Review({ data }: { data: WizardData }) {
           color: '#665028',
         }}
       >
-        Step 5 will show the full RFP summary once Steps 2–4 are wired up.
+        Step 5 will show the full RFP summary once Steps 3–4 are wired up.
       </div>
     </div>
   );
