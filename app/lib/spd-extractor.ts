@@ -13,7 +13,7 @@
 // This drops a 250-page SPD from ~250K tokens to ~12-15K tokens — fits well
 // within Tier 1 rate limits and is ~10x cheaper per call.
 
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocumentProxy } from 'unpdf';
 
 export interface PageText {
   pageNum: number;
@@ -72,25 +72,25 @@ function scorePage(text: string): number {
 }
 
 export async function extractPages(buffer: Buffer): Promise<PageText[]> {
-  const data = new Uint8Array(buffer);
-  const doc = await getDocument({ data, useSystemFonts: true }).promise;
-  const pages: PageText[] = [];
-
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    const text = content.items
-      .map((item: any) => ('str' in item ? item.str : ''))
-      .join(' ');
-    pages.push({
-      pageNum: i,
-      text,
-      score: scorePage(text),
-    });
+    const data = new Uint8Array(buffer);
+    const doc = await getDocument({ data, useSystemFonts: true }).promise;
+    const pages: PageText[] = [];
+  
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const text = content.items
+        .map((item: any) => ('str' in item ? item.str : ''))
+        .join(' ');
+      pages.push({
+        pageNum: i,
+        text,
+        score: scorePage(text),
+      });
+    }
+  
+    return pages;
   }
-
-  return pages;
-}
 
 export function selectBenefitsPages(pages: PageText[]): SliceResult {
   const totalPages = pages.length;
