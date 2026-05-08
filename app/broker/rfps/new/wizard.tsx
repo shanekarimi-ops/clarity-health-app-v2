@@ -200,7 +200,9 @@ export default function RFPWizard({
         {step === 3 && (
           <Step3PlanDesign data={data} updateField={updateField} />
         )}
-        {step === 4 && <Step4Ancillary />}
+        {step === 4 && (
+          <Step4Ancillary data={data} updateField={updateField} />
+        )}
         {step === 5 && <Step5Review data={data} />}
       </div>
 
@@ -1444,7 +1446,57 @@ function emptyTier(name: string) {
   };
 }
 
-function Step4Ancillary() {
+function emptyRx() {
+  return {
+    carrier: null,
+    retail_30day: { generic: null, preferred_brand: null, non_preferred_brand: null, specialty: null },
+    mail_90day: { generic: null, preferred_brand: null, non_preferred_brand: null, specialty: null },
+  };
+}
+
+function emptyDental() {
+  return {
+    carrier: null,
+    deductible_individual: null,
+    annual_max: null,
+    preventive_coverage_pct: null,
+    basic_coverage_pct: null,
+    major_coverage_pct: null,
+    ortho_lifetime_max: null,
+  };
+}
+
+function emptyVision() {
+  return {
+    carrier: null,
+    exam_copay: null,
+    frames_allowance: null,
+    contacts_allowance: null,
+    exam_frequency_months: null,
+  };
+}
+
+function emptyLife() {
+  return {
+    carrier: null,
+    amount: null,
+    ad_d_amount: null,
+  };
+}
+
+function Step4Ancillary({
+  data,
+  updateField,
+}: {
+  data: WizardData;
+  updateField: <K extends keyof WizardData>(k: K, v: WizardData[K]) => void;
+}) {
+  const confidence = data.extractedData?.extraction_confidence || {};
+  const rx = data.rx || emptyRx();
+  const dental = data.dental || emptyDental();
+  const vision = data.vision || emptyVision();
+  const life = data.life || emptyLife();
+
   return (
     <div>
       <h2
@@ -1458,10 +1510,410 @@ function Step4Ancillary() {
         Ancillary lines
       </h2>
       <p style={{ color: '#3a4d68', fontSize: 14, marginTop: 0, marginBottom: 24 }}>
-        Configure Rx, dental, vision, and life coverage for this RFP.
+        Configure Rx, dental, vision, and life coverage. Leave any line blank if it isn't part of this RFP.
       </p>
-      <SkeletonNote text="Ancillary editor lands in the next push." />
+
+      <RxSection
+        rx={rx}
+        confidence={confidence.rx}
+        onUpdate={(updates) => updateField('rx', { ...rx, ...updates })}
+        onUpdateRetail={(updates) =>
+          updateField('rx', { ...rx, retail_30day: { ...rx.retail_30day, ...updates } })
+        }
+        onUpdateMail={(updates) =>
+          updateField('rx', { ...rx, mail_90day: { ...rx.mail_90day, ...updates } })
+        }
+      />
+
+      <DentalSection
+        dental={dental}
+        confidence={confidence.dental}
+        onUpdate={(updates) => updateField('dental', { ...dental, ...updates })}
+      />
+
+      <VisionSection
+        vision={vision}
+        confidence={confidence.vision}
+        onUpdate={(updates) => updateField('vision', { ...vision, ...updates })}
+      />
+
+      <LifeSection
+        life={life}
+        confidence={confidence.life}
+        onUpdate={(updates) => updateField('life', { ...life, ...updates })}
+      />
     </div>
+  );
+}
+
+function AncillaryCard({
+  title,
+  confidence,
+  children,
+}: {
+  title: string;
+  confidence?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        border: '1px solid #eef1f4',
+        borderRadius: 12,
+        marginBottom: 16,
+        background: '#fdfcf9',
+      }}
+    >
+      <div
+        style={{
+          padding: '16px 20px',
+          borderBottom: '1px solid #eef1f4',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <h3
+          style={{
+            fontFamily: 'Playfair Display, serif',
+            fontSize: 17,
+            color: '#1e3a5f',
+            margin: 0,
+            fontWeight: 600,
+          }}
+        >
+          {title}
+        </h3>
+        {confidence && <ConfidenceBadge level={confidence} />}
+      </div>
+      <div style={{ padding: 20 }}>{children}</div>
+    </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  prefix = '$',
+}: {
+  label: string;
+  value: number | null | undefined;
+  onChange: (v: number | null) => void;
+  prefix?: string;
+}) {
+  return (
+    <div>
+      <label style={miniLabel}>{label}</label>
+      <div style={{ position: 'relative' }}>
+        {prefix && (
+          <span
+            style={{
+              position: 'absolute',
+              left: 10,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              color: '#3a4d68',
+              fontSize: 13,
+              pointerEvents: 'none',
+            }}
+          >
+            {prefix}
+          </span>
+        )}
+        <input
+          type="number"
+          value={value === null || value === undefined ? '' : value}
+          onChange={(e) =>
+            onChange(e.target.value === '' ? null : Number(e.target.value))
+          }
+          style={{
+            ...miniInput,
+            paddingLeft: prefix ? 22 : 10,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CarrierField({
+  value,
+  onChange,
+}: {
+  value: string | null | undefined;
+  onChange: (v: string | null) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={miniLabel}>Carrier</label>
+      <input
+        type="text"
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
+        placeholder="e.g. Express Scripts, MetLife, VSP"
+        style={miniInput}
+      />
+    </div>
+  );
+}
+
+function RxSection({
+  rx,
+  confidence,
+  onUpdate,
+  onUpdateRetail,
+  onUpdateMail,
+}: {
+  rx: any;
+  confidence?: string;
+  onUpdate: (updates: any) => void;
+  onUpdateRetail: (updates: any) => void;
+  onUpdateMail: (updates: any) => void;
+}) {
+  const retail = rx.retail_30day || {};
+  const mail = rx.mail_90day || {};
+
+  return (
+    <AncillaryCard title="Pharmacy (Rx)" confidence={confidence}>
+      <CarrierField value={rx.carrier} onChange={(v) => onUpdate({ carrier: v })} />
+
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: '#3a4d68',
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+          marginBottom: 10,
+          marginTop: 4,
+        }}
+      >
+        Retail (30-day supply)
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 10,
+          marginBottom: 18,
+        }}
+      >
+        <NumberField
+          label="Generic"
+          value={retail.generic}
+          onChange={(v) => onUpdateRetail({ generic: v })}
+        />
+        <NumberField
+          label="Preferred brand"
+          value={retail.preferred_brand}
+          onChange={(v) => onUpdateRetail({ preferred_brand: v })}
+        />
+        <NumberField
+          label="Non-preferred brand"
+          value={retail.non_preferred_brand}
+          onChange={(v) => onUpdateRetail({ non_preferred_brand: v })}
+        />
+        <NumberField
+          label="Specialty"
+          value={retail.specialty}
+          onChange={(v) => onUpdateRetail({ specialty: v })}
+        />
+      </div>
+
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: '#3a4d68',
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+          marginBottom: 10,
+        }}
+      >
+        Mail order (90-day supply)
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 10,
+        }}
+      >
+        <NumberField
+          label="Generic"
+          value={mail.generic}
+          onChange={(v) => onUpdateMail({ generic: v })}
+        />
+        <NumberField
+          label="Preferred brand"
+          value={mail.preferred_brand}
+          onChange={(v) => onUpdateMail({ preferred_brand: v })}
+        />
+        <NumberField
+          label="Non-preferred brand"
+          value={mail.non_preferred_brand}
+          onChange={(v) => onUpdateMail({ non_preferred_brand: v })}
+        />
+        <NumberField
+          label="Specialty"
+          value={mail.specialty}
+          onChange={(v) => onUpdateMail({ specialty: v })}
+        />
+      </div>
+    </AncillaryCard>
+  );
+}
+
+function DentalSection({
+  dental,
+  confidence,
+  onUpdate,
+}: {
+  dental: any;
+  confidence?: string;
+  onUpdate: (updates: any) => void;
+}) {
+  return (
+    <AncillaryCard title="Dental" confidence={confidence}>
+      <CarrierField value={dental.carrier} onChange={(v) => onUpdate({ carrier: v })} />
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <NumberField
+          label="Deductible (individual)"
+          value={dental.deductible_individual}
+          onChange={(v) => onUpdate({ deductible_individual: v })}
+        />
+        <NumberField
+          label="Annual max"
+          value={dental.annual_max}
+          onChange={(v) => onUpdate({ annual_max: v })}
+        />
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr 1fr',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <NumberField
+          label="Preventive (%)"
+          value={dental.preventive_coverage_pct}
+          onChange={(v) => onUpdate({ preventive_coverage_pct: v })}
+          prefix=""
+        />
+        <NumberField
+          label="Basic (%)"
+          value={dental.basic_coverage_pct}
+          onChange={(v) => onUpdate({ basic_coverage_pct: v })}
+          prefix=""
+        />
+        <NumberField
+          label="Major (%)"
+          value={dental.major_coverage_pct}
+          onChange={(v) => onUpdate({ major_coverage_pct: v })}
+          prefix=""
+        />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <NumberField
+          label="Ortho lifetime max"
+          value={dental.ortho_lifetime_max}
+          onChange={(v) => onUpdate({ ortho_lifetime_max: v })}
+        />
+        <div />
+      </div>
+    </AncillaryCard>
+  );
+}
+
+function VisionSection({
+  vision,
+  confidence,
+  onUpdate,
+}: {
+  vision: any;
+  confidence?: string;
+  onUpdate: (updates: any) => void;
+}) {
+  return (
+    <AncillaryCard title="Vision" confidence={confidence}>
+      <CarrierField value={vision.carrier} onChange={(v) => onUpdate({ carrier: v })} />
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <NumberField
+          label="Exam copay"
+          value={vision.exam_copay}
+          onChange={(v) => onUpdate({ exam_copay: v })}
+        />
+        <NumberField
+          label="Exam frequency (months)"
+          value={vision.exam_frequency_months}
+          onChange={(v) => onUpdate({ exam_frequency_months: v })}
+          prefix=""
+        />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <NumberField
+          label="Frames allowance"
+          value={vision.frames_allowance}
+          onChange={(v) => onUpdate({ frames_allowance: v })}
+        />
+        <NumberField
+          label="Contacts allowance"
+          value={vision.contacts_allowance}
+          onChange={(v) => onUpdate({ contacts_allowance: v })}
+        />
+      </div>
+    </AncillaryCard>
+  );
+}
+
+function LifeSection({
+  life,
+  confidence,
+  onUpdate,
+}: {
+  life: any;
+  confidence?: string;
+  onUpdate: (updates: any) => void;
+}) {
+  return (
+    <AncillaryCard title="Life & AD&D" confidence={confidence}>
+      <CarrierField value={life.carrier} onChange={(v) => onUpdate({ carrier: v })} />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <NumberField
+          label="Life amount"
+          value={life.amount}
+          onChange={(v) => onUpdate({ amount: v })}
+        />
+        <NumberField
+          label="AD&D amount"
+          value={life.ad_d_amount}
+          onChange={(v) => onUpdate({ ad_d_amount: v })}
+        />
+      </div>
+    </AncillaryCard>
   );
 }
 
@@ -1471,6 +1923,16 @@ function Step5Review({ data }: { data: WizardData }) {
     (sum: number, p: any) => sum + (p.tiers?.length || 0),
     0
   );
+
+  const ancillaryLines: string[] = [];
+  if (data.rx?.carrier) ancillaryLines.push(`Rx (${data.rx.carrier})`);
+  if (data.dental?.carrier) ancillaryLines.push(`Dental (${data.dental.carrier})`);
+  if (data.vision?.carrier) ancillaryLines.push(`Vision (${data.vision.carrier})`);
+  if (data.life?.carrier || data.life?.amount) {
+    ancillaryLines.push(
+      `Life${data.life?.carrier ? ` (${data.life.carrier})` : ''}`
+    );
+  }
 
   return (
     <div>
@@ -1501,6 +1963,10 @@ function Step5Review({ data }: { data: WizardData }) {
             : `${planCount} ${planCount === 1 ? 'plan' : 'plans'}, ${tierCount} ${tierCount === 1 ? 'tier' : 'tiers'}`
         }
       />
+      <ReviewRow
+        label="Ancillary lines"
+        value={ancillaryLines.length === 0 ? '— (none configured)' : ancillaryLines.join(', ')}
+      />
 
       <div
         style={{
@@ -1513,7 +1979,7 @@ function Step5Review({ data }: { data: WizardData }) {
           color: '#665028',
         }}
       >
-        Step 5 will show the full RFP summary once Step 4 is wired up.
+        Save to database lands in the next push.
       </div>
     </div>
   );
