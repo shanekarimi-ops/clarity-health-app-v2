@@ -1,1 +1,1 @@
-export { default } from '../../../employer-benefits/coordinate/page';
+export { default } from '../../../employer-benefits/compare/page';
