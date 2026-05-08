@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { extractPages, selectBenefitsPages, formatSliceForAI } from '@/app/lib/spd-extractor';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20 MB hard cap (Anthropic PDF limit is 32 MB; we leave headroom)
+const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20 MB
+const MIN_TEXT_CHARS = 500; // below this, treat as scanned/image-only and reject
 
-const EXTRACTION_PROMPT = `You are extracting structured benefits data from a Summary Plan Description (SPD) or benefits guide PDF. The reader will use this to prefill an RFP wizard, so accuracy matters more than completeness — when in doubt, mark a field as low confidence rather than guessing.
+const EXTRACTION_PROMPT = `You are extracting structured benefits data from text excerpted from a Summary Plan Description (SPD) or benefits guide. The text below was selected from the densest "Summary of Benefits" pages of the source PDF. Each page is prefixed with [Page N] so you can cite source pages.
+
+The reader will use this to prefill an RFP wizard, so accuracy matters more than completeness — when in doubt, mark a field as low confidence rather than guessing.
 
 Return ONLY a JSON object (no markdown, no commentary, no code fences) with this exact shape:
 
@@ -95,18 +99,20 @@ Return ONLY a JSON object (no markdown, no commentary, no code fences) with this
 }
 
 Rules:
-- Use null for any field you cannot find or cannot determine with reasonable confidence. Do NOT guess.
-- All dollar amounts as numbers without symbols or commas (e.g. 1500, not "$1,500").
-- All percentages as numbers 0-100 (e.g. 80, not 0.8 and not "80%").
-- If a field appears with multiple values for different participant groups (active vs. retiree, full-time vs. part-time), use the value for ACTIVE FULL-TIME participants and add a warning noting the variation.
-- For 'extraction_confidence': mark 'high' if the data was clearly tabulated and unambiguous, 'medium' if it required interpretation, 'low' if you had to infer or the section was thin.
-- For 'source_pages': use 1-indexed page numbers as they appear in the PDF.
-- 'warnings' should call out: missing sections, ambiguous values, multi-tier complexity (e.g. union plans with retiree carve-outs), unusual structures.
-- If the document is not a benefits SPD or guide at all, return: {"error": "not_a_benefits_document", "reason": "<short explanation>"}
-- If the document appears to be scanned with no extractable text, return: {"error": "no_extractable_text", "reason": "<short explanation>"}
-- If the document is a benefits guide but is missing the Summary of Benefits section entirely, return what you can with low confidence and a warning.
+- Use null for any field you cannot find. Do NOT guess.
+- All dollar amounts as numbers without symbols or commas.
+- All percentages as numbers 0-100.
+- If a field has multiple values for different participant groups (active vs. retiree, full-time vs. part-time), use the value for ACTIVE FULL-TIME participants and add a warning noting the variation.
+- For 'extraction_confidence': 'high' if clearly tabulated, 'medium' if interpretation needed, 'low' if inferred or thin.
+- For 'source_pages': use the [Page N] markers in the text below.
+- 'warnings' should call out: missing sections, ambiguous values, multi-tier complexity, unusual structures.
+- If the text does not contain benefits content at all, return: {"error": "not_a_benefits_document", "reason": "<short explanation>"}
 
-Return ONLY the JSON. No preamble. No markdown fences.`;
+Return ONLY the JSON. No preamble. No markdown fences.
+
+--- DOCUMENT TEXT ---
+
+`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -140,30 +146,56 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Lightweight PDF magic-byte check: real PDFs start with "%PDF-"
+    // Magic-byte check
     const header = buffer.slice(0, 5).toString('ascii');
     if (header !== '%PDF-') {
       return NextResponse.json(
-        {
-          error: 'invalid_file_type',
-          message: 'File is not a valid PDF (missing PDF header).',
-        },
+        { error: 'invalid_file_type', message: 'File is not a valid PDF.' },
         { status: 400 }
       );
     }
+
+    // Extract text per page
+    let pages;
+    try {
+      pages = await extractPages(buffer);
+    } catch (extractErr) {
+      console.error('PDF text extraction failed:', extractErr);
+      return NextResponse.json(
+        {
+          error: 'pdf_parse_failed',
+          message: 'Unable to read this PDF. It may be corrupted or password-protected.',
+        },
+        { status: 422 }
+      );
+    }
+
+    const totalChars = pages.reduce((sum, p) => sum + p.text.length, 0);
+    if (totalChars < MIN_TEXT_CHARS) {
+      return NextResponse.json(
+        {
+          error: 'no_extractable_text',
+          message:
+            'This PDF appears to be scanned or image-based and has no extractable text. Please upload a text-based PDF.',
+        },
+        { status: 422 }
+      );
+    }
+
+    // Slice down to the highest-density benefits section
+    const slice = selectBenefitsPages(pages);
+    const slicedText = formatSliceForAI(slice);
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       console.error('ANTHROPIC_API_KEY not set');
       return NextResponse.json(
-        { error: 'server_misconfigured', message: 'AI extraction is not configured. Contact support.' },
+        { error: 'server_misconfigured', message: 'AI extraction is not configured.' },
         { status: 500 }
       );
     }
 
     const anthropic = new Anthropic({ apiKey });
-
-    const base64Pdf = buffer.toString('base64');
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-5',
@@ -173,16 +205,8 @@ export async function POST(request: NextRequest) {
           role: 'user',
           content: [
             {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: base64Pdf,
-              },
-            },
-            {
               type: 'text',
-              text: EXTRACTION_PROMPT,
+              text: EXTRACTION_PROMPT + slicedText,
             },
           ],
         },
@@ -193,7 +217,7 @@ export async function POST(request: NextRequest) {
     if (!textBlock || textBlock.type !== 'text') {
       console.error('No text block in Anthropic response:', response.content);
       return NextResponse.json(
-        { error: 'extraction_failed', message: 'AI returned an unexpected response. Try again.' },
+        { error: 'extraction_failed', message: 'AI returned an unexpected response.' },
         { status: 500 }
       );
     }
@@ -208,27 +232,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error: 'extraction_parse_failed',
-          message: 'AI response was not valid JSON. Please try again or use a different PDF.',
+          message: 'AI response was not valid JSON. Please try again.',
         },
         { status: 500 }
       );
     }
 
-    // AI-flagged structural errors get surfaced as 422s
     if (extracted.error === 'not_a_benefits_document') {
       return NextResponse.json(
         {
           error: 'not_a_benefits_document',
           message: extracted.reason || 'This document does not appear to be a benefits SPD.',
-        },
-        { status: 422 }
-      );
-    }
-    if (extracted.error === 'no_extractable_text') {
-      return NextResponse.json(
-        {
-          error: 'no_extractable_text',
-          message: extracted.reason || 'This PDF appears to be scanned with no extractable text.',
         },
         { status: 422 }
       );
@@ -243,6 +257,9 @@ export async function POST(request: NextRequest) {
         model: 'claude-sonnet-4-5',
         input_tokens: response.usage?.input_tokens,
         output_tokens: response.usage?.output_tokens,
+        total_pdf_pages: slice.totalPages,
+        selected_pages: `${slice.selectedRange.start}–${slice.selectedRange.end}`,
+        approx_tokens_sent: slice.approxTokens,
       },
     });
   } catch (err) {

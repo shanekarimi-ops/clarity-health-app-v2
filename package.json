@@ -21,6 +21,7 @@
     "eslint-config-next": "13.5.1",
     "next": "13.5.1",
     "papaparse": "^5.5.3",
+    "pdfjs-dist": "^5.7.284",
     "postcss": "8.4.30",
     "react": "18.2.0",
     "react-dom": "18.2.0",
