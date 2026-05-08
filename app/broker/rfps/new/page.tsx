@@ -112,57 +112,79 @@ function ChooserView({
   onCancel: () => void;
 }) {
   return (
-    <div style={{ maxWidth: 900 }}>
-      <div style={{ marginBottom: 32 }}>
-        <button
-          onClick={onCancel}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            color: '#3a4d68',
-            cursor: 'pointer',
-            fontSize: 14,
-            padding: 0,
-            marginBottom: 12,
-            fontFamily: 'Figtree, sans-serif',
-          }}
-        >
-          ← Back to RFPs
-        </button>
-        <h1
-          style={{
-            fontFamily: 'Playfair Display, serif',
-            fontSize: 36,
-            color: '#1e3a5f',
-            margin: 0,
-          }}
-        >
-          New RFP
-        </h1>
-        <p style={{ color: '#3a4d68', marginTop: 6, fontSize: 15 }}>
-          How do you want to start?
-        </p>
-      </div>
+    <div style={{ maxWidth: 900, margin: '0 auto', paddingTop: 40 }}>
+      <button
+        onClick={onCancel}
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: '#3a4d68',
+          cursor: 'pointer',
+          fontSize: 14,
+          padding: 0,
+          marginBottom: 24,
+          fontFamily: 'Figtree, sans-serif',
+        }}
+      >
+        ← Back to RFPs
+      </button>
+
+      <h1
+        style={{
+          fontFamily: 'Playfair Display, serif',
+          fontSize: 42,
+          color: '#1e3a5f',
+          margin: '0 0 8px 0',
+          textAlign: 'center',
+          fontWeight: 600,
+        }}
+      >
+        Start a new RFP
+      </h1>
+      <p
+        style={{
+          color: '#3a4d68',
+          fontSize: 16,
+          textAlign: 'center',
+          margin: '0 0 48px 0',
+        }}
+      >
+        How would you like to begin?
+      </p>
 
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: '1fr 1fr',
-          gap: 20,
+          gap: 24,
         }}
       >
         <ChoiceCard
           title="Start from an SPD"
           subtitle="Upload a Summary Plan Description and we'll extract the plan design with AI. Best for renewals."
           badge="Recommended"
+          recommended
+          icon="upload"
           onClick={() => onPick('from-spd')}
         />
         <ChoiceCard
           title="Start from scratch"
           subtitle="Build the RFP manually. Best for new business or when no SPD is available."
+          icon="document"
           onClick={() => onPick('from-scratch')}
         />
       </div>
+
+      <p
+        style={{
+          color: '#3a4d68',
+          fontSize: 13,
+          textAlign: 'center',
+          margin: '32px 0 0 0',
+        }}
+      >
+        You can switch between methods later — the wizard works the same either way.
+      </p>
     </div>
   );
 }
@@ -171,46 +193,56 @@ function ChoiceCard({
   title,
   subtitle,
   badge,
+  recommended,
+  icon,
   onClick,
 }: {
   title: string;
   subtitle: string;
   badge?: string;
+  recommended?: boolean;
+  icon: 'upload' | 'document';
   onClick: () => void;
 }) {
+  const borderColor = recommended ? '#7a9b76' : '#eef1f4';
+  const iconBg = recommended ? '#e8f0e6' : '#faf7f2';
+  const iconColor = recommended ? '#5a7857' : '#1e3a5f';
+
   return (
     <button
       onClick={onClick}
       style={{
         background: 'white',
-        border: '1px solid #eef1f4',
-        borderRadius: 12,
-        padding: 28,
-        textAlign: 'left',
+        border: `2px solid ${borderColor}`,
+        borderRadius: 16,
+        padding: '40px 32px',
+        textAlign: 'center',
         cursor: 'pointer',
         fontFamily: 'Figtree, sans-serif',
-        transition: 'border-color 0.15s, box-shadow 0.15s',
+        position: 'relative',
+        transition: 'transform 0.15s, box-shadow 0.15s',
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = '#7a9b76';
-        e.currentTarget.style.boxShadow = '0 4px 12px rgba(30, 58, 95, 0.08)';
+        e.currentTarget.style.transform = 'translateY(-2px)';
+        e.currentTarget.style.boxShadow = '0 8px 20px rgba(30, 58, 95, 0.1)';
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = '#eef1f4';
+        e.currentTarget.style.transform = 'translateY(0)';
         e.currentTarget.style.boxShadow = 'none';
       }}
     >
       {badge && (
         <span
           style={{
-            display: 'inline-block',
+            position: 'absolute',
+            top: 16,
+            right: 16,
             background: '#e8f0e6',
             color: '#5a7857',
             fontSize: 11,
-            fontWeight: 600,
-            padding: '3px 10px',
+            fontWeight: 500,
+            padding: '4px 12px',
             borderRadius: 12,
-            marginBottom: 12,
             textTransform: 'uppercase',
             letterSpacing: 0.5,
           }}
@@ -218,12 +250,42 @@ function ChoiceCard({
           {badge}
         </span>
       )}
+
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          background: iconBg,
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          margin: '0 auto 20px',
+        }}
+      >
+        {icon === 'upload' ? (
+          <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1={12} y1={3} x2={12} y2={15} />
+          </svg>
+        ) : (
+          <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1={12} y1={18} x2={12} y2={12} />
+            <line x1={9} y1={15} x2={15} y2={15} />
+          </svg>
+        )}
+      </div>
+
       <h3
         style={{
           fontFamily: 'Playfair Display, serif',
-          fontSize: 22,
+          fontSize: 24,
           color: '#1e3a5f',
-          margin: '0 0 8px 0',
+          margin: '0 0 12px 0',
+          fontWeight: 600,
         }}
       >
         {title}
@@ -233,7 +295,7 @@ function ChoiceCard({
           color: '#3a4d68',
           fontSize: 14,
           margin: 0,
-          lineHeight: 1.5,
+          lineHeight: 1.6,
         }}
       >
         {subtitle}
