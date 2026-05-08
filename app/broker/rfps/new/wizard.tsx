@@ -14,17 +14,14 @@ type Client = {
 };
 
 export type WizardData = {
-  // Step 1
   clientId: string | null;
   rfpName: string;
   planYear: number;
   effectiveDate: string;
   censusSize: number | null;
-  // Step 2
   spdFilename: string | null;
   spdStoragePath: string | null;
   extractedData: any | null;
-  // Step 3-4
   planOptions: any[];
   rx: any;
   dental: any;
@@ -200,7 +197,9 @@ export default function RFPWizard({
             onAutoAdvance={() => setStep(3)}
           />
         )}
-        {step === 3 && <Step3PlanDesign />}
+        {step === 3 && (
+          <Step3PlanDesign data={data} updateField={updateField} />
+        )}
         {step === 4 && <Step4Ancillary />}
         {step === 5 && <Step5Review data={data} />}
       </div>
@@ -822,7 +821,73 @@ function ExtractionSummary({ extracted }: { extracted: any }) {
   );
 }
 
-function Step3PlanDesign() {
+function Step3PlanDesign({
+  data,
+  updateField,
+}: {
+  data: WizardData;
+  updateField: <K extends keyof WizardData>(k: K, v: WizardData[K]) => void;
+}) {
+  const planOptions = data.planOptions || [];
+  const warnings: string[] = data.extractedData?.warnings || [];
+  const confidence = data.extractedData?.extraction_confidence || {};
+
+  function updatePlan(planIndex: number, updates: any) {
+    const next = [...planOptions];
+    next[planIndex] = { ...next[planIndex], ...updates };
+    updateField('planOptions', next);
+  }
+
+  function deletePlan(planIndex: number) {
+    if (!confirm(`Remove "${planOptions[planIndex]?.name || 'this plan'}"? This can't be undone.`)) {
+      return;
+    }
+    const next = planOptions.filter((_, i) => i !== planIndex);
+    updateField('planOptions', next);
+  }
+
+  function addPlan() {
+    const next = [
+      ...planOptions,
+      {
+        name: `Plan ${planOptions.length + 1}`,
+        type: 'PPO',
+        hsa_eligible: false,
+        tiers: [emptyTier('In-Network')],
+      },
+    ];
+    updateField('planOptions', next);
+  }
+
+  function updateTier(planIndex: number, tierIndex: number, updates: any) {
+    const next = [...planOptions];
+    const tiers = [...(next[planIndex].tiers || [])];
+    tiers[tierIndex] = { ...tiers[tierIndex], ...updates };
+    next[planIndex] = { ...next[planIndex], tiers };
+    updateField('planOptions', next);
+  }
+
+  function deleteTier(planIndex: number, tierIndex: number) {
+    const tierName = planOptions[planIndex]?.tiers?.[tierIndex]?.tier_name || 'this tier';
+    if (!confirm(`Remove ${tierName}?`)) return;
+    const next = [...planOptions];
+    next[planIndex] = {
+      ...next[planIndex],
+      tiers: next[planIndex].tiers.filter((_: any, i: number) => i !== tierIndex),
+    };
+    updateField('planOptions', next);
+  }
+
+  function addTier(planIndex: number) {
+    const next = [...planOptions];
+    const existingTiers = next[planIndex].tiers || [];
+    next[planIndex] = {
+      ...next[planIndex],
+      tiers: [...existingTiers, emptyTier('New Tier')],
+    };
+    updateField('planOptions', next);
+  }
+
   return (
     <div>
       <h2
@@ -838,9 +903,545 @@ function Step3PlanDesign() {
       <p style={{ color: '#3a4d68', fontSize: 14, marginTop: 0, marginBottom: 24 }}>
         Review and edit the medical plan design that carriers will quote against.
       </p>
-      <SkeletonNote text="Plan-design editor lands in the next push, prefilled from the SPD extraction." />
+
+      {warnings.length > 0 && <WarningsPanel warnings={warnings} />}
+
+      {planOptions.length === 0 ? (
+        <div
+          style={{
+            padding: 32,
+            background: '#faf7f2',
+            border: '1px dashed #d4d4d4',
+            borderRadius: 8,
+            fontSize: 14,
+            color: '#3a4d68',
+            textAlign: 'center',
+          }}
+        >
+          No plans yet. Click "Add a plan" below to start, or upload an SPD on Step 2.
+        </div>
+      ) : (
+        planOptions.map((plan: any, pi: number) => (
+          <PlanCard
+            key={pi}
+            plan={plan}
+            planIndex={pi}
+            confidence={confidence.plan_options}
+            onUpdatePlan={(updates) => updatePlan(pi, updates)}
+            onDeletePlan={() => deletePlan(pi)}
+            onUpdateTier={(ti, updates) => updateTier(pi, ti, updates)}
+            onDeleteTier={(ti) => deleteTier(pi, ti)}
+            onAddTier={() => addTier(pi)}
+          />
+        ))
+      )}
+
+      <button
+        onClick={addPlan}
+        style={{
+          marginTop: 16,
+          background: 'white',
+          color: '#1e3a5f',
+          border: '1px dashed #7a9b76',
+          padding: '12px 20px',
+          borderRadius: 8,
+          fontSize: 14,
+          fontWeight: 600,
+          cursor: 'pointer',
+          fontFamily: 'Figtree, sans-serif',
+          width: '100%',
+        }}
+      >
+        + Add another plan
+      </button>
     </div>
   );
+}
+
+function WarningsPanel({ warnings }: { warnings: string[] }) {
+  const [expanded, setExpanded] = useState(true);
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+
+  function dismiss(i: number) {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(i);
+      return next;
+    });
+  }
+
+  const visibleCount = warnings.length - dismissed.size;
+  if (visibleCount === 0) return null;
+
+  return (
+    <div
+      style={{
+        background: '#fff8e6',
+        border: '1px solid #f5e0a3',
+        borderRadius: 8,
+        marginBottom: 24,
+        overflow: 'hidden',
+      }}
+    >
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          width: '100%',
+          padding: '12px 16px',
+          background: 'transparent',
+          border: 'none',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          cursor: 'pointer',
+          fontFamily: 'Figtree, sans-serif',
+          fontSize: 14,
+          fontWeight: 600,
+          color: '#665028',
+        }}
+      >
+        <span>
+          ⚠ {visibleCount} {visibleCount === 1 ? 'item' : 'items'} flagged for review
+        </span>
+        <span style={{ fontSize: 12 }}>{expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 16px 16px 16px' }}>
+          {warnings.map((w, i) =>
+            dismissed.has(i) ? null : (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                  padding: '8px 0',
+                  borderTop: i > 0 ? '1px solid #f5e0a3' : 'none',
+                  fontSize: 13,
+                  color: '#665028',
+                  lineHeight: 1.5,
+                }}
+              >
+                <div style={{ flex: 1 }}>{w}</div>
+                <button
+                  onClick={() => dismiss(i)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#665028',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    padding: '2px 6px',
+                    fontFamily: 'Figtree, sans-serif',
+                  }}
+                  title="Dismiss"
+                >
+                  ✕
+                </button>
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanCard({
+  plan,
+  planIndex,
+  confidence,
+  onUpdatePlan,
+  onDeletePlan,
+  onUpdateTier,
+  onDeleteTier,
+  onAddTier,
+}: {
+  plan: any;
+  planIndex: number;
+  confidence?: string;
+  onUpdatePlan: (updates: any) => void;
+  onDeletePlan: () => void;
+  onUpdateTier: (tierIndex: number, updates: any) => void;
+  onDeleteTier: (tierIndex: number) => void;
+  onAddTier: () => void;
+}) {
+  const tiers = plan.tiers || [];
+
+  return (
+    <div
+      style={{
+        border: '1px solid #eef1f4',
+        borderRadius: 12,
+        marginBottom: 16,
+        background: '#fdfcf9',
+      }}
+    >
+      <div
+        style={{
+          padding: '20px 20px 12px 20px',
+          borderBottom: '1px solid #eef1f4',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 12,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#3a4d68',
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+              }}
+            >
+              Plan {planIndex + 1}
+            </span>
+            {confidence && <ConfidenceBadge level={confidence} />}
+          </div>
+          <button
+            onClick={onDeletePlan}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#9b2c2c',
+              cursor: 'pointer',
+              fontSize: 12,
+              padding: '4px 8px',
+              fontFamily: 'Figtree, sans-serif',
+            }}
+          >
+            Remove plan
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '2fr 1fr 1fr',
+            gap: 12,
+          }}
+        >
+          <div>
+            <label style={miniLabel}>Plan name</label>
+            <input
+              type="text"
+              value={plan.name || ''}
+              onChange={(e) => onUpdatePlan({ name: e.target.value })}
+              style={miniInput}
+            />
+          </div>
+          <div>
+            <label style={miniLabel}>Type</label>
+            <select
+              value={plan.type || 'PPO'}
+              onChange={(e) => onUpdatePlan({ type: e.target.value })}
+              style={miniInput}
+            >
+              <option>PPO</option>
+              <option>HMO</option>
+              <option>EPO</option>
+              <option>POS</option>
+              <option>HDHP</option>
+              <option>Indemnity</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div>
+            <label style={miniLabel}>HSA-eligible</label>
+            <select
+              value={plan.hsa_eligible === true ? 'yes' : plan.hsa_eligible === false ? 'no' : ''}
+              onChange={(e) =>
+                onUpdatePlan({
+                  hsa_eligible:
+                    e.target.value === 'yes'
+                      ? true
+                      : e.target.value === 'no'
+                      ? false
+                      : null,
+                })
+              }
+              style={miniInput}
+            >
+              <option value="">—</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: '12px 20px 20px 20px' }}>
+        {tiers.length === 0 ? (
+          <div
+            style={{
+              padding: 16,
+              fontSize: 13,
+              color: '#3a4d68',
+              textAlign: 'center',
+              fontStyle: 'italic',
+            }}
+          >
+            No network tiers yet.
+          </div>
+        ) : (
+          tiers.map((tier: any, ti: number) => (
+            <TierEditor
+              key={ti}
+              tier={tier}
+              tierIndex={ti}
+              onUpdate={(updates) => onUpdateTier(ti, updates)}
+              onDelete={() => onDeleteTier(ti)}
+            />
+          ))
+        )}
+
+        <button
+          onClick={onAddTier}
+          style={{
+            marginTop: 8,
+            background: 'transparent',
+            color: '#5a7857',
+            border: '1px dashed #c9dec4',
+            padding: '8px 14px',
+            borderRadius: 6,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: 'pointer',
+            fontFamily: 'Figtree, sans-serif',
+          }}
+        >
+          + Add a network tier
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TierEditor({
+  tier,
+  tierIndex,
+  onUpdate,
+  onDelete,
+}: {
+  tier: any;
+  tierIndex: number;
+  onUpdate: (updates: any) => void;
+  onDelete: () => void;
+}) {
+  function num(field: string, label: string, prefix = '$') {
+    const value = tier[field];
+    return (
+      <div>
+        <label style={miniLabel}>{label}</label>
+        <div style={{ position: 'relative' }}>
+          {prefix && (
+            <span
+              style={{
+                position: 'absolute',
+                left: 10,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: '#3a4d68',
+                fontSize: 13,
+                pointerEvents: 'none',
+              }}
+            >
+              {prefix}
+            </span>
+          )}
+          <input
+            type="number"
+            value={value === null || value === undefined ? '' : value}
+            onChange={(e) =>
+              onUpdate({
+                [field]: e.target.value === '' ? null : Number(e.target.value),
+              })
+            }
+            style={{
+              ...miniInput,
+              paddingLeft: prefix ? 22 : 10,
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        background: 'white',
+        border: '1px solid #eef1f4',
+        borderRadius: 8,
+        padding: 16,
+        marginBottom: 12,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 12,
+        }}
+      >
+        <input
+          type="text"
+          value={tier.tier_name || ''}
+          onChange={(e) => onUpdate({ tier_name: e.target.value })}
+          placeholder="Tier name (e.g. In-Network)"
+          style={{
+            ...miniInput,
+            flex: 1,
+            fontWeight: 600,
+            color: '#1e3a5f',
+            border: '1px solid transparent',
+            background: 'transparent',
+            padding: '6px 8px',
+          }}
+        />
+        <button
+          onClick={onDelete}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: '#9b2c2c',
+            cursor: 'pointer',
+            fontSize: 12,
+            padding: '4px 8px',
+            fontFamily: 'Figtree, sans-serif',
+          }}
+        >
+          Remove tier
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 10,
+        }}
+      >
+        {num('deductible_individual', 'Deductible (individual)')}
+        {num('deductible_family', 'Deductible (family)')}
+        {num('coinsurance_oop_individual', 'Coinsurance OOP (individual)')}
+        {num('coinsurance_oop_family', 'Coinsurance OOP (family)')}
+        {num('aca_oop_individual', 'ACA OOP (individual)')}
+        {num('aca_oop_family', 'ACA OOP (family)')}
+        {num('office_visit_pcp_copay', 'PCP copay')}
+        {num('office_visit_specialist_copay', 'Specialist copay')}
+        {num('telehealth_copay', 'Telehealth copay')}
+        {num('er_copay', 'ER copay')}
+        {num('urgent_care_copay', 'Urgent care copay')}
+        {num('inpatient_hospital_coinsurance_pct', 'Inpatient coinsurance (%)', '')}
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 10,
+          marginTop: 10,
+        }}
+      >
+        <div>
+          <label style={miniLabel}>Lifetime max</label>
+          <input
+            type="text"
+            value={tier.lifetime_max ?? ''}
+            onChange={(e) =>
+              onUpdate({
+                lifetime_max: e.target.value === '' ? null : e.target.value,
+              })
+            }
+            placeholder="Unlimited or amount"
+            style={miniInput}
+          />
+        </div>
+        <div>
+          <label style={miniLabel}>Preventive 100%</label>
+          <select
+            value={
+              tier.preventive_covered_100pct === true
+                ? 'yes'
+                : tier.preventive_covered_100pct === false
+                ? 'no'
+                : ''
+            }
+            onChange={(e) =>
+              onUpdate({
+                preventive_covered_100pct:
+                  e.target.value === 'yes'
+                    ? true
+                    : e.target.value === 'no'
+                    ? false
+                    : null,
+              })
+            }
+            style={miniInput}
+          >
+            <option value="">—</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfidenceBadge({ level }: { level: string }) {
+  const map: Record<string, { bg: string; fg: string; label: string }> = {
+    high: { bg: '#e8f0e6', fg: '#5a7857', label: 'High confidence' },
+    medium: { bg: '#fff8e6', fg: '#665028', label: 'Verify' },
+    low: { bg: '#fde8e8', fg: '#9b2c2c', label: 'Review carefully' },
+  };
+  const c = map[level] || map.medium;
+  return (
+    <span
+      style={{
+        background: c.bg,
+        color: c.fg,
+        fontSize: 11,
+        fontWeight: 600,
+        padding: '3px 8px',
+        borderRadius: 10,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+      }}
+    >
+      {c.label}
+    </span>
+  );
+}
+
+function emptyTier(name: string) {
+  return {
+    tier_name: name,
+    deductible_individual: null,
+    deductible_family: null,
+    coinsurance_oop_individual: null,
+    coinsurance_oop_family: null,
+    aca_oop_individual: null,
+    aca_oop_family: null,
+    lifetime_max: null,
+    office_visit_pcp_copay: null,
+    office_visit_specialist_copay: null,
+    telehealth_copay: null,
+    er_copay: null,
+    urgent_care_copay: null,
+    inpatient_hospital_coinsurance_pct: null,
+    preventive_covered_100pct: null,
+  };
 }
 
 function Step4Ancillary() {
@@ -865,6 +1466,12 @@ function Step4Ancillary() {
 }
 
 function Step5Review({ data }: { data: WizardData }) {
+  const planCount = (data.planOptions || []).length;
+  const tierCount = (data.planOptions || []).reduce(
+    (sum: number, p: any) => sum + (p.tiers?.length || 0),
+    0
+  );
+
   return (
     <div>
       <h2
@@ -886,6 +1493,14 @@ function Step5Review({ data }: { data: WizardData }) {
       <ReviewRow label="Effective date" value={data.effectiveDate} />
       <ReviewRow label="Census size" value={data.censusSize ? `${data.censusSize} members` : '—'} />
       <ReviewRow label="SPD" value={data.spdFilename || '— (none uploaded)'} />
+      <ReviewRow
+        label="Plan design"
+        value={
+          planCount === 0
+            ? '— (none configured)'
+            : `${planCount} ${planCount === 1 ? 'plan' : 'plans'}, ${tierCount} ${tierCount === 1 ? 'tier' : 'tiers'}`
+        }
+      />
 
       <div
         style={{
@@ -898,7 +1513,7 @@ function Step5Review({ data }: { data: WizardData }) {
           color: '#665028',
         }}
       >
-        Step 5 will show the full RFP summary once Steps 3–4 are wired up.
+        Step 5 will show the full RFP summary once Step 4 is wired up.
       </div>
     </div>
   );
@@ -953,6 +1568,27 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 6,
   border: '1px solid #d4d4d4',
   fontSize: 14,
+  fontFamily: 'Figtree, sans-serif',
+  boxSizing: 'border-box',
+  background: 'white',
+};
+
+const miniLabel: React.CSSProperties = {
+  display: 'block',
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#3a4d68',
+  marginBottom: 4,
+  textTransform: 'uppercase',
+  letterSpacing: 0.3,
+};
+
+const miniInput: React.CSSProperties = {
+  width: '100%',
+  padding: '8px 10px',
+  borderRadius: 6,
+  border: '1px solid #d4d4d4',
+  fontSize: 13,
   fontFamily: 'Figtree, sans-serif',
   boxSizing: 'border-box',
   background: 'white',
