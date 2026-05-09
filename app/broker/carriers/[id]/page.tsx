@@ -149,7 +149,75 @@ export default function CarrierDetailPage() {
       setAdding(false);
     }
   }
+  async function handleToggleFavorite() {
+    if (!agencyCarrier) return;
+    const newValue = !agencyCarrier.is_favorite;
 
+    // Optimistic
+    setAgencyCarrier(prev => prev ? { ...prev, is_favorite: newValue } : prev);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      alert('Session expired. Please log in again.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/agency-carriers/${carrierId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_favorite: newValue }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // Roll back
+        setAgencyCarrier(prev => prev ? { ...prev, is_favorite: !newValue } : prev);
+        alert(data.error || 'Failed to update favorite');
+        return;
+      }
+      if (data.agencyCarrier) {
+        setAgencyCarrier(data.agencyCarrier);
+      }
+    } catch (e: any) {
+      setAgencyCarrier(prev => prev ? { ...prev, is_favorite: !newValue } : prev);
+      alert(e.message || 'Network error');
+    }
+  }
+
+  async function handleSaveNotes(notes: string) {
+    if (!agencyCarrier) return { ok: false, error: 'Not in agency' };
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      return { ok: false, error: 'Session expired. Please log in again.' };
+    }
+
+    try {
+      const res = await fetch(`/api/agency-carriers/${carrierId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ notes }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Failed to save notes' };
+      }
+      if (data.agencyCarrier) {
+        setAgencyCarrier(data.agencyCarrier);
+      }
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e.message || 'Network error' };
+    }
+  }
   function handleRepSaved(savedRep: CarrierUser, mode: 'create' | 'edit') {
     if (mode === 'create') {
       setReps(prev => [...prev, savedRep]);
@@ -268,10 +336,24 @@ export default function CarrierDetailPage() {
               {initials}
             </div>
             <div style={{ flex: 1 }}>
-              <h1 style={{ fontFamily: 'Playfair Display, serif', fontSize: '2rem', color: '#1e3a5f', margin: 0, marginBottom: '0.25rem' }}>
+            <h1 style={{ fontFamily: 'Playfair Display, serif', fontSize: '2rem', color: '#1e3a5f', margin: 0, marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 {carrier.name}
-                {agencyCarrier?.is_favorite && (
-                  <span style={{ marginLeft: '0.6rem', color: '#d4a017', fontSize: '1.4rem' }}>★</span>
+                {isInAgency && (
+                  <button
+                    onClick={handleToggleFavorite}
+                    title={agencyCarrier?.is_favorite ? 'Remove from favorites' : 'Mark as favorite'}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: 0,
+                      fontSize: '1.4rem',
+                      lineHeight: 1,
+                      color: agencyCarrier?.is_favorite ? '#d4a017' : '#cbd5db',
+                    }}
+                  >
+                    {agencyCarrier?.is_favorite ? '★' : '☆'}
+                  </button>
                 )}
               </h1>
               <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', fontSize: '0.88rem', color: '#7a8a9b' }}>
@@ -350,7 +432,13 @@ export default function CarrierDetailPage() {
           )}
           {tab === 'engagement' && <EngagementTab />}
           {tab === 'history' && <HistoryTab />}
-          {tab === 'notes' && <NotesTab notes={agencyCarrier?.notes || ''} />}
+          {tab === 'notes' && (
+            <NotesTab
+              initialNotes={agencyCarrier?.notes || ''}
+              isInAgency={isInAgency}
+              onSave={handleSaveNotes}
+            />
+          )}
         </div>
       </main>
 
@@ -666,7 +754,39 @@ function HistoryTab() {
   );
 }
 
-function NotesTab({ notes }: { notes: string }) {
+function NotesTab({
+  initialNotes,
+  isInAgency,
+  onSave,
+}: {
+  initialNotes: string;
+  isInAgency: boolean;
+  onSave: (notes: string) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const [notes, setNotes] = useState(initialNotes);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
+
+  // Reset local state when initialNotes changes (e.g., after server roundtrip)
+  useEffect(() => {
+    setNotes(initialNotes);
+  }, [initialNotes]);
+
+  const dirty = notes !== initialNotes;
+
+  async function handleSave() {
+    setSaving(true);
+    setFeedback(null);
+    const result = await onSave(notes);
+    setSaving(false);
+    if (result.ok) {
+      setFeedback({ type: 'ok', msg: 'Notes saved' });
+      setTimeout(() => setFeedback(null), 2000);
+    } else {
+      setFeedback({ type: 'err', msg: result.error || 'Failed to save' });
+    }
+  }
+
   return (
     <div>
       <div style={{ color: '#3a4d68', fontSize: '0.92rem', marginBottom: '1rem' }}>
@@ -674,21 +794,52 @@ function NotesTab({ notes }: { notes: string }) {
       </div>
       <textarea
         value={notes}
-        disabled
-        placeholder="No notes yet. Editing coming soon."
+        onChange={(e) => setNotes(e.target.value)}
+        disabled={!isInAgency || saving}
+        placeholder={isInAgency ? 'Add notes about this carrier...' : 'Add this carrier to your agency to enable notes.'}
         style={{
           width: '100%',
-          minHeight: 180,
+          minHeight: 200,
           padding: '0.85rem 1rem',
           fontSize: '0.92rem',
-          color: '#3a4d68',
-          background: '#faf7f2',
-          border: '1px solid #e8e0d0',
+          color: '#1e3a5f',
+          background: isInAgency ? '#fff' : '#faf7f2',
+          border: '1px solid #cbd5db',
           borderRadius: 8,
           fontFamily: 'inherit',
           resize: 'vertical',
         }}
       />
+      {isInAgency && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '1rem', marginTop: '0.75rem' }}>
+          {feedback && (
+            <span style={{
+              fontSize: '0.85rem',
+              color: feedback.type === 'ok' ? '#5a7a56' : '#9a3a3a',
+            }}>
+              {feedback.msg}
+            </span>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={!dirty || saving}
+            style={{
+              background: dirty ? '#7a9b76' : '#cbd5db',
+              color: '#fff',
+              border: 'none',
+              padding: '0.5rem 1.1rem',
+              borderRadius: 6,
+              fontSize: '0.88rem',
+              fontWeight: 500,
+              cursor: dirty && !saving ? 'pointer' : 'not-allowed',
+              opacity: saving ? 0.6 : 1,
+              fontFamily: 'inherit',
+            }}
+          >
+            {saving ? 'Saving...' : 'Save notes'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
