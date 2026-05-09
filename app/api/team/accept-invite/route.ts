@@ -136,6 +136,8 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
+    const wasReactivation = !!(existing && existing.removed_at);
+
     if (existing && existing.removed_at) {
       const { error: updateErr } = await supabaseAdmin
         .from('brokers')
@@ -163,6 +165,45 @@ export async function POST(req: NextRequest) {
         console.error('Broker insert error:', insertErr);
         return NextResponse.json({ error: 'Failed to add broker' }, { status: 500 });
       }
+    }
+
+    // Ensure a profiles row exists marking this user as a broker.
+    // Mirrors the signup-broker flow so getAccountType() resolves correctly.
+    const fullName = [
+      userData.user.user_metadata?.first_name,
+      userData.user.user_metadata?.last_name,
+    ]
+      .filter(Boolean)
+      .join(' ') || userEmail;
+
+    const { error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .upsert(
+        {
+          id: user_id,
+          email: userEmail,
+          full_name: fullName,
+          user_type: 'broker',
+          active_product: 'broker',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      );
+
+    if (profileError) {
+      console.error('Profile upsert error on accept-invite:', profileError);
+      // Roll back only if we inserted a NEW broker row. Don't undo a reactivation.
+      if (!wasReactivation) {
+        await supabaseAdmin
+          .from('brokers')
+          .delete()
+          .eq('user_id', user_id)
+          .eq('agency_id', invite.agency_id);
+      }
+      return NextResponse.json(
+        { error: 'Profile setup failed: ' + profileError.message },
+        { status: 500 }
+      );
     }
 
     await supabaseAdmin
