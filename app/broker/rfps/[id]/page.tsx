@@ -44,6 +44,8 @@ export default function RFPDetailPage() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
 
+  const [showSendModal, setShowSendModal] = useState(false);
+
   useEffect(() => {
     bootstrap();
   }, []);
@@ -130,6 +132,14 @@ export default function RFPDetailPage() {
     router.push('/');
   }
 
+  function handleSendModalClose(refresh: boolean) {
+    setShowSendModal(false);
+    if (refresh) {
+      // Refresh the RFP so any newly-created rfp_carriers rows + status flip show up
+      loadRfp();
+    }
+  }
+
   const planDesign = rfp?.current_plan_design || {};
   const planOptions: any[] = planDesign.planOptions || [];
   const rx = planDesign.rx;
@@ -147,6 +157,11 @@ export default function RFPDetailPage() {
   const spdFilename = rfp?.current_plan_doc_url
     ? rfp.current_plan_doc_url.split('/').pop()
     : null;
+
+  // Whether the broker can send. Once status is past 'draft', we still allow sending
+  // (re-sends to additional carriers are valid) — but the button copy adjusts.
+  const canSend = !!rfp && rfp.status !== 'cancelled' && rfp.status !== 'won' && rfp.status !== 'lost';
+  const isAlreadyDistributed = !!rfp && rfp.status !== 'draft';
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
@@ -379,7 +394,7 @@ export default function RFPDetailPage() {
                 <AncillaryReadOnly rx={rx} dental={dental} vision={vision} life={life} />
               </SectionCard>
 
-              {/* Send to carriers (Phase 4 placeholder) */}
+              {/* Send to carriers */}
               <SectionCard title="Send to carriers">
                 <div
                   style={{
@@ -391,28 +406,32 @@ export default function RFPDetailPage() {
                 >
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f', marginBottom: 4 }}>
-                      Distribution coming soon
+                      {isAlreadyDistributed ? 'Send to additional carriers' : 'Distribute this RFP'}
                     </div>
                     <div style={{ fontSize: 13, color: '#3a4d68' }}>
-                      Sending RFPs to carriers will land in the next phase.
+                      {isAlreadyDistributed
+                        ? 'Add more carriers to this RFP, or resend to a rep who needs an updated invite.'
+                        : 'Pick which carriers and reps should receive this RFP. They\'ll get an email with a magic link to review and quote.'}
                     </div>
                   </div>
                   <button
-                    disabled
-                    title="Coming in Phase 4"
+                    onClick={() => setShowSendModal(true)}
+                    disabled={!canSend}
+                    title={!canSend ? 'This RFP is closed and cannot be sent.' : 'Send to carriers'}
                     style={{
-                      background: '#c5d1c2',
+                      background: canSend ? '#7a9b76' : '#c5d1c2',
                       color: 'white',
                       border: 'none',
                       padding: '10px 20px',
                       borderRadius: 8,
                       fontSize: 14,
                       fontWeight: 600,
-                      cursor: 'not-allowed',
+                      cursor: canSend ? 'pointer' : 'not-allowed',
                       fontFamily: 'Figtree, sans-serif',
+                      whiteSpace: 'nowrap',
                     }}
                   >
-                    Send to carriers
+                    {isAlreadyDistributed ? 'Send to more carriers' : 'Send to carriers'}
                   </button>
                 </div>
               </SectionCard>
@@ -438,17 +457,129 @@ export default function RFPDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Send modal — actual functionality lands in Pushes 5-7 */}
+      {showSendModal && rfp && (
+        <SendCarriersModal
+          rfpId={rfp.id}
+          rfpName={rfp.name}
+          onClose={handleSendModalClose}
+        />
+      )}
     </div>
   );
 }
 
+// ============================================================
+// Send modal — STUB for Push 4. Filled out across Pushes 5-7.
+// ============================================================
+function SendCarriersModal({
+  rfpId,
+  rfpName,
+  onClose,
+}: {
+  rfpId: string;
+  rfpName: string;
+  onClose: (refresh: boolean) => void;
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(30, 58, 95, 0.4)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+        padding: '1rem',
+      }}
+    >
+      <div
+        style={{
+          background: '#fff',
+          borderRadius: 12,
+          maxWidth: 600,
+          width: '100%',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+        }}
+      >
+        <div style={{ padding: '1.5rem 1.75rem 1rem', borderBottom: '1px solid #e8e0d0' }}>
+          <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.4rem', color: '#1e3a5f', margin: 0 }}>
+            Send to carriers
+          </h2>
+          <div style={{ fontSize: '0.85rem', color: '#7a8a9b', marginTop: '0.25rem' }}>
+            Distributing <strong style={{ color: '#3a4d68' }}>{rfpName}</strong>
+          </div>
+        </div>
+
+        <div style={{ padding: '2rem 1.75rem', textAlign: 'center', color: '#3a4d68' }}>
+          <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>📬</div>
+          <h3
+            style={{
+              fontFamily: 'Playfair Display, serif',
+              color: '#1e3a5f',
+              fontSize: 18,
+              margin: '0 0 0.5rem 0',
+            }}
+          >
+            Coming together in the next pushes
+          </h3>
+          <p style={{ fontSize: 14, margin: 0, lineHeight: 1.5 }}>
+            The carrier picker, rep selection, benefit-line checkboxes, and confirmation flow land in Pushes 5–7.
+            <br />
+            The send API behind it is already shipped and tested.
+          </p>
+        </div>
+
+        <div
+          style={{
+            padding: '1rem 1.75rem 1.25rem',
+            borderTop: '1px solid #e8e0d0',
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: '0.75rem',
+          }}
+        >
+          <button
+            onClick={() => onClose(false)}
+            style={{
+              background: 'transparent',
+              border: '1px solid #cbd5db',
+              color: '#3a4d68',
+              padding: '0.55rem 1.1rem',
+              borderRadius: 6,
+              fontSize: '0.88rem',
+              fontWeight: 500,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Status pill — covers full DB vocabulary
+// rfps.status: draft | distributed | collecting_quotes | comparing | won | lost | cancelled
+// ============================================================
 function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { bg: string; fg: string }> = {
-    draft: { bg: '#f5f5f5', fg: '#666' },
-    sent: { bg: '#e8f0e6', fg: '#5a7857' },
-    closed: { bg: '#fff8e6', fg: '#665028' },
+  const map: Record<string, { bg: string; fg: string; label: string }> = {
+    draft: { bg: '#f5f5f5', fg: '#666', label: 'Draft' },
+    distributed: { bg: '#e8f0e6', fg: '#5a7857', label: 'Distributed' },
+    collecting_quotes: { bg: '#eef2f7', fg: '#1e3a5f', label: 'Collecting Quotes' },
+    comparing: { bg: '#f4f1ea', fg: '#7a5e1a', label: 'Comparing' },
+    won: { bg: '#dff0d8', fg: '#3c763d', label: 'Won' },
+    lost: { bg: '#f2dede', fg: '#a94442', label: 'Lost' },
+    cancelled: { bg: '#f5f5f5', fg: '#888', label: 'Cancelled' },
   };
-  const c = map[status] || map.draft;
+  const c = map[status] || { bg: '#f5f5f5', fg: '#666', label: status };
   return (
     <span
       style={{
@@ -462,7 +593,7 @@ function StatusBadge({ status }: { status: string }) {
         letterSpacing: 0.5,
       }}
     >
-      {status}
+      {c.label}
     </span>
   );
 }
