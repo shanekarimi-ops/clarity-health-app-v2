@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
@@ -58,7 +58,9 @@ export default function CarrierDetailPage() {
   const [notFound, setNotFound] = useState(false);
 
   const [tab, setTab] = useState<TabKey>('reps');
-  const [showAddRepModal, setShowAddRepModal] = useState(false);
+  const [showRepModal, setShowRepModal] = useState(false);
+  const [editingRep, setEditingRep] = useState<CarrierUser | null>(null);
+  const [deletingRep, setDeletingRep] = useState<CarrierUser | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -148,9 +150,53 @@ export default function CarrierDetailPage() {
     }
   }
 
-  function handleRepAdded(newRep: CarrierUser) {
-    setReps(prev => [...prev, newRep]);
-    setShowAddRepModal(false);
+  function handleRepSaved(savedRep: CarrierUser, mode: 'create' | 'edit') {
+    if (mode === 'create') {
+      setReps(prev => [...prev, savedRep]);
+    } else {
+      setReps(prev => prev.map(r => r.id === savedRep.id ? savedRep : r));
+    }
+    setShowRepModal(false);
+    setEditingRep(null);
+  }
+
+  function handleAddRepClick() {
+    setEditingRep(null);
+    setShowRepModal(true);
+  }
+
+  function handleEditRepClick(rep: CarrierUser) {
+    setEditingRep(rep);
+    setShowRepModal(true);
+  }
+
+  async function handleConfirmDelete() {
+    if (!deletingRep) return;
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      alert('Session expired. Please log in again.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/carriers/${carrierId}/reps/${deletingRep.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Failed to remove rep');
+        return;
+      }
+
+      setReps(prev => prev.filter(r => r.id !== deletingRep.id));
+      setDeletingRep(null);
+    } catch (e: any) {
+      alert(e.message || 'Network error');
+    }
   }
 
   if (loading) {
@@ -297,7 +343,9 @@ export default function CarrierDetailPage() {
             <RepsTab
               reps={reps}
               isInAgency={isInAgency}
-              onAddRepClick={() => setShowAddRepModal(true)}
+              onAddRepClick={handleAddRepClick}
+              onEditRep={handleEditRepClick}
+              onDeleteRep={(rep) => setDeletingRep(rep)}
             />
           )}
           {tab === 'engagement' && <EngagementTab />}
@@ -306,12 +354,22 @@ export default function CarrierDetailPage() {
         </div>
       </main>
 
-      {showAddRepModal && (
-        <AddRepModal
+      {showRepModal && (
+        <RepFormModal
           carrierId={carrierId}
           carrierName={carrier.name}
-          onClose={() => setShowAddRepModal(false)}
-          onAdded={handleRepAdded}
+          editingRep={editingRep}
+          onClose={() => { setShowRepModal(false); setEditingRep(null); }}
+          onSaved={handleRepSaved}
+        />
+      )}
+
+      {deletingRep && (
+        <DeleteRepConfirm
+          rep={deletingRep}
+          carrierName={carrier.name}
+          onCancel={() => setDeletingRep(null)}
+          onConfirm={handleConfirmDelete}
         />
       )}
     </div>
@@ -345,7 +403,19 @@ function DetailTab({ active, onClick, label, count }: { active: boolean; onClick
   );
 }
 
-function RepsTab({ reps, isInAgency, onAddRepClick }: { reps: CarrierUser[]; isInAgency: boolean; onAddRepClick: () => void }) {
+function RepsTab({
+  reps,
+  isInAgency,
+  onAddRepClick,
+  onEditRep,
+  onDeleteRep,
+}: {
+  reps: CarrierUser[];
+  isInAgency: boolean;
+  onAddRepClick: () => void;
+  onEditRep: (rep: CarrierUser) => void;
+  onDeleteRep: (rep: CarrierUser) => void;
+}) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
@@ -399,6 +469,7 @@ function RepsTab({ reps, isInAgency, onAddRepClick }: { reps: CarrierUser[]; isI
                 <th style={detailThStyle}>Phone</th>
                 <th style={detailThStyle}>Region</th>
                 <th style={detailThStyle}>Status</th>
+                <th style={{ ...detailThStyle, width: 50 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -416,10 +487,83 @@ function RepsTab({ reps, isInAgency, onAddRepClick }: { reps: CarrierUser[]; isI
                   <td style={detailTdStyle}>
                     <StatusPill status={rep.status} />
                   </td>
+                  <td style={{ ...detailTdStyle, textAlign: 'right' }}>
+                    <RowActionMenu
+                      onEdit={() => onEditRep(rep)}
+                      onDelete={() => onDeleteRep(rep)}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RowActionMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    if (open) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [open]);
+
+  return (
+    <div ref={wrapperRef} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: '#7a8a9b',
+          fontSize: '1.2rem',
+          fontWeight: 700,
+          cursor: 'pointer',
+          padding: '0.25rem 0.5rem',
+          borderRadius: 4,
+          lineHeight: 1,
+        }}
+        aria-label="Row actions"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute',
+          right: 0,
+          top: '100%',
+          marginTop: 4,
+          background: '#fff',
+          border: '1px solid #e8e0d0',
+          borderRadius: 6,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+          minWidth: 140,
+          zIndex: 10,
+          overflow: 'hidden',
+        }}>
+          <button
+            onClick={() => { setOpen(false); onEdit(); }}
+            style={menuItemStyle}
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => { setOpen(false); onDelete(); }}
+            style={{ ...menuItemStyle, color: '#9a3a3a', borderTop: '1px solid #f0e8d8' }}
+          >
+            Remove
+          </button>
         </div>
       )}
     </div>
@@ -545,22 +689,25 @@ function NotesTab({ notes }: { notes: string }) {
   );
 }
 
-function AddRepModal({
+function RepFormModal({
   carrierId,
   carrierName,
+  editingRep,
   onClose,
-  onAdded,
+  onSaved,
 }: {
   carrierId: string;
   carrierName: string;
+  editingRep: CarrierUser | null;
   onClose: () => void;
-  onAdded: (rep: CarrierUser) => void;
+  onSaved: (rep: CarrierUser, mode: 'create' | 'edit') => void;
 }) {
-  const [email, setEmail] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [title, setTitle] = useState('');
-  const [phone, setPhone] = useState('');
-  const [region, setRegion] = useState('');
+  const isEdit = !!editingRep;
+  const [email, setEmail] = useState(editingRep?.email || '');
+  const [fullName, setFullName] = useState(editingRep?.full_name || '');
+  const [title, setTitle] = useState(editingRep?.title || '');
+  const [phone, setPhone] = useState(editingRep?.phone || '');
+  const [region, setRegion] = useState(editingRep?.region || '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -581,8 +728,13 @@ function AddRepModal({
         return;
       }
 
-      const res = await fetch(`/api/carriers/${carrierId}/reps`, {
-        method: 'POST',
+      const url = isEdit
+        ? `/api/carriers/${carrierId}/reps/${editingRep!.id}`
+        : `/api/carriers/${carrierId}/reps`;
+      const method = isEdit ? 'PATCH' : 'POST';
+
+      const res = await fetch(url, {
+        method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
@@ -598,11 +750,11 @@ function AddRepModal({
 
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || 'Failed to add rep');
+        setError(data.error || 'Failed to save rep');
         return;
       }
 
-      onAdded(data.rep);
+      onSaved(data.rep, isEdit ? 'edit' : 'create');
     } catch (e: any) {
       setError(e.message || 'Network error');
     } finally {
@@ -611,84 +763,33 @@ function AddRepModal({
   }
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(30, 58, 95, 0.4)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 1000,
-      padding: '1rem',
-    }}>
-      <div style={{
-        background: '#fff',
-        borderRadius: 12,
-        maxWidth: 540,
-        width: '100%',
-        maxHeight: '90vh',
-        overflowY: 'auto',
-        boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
-      }}>
+    <div style={modalOverlayStyle}>
+      <div style={modalCardStyle}>
         <div style={{ padding: '1.5rem 1.75rem 1rem', borderBottom: '1px solid #e8e0d0' }}>
           <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.4rem', color: '#1e3a5f', margin: 0 }}>
-            Add Carrier Rep
+            {isEdit ? 'Edit Carrier Rep' : 'Add Carrier Rep'}
           </h2>
           <div style={{ fontSize: '0.85rem', color: '#7a8a9b', marginTop: '0.25rem' }}>
-            New rep at <strong style={{ color: '#3a4d68' }}>{carrierName}</strong>
+            {isEdit ? 'Updating' : 'New rep at'} <strong style={{ color: '#3a4d68' }}>{carrierName}</strong>
           </div>
         </div>
 
         <div style={{ padding: '1.25rem 1.75rem' }}>
           <FormField label="Email" required>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="rep@carrier.com"
-              style={inputStyle}
-            />
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="rep@carrier.com" style={inputStyle} />
           </FormField>
-
           <FormField label="Full name">
-            <input
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="Jane Smith"
-              style={inputStyle}
-            />
+            <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Jane Smith" style={inputStyle} />
           </FormField>
-
           <FormField label="Title">
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Senior Account Executive"
-              style={inputStyle}
-            />
+            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Senior Account Executive" style={inputStyle} />
           </FormField>
-
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
             <FormField label="Phone">
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="(555) 123-4567"
-                style={inputStyle}
-              />
+              <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" style={inputStyle} />
             </FormField>
-
             <FormField label="Region">
-              <input
-                type="text"
-                value={region}
-                onChange={(e) => setRegion(e.target.value)}
-                placeholder="West, AZ/NV/UT"
-                style={inputStyle}
-              />
+              <input type="text" value={region} onChange={(e) => setRegion(e.target.value)} placeholder="West, AZ/NV/UT" style={inputStyle} />
             </FormField>
           </div>
 
@@ -714,40 +815,72 @@ function AddRepModal({
           justifyContent: 'flex-end',
           gap: '0.75rem',
         }}>
-          <button
-            onClick={onClose}
-            disabled={submitting}
-            style={{
-              background: 'transparent',
-              border: '1px solid #cbd5db',
-              color: '#3a4d68',
-              padding: '0.55rem 1.1rem',
-              borderRadius: 6,
-              fontSize: '0.88rem',
-              fontWeight: 500,
-              cursor: submitting ? 'wait' : 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            Cancel
+          <button onClick={onClose} disabled={submitting} style={btnSecondaryStyle}>Cancel</button>
+          <button onClick={handleSubmit} disabled={submitting} style={{
+            ...btnPrimaryStyle,
+            cursor: submitting ? 'wait' : 'pointer',
+            opacity: submitting ? 0.6 : 1,
+          }}>
+            {submitting ? 'Saving...' : (isEdit ? 'Save changes' : 'Add Rep')}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteRepConfirm({
+  rep,
+  carrierName,
+  onCancel,
+  onConfirm,
+}: {
+  rep: CarrierUser;
+  carrierName: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const repLabel = rep.full_name || rep.email;
+
+  async function handleConfirm() {
+    setSubmitting(true);
+    try {
+      await onConfirm();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div style={modalOverlayStyle}>
+      <div style={{ ...modalCardStyle, maxWidth: 440 }}>
+        <div style={{ padding: '1.5rem 1.75rem 1rem' }}>
+          <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.3rem', color: '#1e3a5f', margin: 0, marginBottom: '0.5rem' }}>
+            Remove Rep
+          </h2>
+          <p style={{ color: '#3a4d68', fontSize: '0.92rem', margin: 0 }}>
+            Remove <strong>{repLabel}</strong> from <strong>{carrierName}</strong>? This cannot be undone.
+          </p>
+        </div>
+        <div style={{
+          padding: '1rem 1.75rem 1.25rem',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: '0.75rem',
+        }}>
+          <button onClick={onCancel} disabled={submitting} style={btnSecondaryStyle}>Cancel</button>
           <button
-            onClick={handleSubmit}
+            onClick={handleConfirm}
             disabled={submitting}
             style={{
-              background: '#7a9b76',
-              color: '#fff',
-              border: 'none',
-              padding: '0.55rem 1.25rem',
-              borderRadius: 6,
-              fontSize: '0.88rem',
-              fontWeight: 500,
+              ...btnPrimaryStyle,
+              background: '#9a3a3a',
               cursor: submitting ? 'wait' : 'pointer',
               opacity: submitting ? 0.6 : 1,
-              fontFamily: 'inherit',
             }}
           >
-            {submitting ? 'Adding...' : 'Add Rep'}
+            {submitting ? 'Removing...' : 'Remove'}
           </button>
         </div>
       </div>
@@ -807,4 +940,62 @@ const detailTdStyle: React.CSSProperties = {
   padding: '0.85rem 1rem',
   color: '#1e3a5f',
   verticalAlign: 'middle',
+};
+
+const modalOverlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(30, 58, 95, 0.4)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+  padding: '1rem',
+};
+
+const modalCardStyle: React.CSSProperties = {
+  background: '#fff',
+  borderRadius: 12,
+  maxWidth: 540,
+  width: '100%',
+  maxHeight: '90vh',
+  overflowY: 'auto',
+  boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+};
+
+const btnPrimaryStyle: React.CSSProperties = {
+  background: '#7a9b76',
+  color: '#fff',
+  border: 'none',
+  padding: '0.55rem 1.25rem',
+  borderRadius: 6,
+  fontSize: '0.88rem',
+  fontWeight: 500,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const btnSecondaryStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: '1px solid #cbd5db',
+  color: '#3a4d68',
+  padding: '0.55rem 1.1rem',
+  borderRadius: 6,
+  fontSize: '0.88rem',
+  fontWeight: 500,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const menuItemStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  textAlign: 'left',
+  background: 'transparent',
+  border: 'none',
+  padding: '0.6rem 0.9rem',
+  fontSize: '0.88rem',
+  color: '#3a4d68',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
 };
