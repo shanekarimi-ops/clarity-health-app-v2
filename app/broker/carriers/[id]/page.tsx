@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
@@ -595,73 +595,6 @@ function RepsTab({
   );
 }
 
-function RowActionMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    if (open) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [open]);
-
-  return (
-    <div ref={wrapperRef} style={{ position: 'relative', display: 'inline-block' }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{
-          background: 'transparent',
-          border: 'none',
-          color: '#7a8a9b',
-          fontSize: '1.2rem',
-          fontWeight: 700,
-          cursor: 'pointer',
-          padding: '0.25rem 0.5rem',
-          borderRadius: 4,
-          lineHeight: 1,
-        }}
-        aria-label="Row actions"
-      >
-        ⋯
-      </button>
-      {open && (
-        <div style={{
-          position: 'absolute',
-          right: 0,
-          top: '100%',
-          marginTop: 4,
-          background: '#fff',
-          border: '1px solid #e8e0d0',
-          borderRadius: 6,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
-          minWidth: 140,
-          zIndex: 10,
-          overflow: 'hidden',
-        }}>
-          <button
-            onClick={() => { setOpen(false); onEdit(); }}
-            style={menuItemStyle}
-          >
-            Edit
-          </button>
-          <button
-            onClick={() => { setOpen(false); onDelete(); }}
-            style={{ ...menuItemStyle, color: '#9a3a3a', borderTop: '1px solid #f0e8d8' }}
-          >
-            Remove
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function StatusPill({ status }: { status: string }) {
   const colors: Record<string, { bg: string; fg: string }> = {
     invited: { bg: '#fef9ec', fg: '#7a5e1a' },
@@ -1142,26 +1075,13 @@ const btnSecondaryStyle: React.CSSProperties = {
   fontFamily: 'inherit',
 };
 
-const menuItemStyle: React.CSSProperties = {
-    display: 'block',
-    width: '100%',
-    textAlign: 'left',
-    background: 'transparent',
-    border: 'none',
-    padding: '0.6rem 0.9rem',
-    fontSize: '0.88rem',
-    color: '#3a4d68',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  };
-  
-  const rowActionLinkStyle: React.CSSProperties = {
-    background: 'transparent',
-    border: 'none',
-    color: '#7a9b76',
-    fontSize: '0.85rem',
-    fontWeight: 500,
-    cursor: 'pointer',
-    padding: 0,
-    fontFamily: 'inherit',
-  };
+const rowActionLinkStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: '#7a9b76',
+  fontSize: '0.85rem',
+  fontWeight: 500,
+  cursor: 'pointer',
+  padding: 0,
+  fontFamily: 'inherit',
+};
