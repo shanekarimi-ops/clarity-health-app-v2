@@ -10,7 +10,7 @@ import { getAccountType } from '../../lib/account';
 type RFPRow = {
   id: string;
   name: string;
-  plan_year: number | null;
+  current_plan_design: any | null;
   effective_date: string | null;
   status: string;
   created_at: string;
@@ -57,7 +57,7 @@ export default function RFPsPage() {
 
     const { data: rfpData } = await supabase
       .from('rfps')
-      .select('id, name, plan_year, effective_date, status, created_at')
+      .select('id, name, current_plan_design, effective_date, status, created_at')
       .eq('agency_id', brokerData.agency_id)
       .order('created_at', { ascending: false });
 
@@ -232,7 +232,7 @@ export default function RFPsPage() {
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'white')}
                 >
                   <div style={{ color: '#1e3a5f', fontWeight: 600 }}>{rfp.name}</div>
-                  <div style={{ color: '#3a4d68' }}>{rfp.plan_year || '—'}</div>
+                  <div style={{ color: '#3a4d68' }}>{rfp.current_plan_design?.planYear || '—'}</div>
                   <div style={{ color: '#3a4d68' }}>
                     {rfp.effective_date
                       ? new Date(rfp.effective_date).toLocaleDateString()
