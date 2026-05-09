@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 import { getAccountType } from '../../../lib/account';
-import { BENEFIT_LINES, BenefitLineValue } from '../../../lib/benefit-lines';
+import { BENEFIT_LINES, BENEFIT_LINE_LABELS, BenefitLineValue } from '../../../lib/benefit-lines';
 
 type Rfp = {
   id: string;
@@ -469,8 +469,8 @@ export default function RFPDetailPage() {
 // =====================================================================
 // Send Carriers Modal — multi-step wizard
 // Step 1 = Pick carriers     ✅ Push 5
-// Step 2 = Reps + benefits   ✅ Push 6 (this push)
-// Step 3 = Review + send     ⬜ Push 7
+// Step 2 = Reps + benefits   ✅ Push 6
+// Step 3 = Review + send     ✅ Push 7 (this push)
 // =====================================================================
 
 type AgencyCarrierRow = {
@@ -499,7 +499,23 @@ type CarrierUserRow = {
 
 type WizardStep = 1 | 2 | 3;
 
-// Compute smart benefit-line defaults from the RFP's plan design
+type SendApiResultRow = {
+  rfp_carrier_id: string;
+  carrier_id: string;
+  carrier_user_id: string;
+  email: string;
+  status: 'sent' | 'resent' | 'failed';
+  error?: string;
+};
+
+type SendApiResult = {
+  success: boolean;
+  sent: number;
+  resent: number;
+  failed: number;
+  results: SendApiResultRow[];
+};
+
 function computeBenefitDefaults(rfp: Rfp): Set<BenefitLineValue> {
   const design = rfp.current_plan_design || {};
   const defaults = new Set<BenefitLineValue>();
@@ -538,10 +554,13 @@ function SendCarriersModal({
   const [reps, setReps] = useState<CarrierUserRow[]>([]);
   const [loadingReps, setLoadingReps] = useState(false);
   const [repsError, setRepsError] = useState<string | null>(null);
-  // carrier_id -> Set of carrier_user_ids
   const [selectedRepsByCarrier, setSelectedRepsByCarrier] = useState<Map<string, Set<string>>>(new Map());
-  // carrier_id -> Set of benefit values
   const [selectedBenefitsByCarrier, setSelectedBenefitsByCarrier] = useState<Map<string, Set<BenefitLineValue>>>(new Map());
+
+  // Step 3 / send state
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<SendApiResult | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const benefitDefaults = useMemo(() => computeBenefitDefaults(rfp), [rfp]);
 
@@ -603,8 +622,6 @@ function SendCarriersModal({
     }
   }
 
-  // Load reps for the selected carriers when entering Step 2 the first time
-  // (re-runs if user goes back to Step 1, deselects, re-selects different carriers, then forward again)
   async function loadRepsForSelectedCarriers() {
     const ids = Array.from(selectedCarrierIds);
     if (ids.length === 0) {
@@ -622,7 +639,6 @@ function SendCarriersModal({
       if (repsErr) throw repsErr;
       setReps((data || []) as CarrierUserRow[]);
 
-      // Apply smart defaults to any newly-selected carriers that don't yet have benefit state
       setSelectedBenefitsByCarrier(prev => {
         const next = new Map(prev);
         for (const cid of ids) {
@@ -630,7 +646,6 @@ function SendCarriersModal({
             next.set(cid, new Set(benefitDefaults));
           }
         }
-        // Drop any state for carriers no longer selected
         for (const existingCid of Array.from(next.keys())) {
           if (!selectedCarrierIds.has(existingCid)) next.delete(existingCid);
         }
@@ -660,7 +675,6 @@ function SendCarriersModal({
       const next = new Set(prev);
       if (next.has(carrierId)) {
         next.delete(carrierId);
-        // Also drop reps/benefits state for this carrier
         setSelectedRepsByCarrier(p => {
           const m = new Map(p);
           m.delete(carrierId);
@@ -707,7 +721,6 @@ function SendCarriersModal({
   const zeroRepCount = agencyCarriers.filter(ac => ac.rep_count === 0).length;
   const canProceedFromStep1 = selectedCarrierIds.size > 0;
 
-  // Step 2 validation
   const step2Issues: string[] = [];
   for (const cid of Array.from(selectedCarrierIds)) {
     const ac = agencyCarriers.find(a => a.carrier_id === cid);
@@ -723,6 +736,9 @@ function SendCarriersModal({
   }
   const canProceedFromStep2 = step2Issues.length === 0 && selectedCarrierIds.size > 0;
 
+  // Compute the email count for the Send button label
+  const totalEmailCount = Array.from(selectedRepsByCarrier.values()).reduce((s, set) => s + set.size, 0);
+
   function handleNext() {
     if (step === 1 && canProceedFromStep1) {
       setStep(2);
@@ -736,6 +752,59 @@ function SendCarriersModal({
     if (step === 2) setStep(1);
     else if (step === 3) setStep(2);
   }
+
+  async function handleSend() {
+    setSending(true);
+    setSendError(null);
+    setSendResult(null);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        setSendError('Session expired. Please log in again.');
+        setSending(false);
+        return;
+      }
+
+      // Build the recipients payload from state
+      const recipients = Array.from(selectedCarrierIds).map(cid => {
+        const repIds = Array.from(selectedRepsByCarrier.get(cid) || []);
+        const benefits = Array.from(selectedBenefitsByCarrier.get(cid) || []);
+        return {
+          carrier_id: cid,
+          carrier_user_ids: repIds,
+          requested_benefits: benefits,
+        };
+      });
+
+      const res = await fetch(`/api/rfps/${rfpId}/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ recipients }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSendError(data.error || `HTTP ${res.status}`);
+        setSending(false);
+        return;
+      }
+
+      setSendResult(data as SendApiResult);
+      setSending(false);
+    } catch (e: any) {
+      setSendError(e?.message || 'Network error');
+      setSending(false);
+    }
+  }
+
+  // If we have a send result, render the final-state screen instead of the wizard
+  const showResultScreen = !!sendResult || !!sendError;
 
   return (
     <div style={modalOverlayStyle}>
@@ -751,61 +820,84 @@ function SendCarriersModal({
                 Distributing <strong style={{ color: '#3a4d68' }}>{rfpName}</strong>
               </div>
             </div>
-            <button
-              onClick={() => onClose(false)}
-              aria-label="Close"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#7a8a9b',
-                fontSize: '1.4rem',
-                cursor: 'pointer',
-                padding: 0,
-                lineHeight: 1,
-              }}
-            >
-              ✕
-            </button>
+            {!sending && (
+              <button
+                onClick={() => onClose(!!sendResult)}
+                aria-label="Close"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#7a8a9b',
+                  fontSize: '1.4rem',
+                  cursor: 'pointer',
+                  padding: 0,
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            )}
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18 }}>
-            <Stepper num={1} label="Pick carriers" current={step} />
-            <StepperLine done={step > 1} />
-            <Stepper num={2} label="Reps & benefits" current={step} />
-            <StepperLine done={step > 2} />
-            <Stepper num={3} label="Review & send" current={step} />
-          </div>
+          {!showResultScreen && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18 }}>
+              <Stepper num={1} label="Pick carriers" current={step} />
+              <StepperLine done={step > 1} />
+              <Stepper num={2} label="Reps & benefits" current={step} />
+              <StepperLine done={step > 2} />
+              <Stepper num={3} label="Review & send" current={step} />
+            </div>
+          )}
         </div>
 
         {/* Body */}
         <div style={{ padding: '1.25rem 1.75rem', minHeight: 360 }}>
-          {step === 1 && (
-            <Step1PickCarriers
-              loading={loadingCarriers}
-              error={carriersError}
-              carriers={visibleCarriers}
-              selectedCarrierIds={selectedCarrierIds}
-              onToggle={toggleCarrier}
-              showZeroRep={showZeroRep}
-              onToggleShowZeroRep={() => setShowZeroRep(v => !v)}
-              zeroRepCount={zeroRepCount}
-              totalCount={agencyCarriers.length}
-            />
-          )}
-          {step === 2 && (
-            <Step2RepsBenefits
-              loading={loadingReps}
-              error={repsError}
-              selectedCarrierIds={selectedCarrierIds}
+          {showResultScreen ? (
+            <SendResultScreen
+              result={sendResult}
+              error={sendError}
               agencyCarriers={agencyCarriers}
-              reps={reps}
-              selectedRepsByCarrier={selectedRepsByCarrier}
-              selectedBenefitsByCarrier={selectedBenefitsByCarrier}
-              onToggleRep={toggleRep}
-              onToggleBenefit={toggleBenefit}
             />
+          ) : (
+            <>
+              {step === 1 && (
+                <Step1PickCarriers
+                  loading={loadingCarriers}
+                  error={carriersError}
+                  carriers={visibleCarriers}
+                  selectedCarrierIds={selectedCarrierIds}
+                  onToggle={toggleCarrier}
+                  showZeroRep={showZeroRep}
+                  onToggleShowZeroRep={() => setShowZeroRep(v => !v)}
+                  zeroRepCount={zeroRepCount}
+                  totalCount={agencyCarriers.length}
+                />
+              )}
+              {step === 2 && (
+                <Step2RepsBenefits
+                  loading={loadingReps}
+                  error={repsError}
+                  selectedCarrierIds={selectedCarrierIds}
+                  agencyCarriers={agencyCarriers}
+                  reps={reps}
+                  selectedRepsByCarrier={selectedRepsByCarrier}
+                  selectedBenefitsByCarrier={selectedBenefitsByCarrier}
+                  onToggleRep={toggleRep}
+                  onToggleBenefit={toggleBenefit}
+                />
+              )}
+              {step === 3 && (
+                <Step3ReviewSend
+                  selectedCarrierIds={selectedCarrierIds}
+                  agencyCarriers={agencyCarriers}
+                  reps={reps}
+                  selectedRepsByCarrier={selectedRepsByCarrier}
+                  selectedBenefitsByCarrier={selectedBenefitsByCarrier}
+                  totalEmailCount={totalEmailCount}
+                />
+              )}
+            </>
           )}
-          {step === 3 && <PlaceholderStep stepNum={3} />}
         </div>
 
         {/* Footer */}
@@ -819,49 +911,78 @@ function SendCarriersModal({
             gap: '0.75rem',
           }}
         >
-          <div style={{ fontSize: 12, color: '#7a8a9b', maxWidth: 380 }}>
-            {step === 1 && selectedCarrierIds.size > 0 && (
-              <>{selectedCarrierIds.size} carrier{selectedCarrierIds.size === 1 ? '' : 's'} selected</>
-            )}
-            {step === 2 && step2Issues.length > 0 && (
-              <span style={{ color: '#a94442' }}>{step2Issues[0]}</span>
-            )}
-            {step === 2 && step2Issues.length === 0 && selectedCarrierIds.size > 0 && (
-              <>Ready to review</>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: '0.6rem' }}>
-            {step === 1 && (
-              <button onClick={() => onClose(false)} style={btnSecondaryStyle}>
-                Cancel
+          {showResultScreen ? (
+            <>
+              <div />
+              <button
+                onClick={() => onClose(!!sendResult)}
+                style={{
+                  ...btnPrimaryStyle,
+                  background: '#7a9b76',
+                }}
+              >
+                Done
               </button>
-            )}
-            {step > 1 && (
-              <button onClick={handleBack} style={btnSecondaryStyle}>
-                ← Back
-              </button>
-            )}
-            <button
-              onClick={handleNext}
-              disabled={
-                (step === 1 && !canProceedFromStep1) ||
-                (step === 2 && !canProceedFromStep2)
-              }
-              style={{
-                ...btnPrimaryStyle,
-                background:
-                  (step === 1 && !canProceedFromStep1) || (step === 2 && !canProceedFromStep2)
-                    ? '#c5d1c2'
-                    : '#7a9b76',
-                cursor:
-                  (step === 1 && !canProceedFromStep1) || (step === 2 && !canProceedFromStep2)
-                    ? 'not-allowed'
-                    : 'pointer',
-              }}
-            >
-              {step < 3 ? 'Next →' : 'Send'}
-            </button>
-          </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: '#7a8a9b', maxWidth: 380 }}>
+                {step === 1 && selectedCarrierIds.size > 0 && (
+                  <>{selectedCarrierIds.size} carrier{selectedCarrierIds.size === 1 ? '' : 's'} selected</>
+                )}
+                {step === 2 && step2Issues.length > 0 && (
+                  <span style={{ color: '#a94442' }}>{step2Issues[0]}</span>
+                )}
+                {step === 2 && step2Issues.length === 0 && selectedCarrierIds.size > 0 && (
+                  <>Ready to review</>
+                )}
+                {step === 3 && (
+                  <>Final review — click Send when ready.</>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '0.6rem' }}>
+                {step === 1 && !sending && (
+                  <button onClick={() => onClose(false)} style={btnSecondaryStyle}>
+                    Cancel
+                  </button>
+                )}
+                {step > 1 && !sending && (
+                  <button onClick={handleBack} style={btnSecondaryStyle}>
+                    ← Back
+                  </button>
+                )}
+                <button
+                  onClick={step === 3 ? handleSend : handleNext}
+                  disabled={
+                    sending ||
+                    (step === 1 && !canProceedFromStep1) ||
+                    (step === 2 && !canProceedFromStep2)
+                  }
+                  style={{
+                    ...btnPrimaryStyle,
+                    background:
+                      sending
+                        ? '#c5d1c2'
+                        : (step === 1 && !canProceedFromStep1) || (step === 2 && !canProceedFromStep2)
+                        ? '#c5d1c2'
+                        : '#7a9b76',
+                    cursor:
+                      sending
+                        ? 'wait'
+                        : (step === 1 && !canProceedFromStep1) || (step === 2 && !canProceedFromStep2)
+                        ? 'not-allowed'
+                        : 'pointer',
+                  }}
+                >
+                  {sending
+                    ? 'Sending...'
+                    : step < 3
+                    ? 'Next →'
+                    : `Send ${totalEmailCount} email${totalEmailCount === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1149,7 +1270,6 @@ function Step2RepsBenefits({
               overflow: 'hidden',
             }}
           >
-            {/* Carrier header */}
             <div
               style={{
                 display: 'flex',
@@ -1182,7 +1302,6 @@ function Step2RepsBenefits({
               </span>
             </div>
 
-            {/* Reps */}
             <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0e8d8' }}>
               <div
                 style={{
@@ -1241,7 +1360,6 @@ function Step2RepsBenefits({
               )}
             </div>
 
-            {/* Benefit lines */}
             <div style={{ padding: '12px 16px' }}>
               <div
                 style={{
@@ -1324,30 +1442,345 @@ function RepStatusPill({ status }: { status: string }) {
 }
 
 // =====================================================================
-// Placeholder for Step 3 (filled in Push 7)
+// Step 3 — Review + send
 // =====================================================================
-function PlaceholderStep({ stepNum }: { stepNum: number }) {
+function Step3ReviewSend({
+  selectedCarrierIds,
+  agencyCarriers,
+  reps,
+  selectedRepsByCarrier,
+  selectedBenefitsByCarrier,
+  totalEmailCount,
+}: {
+  selectedCarrierIds: Set<string>;
+  agencyCarriers: AgencyCarrierRow[];
+  reps: CarrierUserRow[];
+  selectedRepsByCarrier: Map<string, Set<string>>;
+  selectedBenefitsByCarrier: Map<string, Set<BenefitLineValue>>;
+  totalEmailCount: number;
+}) {
+  const orderedCarrierIds = Array.from(selectedCarrierIds);
+  const carriersById = new Map(agencyCarriers.map(ac => [ac.carrier_id, ac]));
+  const repsById = new Map(reps.map(r => [r.id, r]));
+
+  const carrierCount = orderedCarrierIds.length;
+
   return (
-    <div
-      style={{
-        background: '#faf7f2',
-        border: '1px dashed #d4c8b0',
-        borderRadius: 8,
-        padding: '2.5rem 2rem',
-        textAlign: 'center',
-        color: '#3a4d68',
-      }}
-    >
-      <div style={{ fontSize: '1.6rem', marginBottom: '0.5rem' }}>{stepNum === 2 ? '👥' : '📬'}</div>
-      <h3 style={{ color: '#1e3a5f', fontFamily: 'Playfair Display, serif', margin: 0, marginBottom: '0.5rem', fontSize: 17 }}>
-        Step {stepNum} coming in Push {stepNum + 4}
-      </h3>
-      <p style={{ fontSize: 14, margin: 0, lineHeight: 1.5 }}>
-        {stepNum === 2
-          ? 'Per-carrier rep selection and benefit-line checkboxes'
-          : 'Final review of the send + confirm button'}
-      </p>
-    </div>
+    <>
+      <div
+        style={{
+          background: '#f4f7f3',
+          border: '1px solid #d4e0d2',
+          borderRadius: 8,
+          padding: '14px 16px',
+          marginBottom: 16,
+          fontSize: 14,
+          color: '#3a4d68',
+        }}
+      >
+        You're about to send <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> email{totalEmailCount === 1 ? '' : 's'}{' '}
+        to{' '}
+        <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> rep{totalEmailCount === 1 ? '' : 's'}{' '}
+        across{' '}
+        <strong style={{ color: '#1e3a5f' }}>{carrierCount}</strong> carrier{carrierCount === 1 ? '' : 's'}.
+        <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 4 }}>
+          Click ← Back to make changes.
+        </div>
+      </div>
+
+      {orderedCarrierIds.map((cid) => {
+        const ac = carriersById.get(cid);
+        if (!ac) return null;
+        const repIds = Array.from(selectedRepsByCarrier.get(cid) || []);
+        const benefitVals = Array.from(selectedBenefitsByCarrier.get(cid) || []);
+        const initials = ac.carrier.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+        const brandColor = ac.carrier.brand_color || '#1e3a5f';
+
+        return (
+          <div
+            key={cid}
+            style={{
+              border: '1px solid #e8e0d0',
+              borderRadius: 8,
+              marginBottom: 12,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '12px 16px',
+                background: '#faf7f2',
+                borderBottom: '1px solid #e8e0d0',
+              }}
+            >
+              <div
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  background: brandColor,
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  flexShrink: 0,
+                }}
+              >
+                {initials}
+              </div>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
+                {ac.carrier.name}
+              </span>
+            </div>
+
+            <div style={{ padding: '12px 16px', fontSize: 13, color: '#3a4d68' }}>
+              <div style={{ marginBottom: 10 }}>
+                <span style={{ fontWeight: 600, color: '#1e3a5f' }}>
+                  Sending to {repIds.length} rep{repIds.length === 1 ? '' : 's'}:
+                </span>
+                <div style={{ marginTop: 4, paddingLeft: 8 }}>
+                  {repIds.map((rid, idx) => {
+                    const rep = repsById.get(rid);
+                    if (!rep) return null;
+                    const repLabel = rep.full_name || rep.email.split('@')[0];
+                    return (
+                      <div key={rid} style={{ marginBottom: idx < repIds.length - 1 ? 4 : 0 }}>
+                        • <strong>{repLabel}</strong>{' '}
+                        <span style={{ color: '#7a8a9b' }}>({rep.email})</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <span style={{ fontWeight: 600, color: '#1e3a5f' }}>Lines requested:</span>{' '}
+                <span>
+                  {benefitVals.map(b => BENEFIT_LINE_LABELS[b]).join(', ')}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// =====================================================================
+// Send result screen — shown after API call returns
+// =====================================================================
+function SendResultScreen({
+  result,
+  error,
+  agencyCarriers,
+}: {
+  result: SendApiResult | null;
+  error: string | null;
+  agencyCarriers: AgencyCarrierRow[];
+}) {
+  // Total failure
+  if (error || !result) {
+    return (
+      <div
+        style={{
+          background: '#fdecec',
+          border: '1px solid #f0baba',
+          borderRadius: 8,
+          padding: '1.5rem',
+          textAlign: 'center',
+        }}
+      >
+        <div style={{ fontSize: '2rem', marginBottom: 8 }}>⚠️</div>
+        <h3 style={{ color: '#9a3a3a', fontFamily: 'Playfair Display, serif', margin: 0, marginBottom: 8, fontSize: 18 }}>
+          Send failed
+        </h3>
+        <p style={{ color: '#9a3a3a', fontSize: 14, margin: 0, lineHeight: 1.5 }}>
+          {error || 'Something went wrong. No emails were sent.'}
+        </p>
+        <p style={{ color: '#3a4d68', fontSize: 12, marginTop: 14, lineHeight: 1.5 }}>
+          Close this dialog and try again. If it keeps happening, check Vercel function logs.
+        </p>
+      </div>
+    );
+  }
+
+  const { sent, resent, failed, results } = result;
+  const totalSucceeded = sent + resent;
+  const isPartial = failed > 0 && totalSucceeded > 0;
+  const isAllFailed = failed > 0 && totalSucceeded === 0;
+  const isAllSuccess = failed === 0 && totalSucceeded > 0;
+
+  // Group results by carrier for display
+  const carriersById = new Map(agencyCarriers.map(ac => [ac.carrier_id, ac]));
+  const byCarrier = new Map<string, SendApiResultRow[]>();
+  for (const r of results) {
+    const arr = byCarrier.get(r.carrier_id) || [];
+    arr.push(r);
+    byCarrier.set(r.carrier_id, arr);
+  }
+
+  let bgColor: string;
+  let borderColor: string;
+  let icon: string;
+  let title: string;
+  let summaryColor: string;
+
+  if (isAllSuccess) {
+    bgColor = '#f4f7f3';
+    borderColor = '#d4e0d2';
+    icon = '✅';
+    title = `Sent ${totalSucceeded} email${totalSucceeded === 1 ? '' : 's'}`;
+    summaryColor = '#5a7a56';
+  } else if (isAllFailed) {
+    bgColor = '#fdecec';
+    borderColor = '#f0baba';
+    icon = '⚠️';
+    title = `All ${failed} send${failed === 1 ? '' : 's'} failed`;
+    summaryColor = '#9a3a3a';
+  } else {
+    // partial
+    bgColor = '#fef9ec';
+    borderColor = '#f0d68a';
+    icon = '⚠️';
+    title = `Sent ${totalSucceeded}, ${failed} failed`;
+    summaryColor = '#7a5e1a';
+  }
+
+  return (
+    <>
+      <div
+        style={{
+          background: bgColor,
+          border: `1px solid ${borderColor}`,
+          borderRadius: 8,
+          padding: '1.25rem 1.5rem',
+          marginBottom: 16,
+          textAlign: 'center',
+        }}
+      >
+        <div style={{ fontSize: '2rem', marginBottom: 4 }}>{icon}</div>
+        <h3 style={{ color: summaryColor, fontFamily: 'Playfair Display, serif', margin: 0, marginBottom: 6, fontSize: 19 }}>
+          {title}
+        </h3>
+        <p style={{ color: '#3a4d68', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+          {isAllSuccess && 'Carrier reps will receive their invites within a minute.'}
+          {isPartial && 'Some emails went out, but others failed. See details below.'}
+          {isAllFailed && 'No emails were dispatched. See details below.'}
+        </p>
+      </div>
+
+      {/* Per-carrier results */}
+      {Array.from(byCarrier.entries()).map(([cid, rows]) => {
+        const ac = carriersById.get(cid);
+        const carrierName = ac?.carrier.name || 'Unknown carrier';
+        const initials = carrierName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+        const brandColor = ac?.carrier.brand_color || '#1e3a5f';
+
+        return (
+          <div
+            key={cid}
+            style={{
+              border: '1px solid #e8e0d0',
+              borderRadius: 8,
+              marginBottom: 10,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '10px 14px',
+                background: '#faf7f2',
+                borderBottom: '1px solid #e8e0d0',
+              }}
+            >
+              <div
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: 5,
+                  background: brandColor,
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  flexShrink: 0,
+                }}
+              >
+                {initials}
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#1e3a5f' }}>
+                {carrierName}
+              </span>
+            </div>
+            <div style={{ padding: '8px 14px' }}>
+              {rows.map((r, idx) => (
+                <div
+                  key={r.carrier_user_id + idx}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '6px 0',
+                    fontSize: 13,
+                    color: '#3a4d68',
+                    borderBottom: idx < rows.length - 1 ? '1px solid #f0e8d8' : 'none',
+                  }}
+                >
+                  <span style={{ width: 16, flexShrink: 0 }}>
+                    {r.status === 'sent' ? '✓' : r.status === 'resent' ? '↻' : '✗'}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {r.email}
+                  </span>
+                  <ResultStatusPill status={r.status} />
+                  {r.error && (
+                    <span style={{ color: '#9a3a3a', fontSize: 11, marginLeft: 8 }} title={r.error}>
+                      ({r.error.length > 40 ? r.error.slice(0, 40) + '…' : r.error})
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function ResultStatusPill({ status }: { status: 'sent' | 'resent' | 'failed' }) {
+  const map: Record<string, { bg: string; fg: string; label: string }> = {
+    sent: { bg: '#e8f0e6', fg: '#5a7a56', label: 'Sent' },
+    resent: { bg: '#eef2f7', fg: '#1e3a5f', label: 'Resent' },
+    failed: { bg: '#fdecec', fg: '#9a3a3a', label: 'Failed' },
+  };
+  const c = map[status];
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      background: c.bg,
+      color: c.fg,
+      fontSize: 10,
+      borderRadius: 4,
+      fontWeight: 500,
+      textTransform: 'uppercase',
+      letterSpacing: 0.3,
+      flexShrink: 0,
+    }}>
+      {c.label}
+    </span>
   );
 }
 
