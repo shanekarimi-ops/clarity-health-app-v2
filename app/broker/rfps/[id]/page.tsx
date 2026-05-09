@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 import { getAccountType } from '../../../lib/account';
+import { BENEFIT_LINES, BenefitLineValue } from '../../../lib/benefit-lines';
 
 type Rfp = {
   id: string;
@@ -456,6 +457,7 @@ export default function RFPDetailPage() {
         <SendCarriersModal
           rfpId={rfp.id}
           rfpName={rfp.name}
+          rfp={rfp}
           agencyId={agencyId}
           onClose={handleSendModalClose}
         />
@@ -466,13 +468,13 @@ export default function RFPDetailPage() {
 
 // =====================================================================
 // Send Carriers Modal — multi-step wizard
-// Step 1 = Pick carriers (this push)
-// Step 2 = Pick reps + benefit lines (Push 6)
-// Step 3 = Review + send (Push 7)
+// Step 1 = Pick carriers     ✅ Push 5
+// Step 2 = Reps + benefits   ✅ Push 6 (this push)
+// Step 3 = Review + send     ⬜ Push 7
 // =====================================================================
 
 type AgencyCarrierRow = {
-  id: string;                   // agency_carriers.id
+  id: string;
   carrier_id: string;
   is_favorite: boolean;
   carrier: {
@@ -486,16 +488,40 @@ type AgencyCarrierRow = {
   rep_count: number;
 };
 
+type CarrierUserRow = {
+  id: string;
+  carrier_id: string;
+  email: string;
+  full_name: string | null;
+  title: string | null;
+  status: string;
+};
+
 type WizardStep = 1 | 2 | 3;
+
+// Compute smart benefit-line defaults from the RFP's plan design
+function computeBenefitDefaults(rfp: Rfp): Set<BenefitLineValue> {
+  const design = rfp.current_plan_design || {};
+  const defaults = new Set<BenefitLineValue>();
+  if (Array.isArray(design.planOptions) && design.planOptions.length > 0) {
+    defaults.add('medical');
+  }
+  if (design.dental?.carrier) defaults.add('dental');
+  if (design.vision?.carrier) defaults.add('vision');
+  if (design.life?.carrier || design.life?.amount) defaults.add('basic_life_add');
+  return defaults;
+}
 
 function SendCarriersModal({
   rfpId,
   rfpName,
+  rfp,
   agencyId,
   onClose,
 }: {
   rfpId: string;
   rfpName: string;
+  rfp: Rfp;
   agencyId: string;
   onClose: (refresh: boolean) => void;
 }) {
@@ -508,16 +534,26 @@ function SendCarriersModal({
   const [selectedCarrierIds, setSelectedCarrierIds] = useState<Set<string>>(new Set());
   const [showZeroRep, setShowZeroRep] = useState(false);
 
+  // Step 2 state
+  const [reps, setReps] = useState<CarrierUserRow[]>([]);
+  const [loadingReps, setLoadingReps] = useState(false);
+  const [repsError, setRepsError] = useState<string | null>(null);
+  // carrier_id -> Set of carrier_user_ids
+  const [selectedRepsByCarrier, setSelectedRepsByCarrier] = useState<Map<string, Set<string>>>(new Map());
+  // carrier_id -> Set of benefit values
+  const [selectedBenefitsByCarrier, setSelectedBenefitsByCarrier] = useState<Map<string, Set<BenefitLineValue>>>(new Map());
+
+  const benefitDefaults = useMemo(() => computeBenefitDefaults(rfp), [rfp]);
+
   useEffect(() => {
-    loadCarriers();
+    loadAgencyCarriers();
   }, [agencyId]);
 
-  async function loadCarriers() {
+  async function loadAgencyCarriers() {
     if (!agencyId) return;
     setLoadingCarriers(true);
     setCarriersError(null);
     try {
-      // Fetch agency_carriers + their carrier details
       const { data: acData, error: acErr } = await supabase
         .from('agency_carriers')
         .select(`
@@ -534,15 +570,14 @@ function SendCarriersModal({
 
       const carrierIds = (acData || []).map((row: any) => row.carrier_id);
 
-      // Fetch rep counts per carrier
       let repCounts = new Map<string, number>();
       if (carrierIds.length > 0) {
-        const { data: reps, error: repsErr } = await supabase
+        const { data: repsData, error: repsErr } = await supabase
           .from('carrier_users')
           .select('carrier_id')
           .in('carrier_id', carrierIds);
         if (repsErr) throw repsErr;
-        for (const r of reps || []) {
+        for (const r of repsData || []) {
           repCounts.set(r.carrier_id, (repCounts.get(r.carrier_id) || 0) + 1);
         }
       }
@@ -555,7 +590,6 @@ function SendCarriersModal({
         rep_count: repCounts.get(row.carrier_id) || 0,
       }));
 
-      // Sort: favorites first, then by name
       rows.sort((a, b) => {
         if (a.is_favorite !== b.is_favorite) return a.is_favorite ? -1 : 1;
         return a.carrier.name.localeCompare(b.carrier.name);
@@ -569,11 +603,99 @@ function SendCarriersModal({
     }
   }
 
+  // Load reps for the selected carriers when entering Step 2 the first time
+  // (re-runs if user goes back to Step 1, deselects, re-selects different carriers, then forward again)
+  async function loadRepsForSelectedCarriers() {
+    const ids = Array.from(selectedCarrierIds);
+    if (ids.length === 0) {
+      setReps([]);
+      return;
+    }
+    setLoadingReps(true);
+    setRepsError(null);
+    try {
+      const { data, error: repsErr } = await supabase
+        .from('carrier_users')
+        .select('id, carrier_id, email, full_name, title, status')
+        .in('carrier_id', ids)
+        .order('full_name', { ascending: true, nullsFirst: false });
+      if (repsErr) throw repsErr;
+      setReps((data || []) as CarrierUserRow[]);
+
+      // Apply smart defaults to any newly-selected carriers that don't yet have benefit state
+      setSelectedBenefitsByCarrier(prev => {
+        const next = new Map(prev);
+        for (const cid of ids) {
+          if (!next.has(cid)) {
+            next.set(cid, new Set(benefitDefaults));
+          }
+        }
+        // Drop any state for carriers no longer selected
+        for (const existingCid of Array.from(next.keys())) {
+          if (!selectedCarrierIds.has(existingCid)) next.delete(existingCid);
+        }
+        return next;
+      });
+      setSelectedRepsByCarrier(prev => {
+        const next = new Map(prev);
+        for (const cid of ids) {
+          if (!next.has(cid)) {
+            next.set(cid, new Set());
+          }
+        }
+        for (const existingCid of Array.from(next.keys())) {
+          if (!selectedCarrierIds.has(existingCid)) next.delete(existingCid);
+        }
+        return next;
+      });
+    } catch (e: any) {
+      setRepsError(e?.message || 'Failed to load reps');
+    } finally {
+      setLoadingReps(false);
+    }
+  }
+
   function toggleCarrier(carrierId: string) {
     setSelectedCarrierIds(prev => {
       const next = new Set(prev);
-      if (next.has(carrierId)) next.delete(carrierId);
-      else next.add(carrierId);
+      if (next.has(carrierId)) {
+        next.delete(carrierId);
+        // Also drop reps/benefits state for this carrier
+        setSelectedRepsByCarrier(p => {
+          const m = new Map(p);
+          m.delete(carrierId);
+          return m;
+        });
+        setSelectedBenefitsByCarrier(p => {
+          const m = new Map(p);
+          m.delete(carrierId);
+          return m;
+        });
+      } else {
+        next.add(carrierId);
+      }
+      return next;
+    });
+  }
+
+  function toggleRep(carrierId: string, repId: string) {
+    setSelectedRepsByCarrier(prev => {
+      const next = new Map(prev);
+      const set = new Set(next.get(carrierId) || []);
+      if (set.has(repId)) set.delete(repId);
+      else set.add(repId);
+      next.set(carrierId, set);
+      return next;
+    });
+  }
+
+  function toggleBenefit(carrierId: string, benefit: BenefitLineValue) {
+    setSelectedBenefitsByCarrier(prev => {
+      const next = new Map(prev);
+      const set = new Set(next.get(carrierId) || []);
+      if (set.has(benefit)) set.delete(benefit);
+      else set.add(benefit);
+      next.set(carrierId, set);
       return next;
     });
   }
@@ -585,9 +707,29 @@ function SendCarriersModal({
   const zeroRepCount = agencyCarriers.filter(ac => ac.rep_count === 0).length;
   const canProceedFromStep1 = selectedCarrierIds.size > 0;
 
+  // Step 2 validation
+  const step2Issues: string[] = [];
+  for (const cid of Array.from(selectedCarrierIds)) {
+    const ac = agencyCarriers.find(a => a.carrier_id === cid);
+    const carrierLabel = ac?.carrier.name || 'Carrier';
+    const repsForCarrier = selectedRepsByCarrier.get(cid);
+    const benefitsForCarrier = selectedBenefitsByCarrier.get(cid);
+    if (!repsForCarrier || repsForCarrier.size === 0) {
+      step2Issues.push(`${carrierLabel} needs at least one rep selected`);
+    }
+    if (!benefitsForCarrier || benefitsForCarrier.size === 0) {
+      step2Issues.push(`${carrierLabel} needs at least one benefit line`);
+    }
+  }
+  const canProceedFromStep2 = step2Issues.length === 0 && selectedCarrierIds.size > 0;
+
   function handleNext() {
-    if (step === 1 && canProceedFromStep1) setStep(2);
-    else if (step === 2) setStep(3);
+    if (step === 1 && canProceedFromStep1) {
+      setStep(2);
+      loadRepsForSelectedCarriers();
+    } else if (step === 2 && canProceedFromStep2) {
+      setStep(3);
+    }
   }
 
   function handleBack() {
@@ -626,7 +768,6 @@ function SendCarriersModal({
             </button>
           </div>
 
-          {/* Stepper */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18 }}>
             <Stepper num={1} label="Pick carriers" current={step} />
             <StepperLine done={step > 1} />
@@ -637,7 +778,7 @@ function SendCarriersModal({
         </div>
 
         {/* Body */}
-        <div style={{ padding: '1.25rem 1.75rem', minHeight: 320 }}>
+        <div style={{ padding: '1.25rem 1.75rem', minHeight: 360 }}>
           {step === 1 && (
             <Step1PickCarriers
               loading={loadingCarriers}
@@ -651,7 +792,19 @@ function SendCarriersModal({
               totalCount={agencyCarriers.length}
             />
           )}
-          {step === 2 && <PlaceholderStep stepNum={2} />}
+          {step === 2 && (
+            <Step2RepsBenefits
+              loading={loadingReps}
+              error={repsError}
+              selectedCarrierIds={selectedCarrierIds}
+              agencyCarriers={agencyCarriers}
+              reps={reps}
+              selectedRepsByCarrier={selectedRepsByCarrier}
+              selectedBenefitsByCarrier={selectedBenefitsByCarrier}
+              onToggleRep={toggleRep}
+              onToggleBenefit={toggleBenefit}
+            />
+          )}
           {step === 3 && <PlaceholderStep stepNum={3} />}
         </div>
 
@@ -666,11 +819,15 @@ function SendCarriersModal({
             gap: '0.75rem',
           }}
         >
-          <div style={{ fontSize: 12, color: '#7a8a9b' }}>
+          <div style={{ fontSize: 12, color: '#7a8a9b', maxWidth: 380 }}>
             {step === 1 && selectedCarrierIds.size > 0 && (
-              <>
-                {selectedCarrierIds.size} carrier{selectedCarrierIds.size === 1 ? '' : 's'} selected
-              </>
+              <>{selectedCarrierIds.size} carrier{selectedCarrierIds.size === 1 ? '' : 's'} selected</>
+            )}
+            {step === 2 && step2Issues.length > 0 && (
+              <span style={{ color: '#a94442' }}>{step2Issues[0]}</span>
+            )}
+            {step === 2 && step2Issues.length === 0 && selectedCarrierIds.size > 0 && (
+              <>Ready to review</>
             )}
           </div>
           <div style={{ display: 'flex', gap: '0.6rem' }}>
@@ -686,11 +843,20 @@ function SendCarriersModal({
             )}
             <button
               onClick={handleNext}
-              disabled={step === 1 && !canProceedFromStep1}
+              disabled={
+                (step === 1 && !canProceedFromStep1) ||
+                (step === 2 && !canProceedFromStep2)
+              }
               style={{
                 ...btnPrimaryStyle,
-                background: (step === 1 && !canProceedFromStep1) ? '#c5d1c2' : '#7a9b76',
-                cursor: (step === 1 && !canProceedFromStep1) ? 'not-allowed' : 'pointer',
+                background:
+                  (step === 1 && !canProceedFromStep1) || (step === 2 && !canProceedFromStep2)
+                    ? '#c5d1c2'
+                    : '#7a9b76',
+                cursor:
+                  (step === 1 && !canProceedFromStep1) || (step === 2 && !canProceedFromStep2)
+                    ? 'not-allowed'
+                    : 'pointer',
               }}
             >
               {step < 3 ? 'Next →' : 'Send'}
@@ -890,7 +1056,6 @@ function Step1PickCarriers({
         })}
       </div>
 
-      {/* Toggle for zero-rep carriers */}
       {zeroRepCount > 0 && (
         <div style={{ marginTop: 12, fontSize: 13, color: '#7a8a9b' }}>
           {showZeroRep ? (
@@ -915,7 +1080,251 @@ function Step1PickCarriers({
 }
 
 // =====================================================================
-// Placeholder for Steps 2 & 3 (filled in Pushes 6 & 7)
+// Step 2 — Reps + benefit lines
+// =====================================================================
+function Step2RepsBenefits({
+  loading,
+  error,
+  selectedCarrierIds,
+  agencyCarriers,
+  reps,
+  selectedRepsByCarrier,
+  selectedBenefitsByCarrier,
+  onToggleRep,
+  onToggleBenefit,
+}: {
+  loading: boolean;
+  error: string | null;
+  selectedCarrierIds: Set<string>;
+  agencyCarriers: AgencyCarrierRow[];
+  reps: CarrierUserRow[];
+  selectedRepsByCarrier: Map<string, Set<string>>;
+  selectedBenefitsByCarrier: Map<string, Set<BenefitLineValue>>;
+  onToggleRep: (carrierId: string, repId: string) => void;
+  onToggleBenefit: (carrierId: string, benefit: BenefitLineValue) => void;
+}) {
+  if (loading) {
+    return <div style={{ color: '#3a4d68', fontSize: 14, textAlign: 'center', padding: '2rem 0' }}>Loading reps...</div>;
+  }
+  if (error) {
+    return (
+      <div style={{
+        background: '#fdecec',
+        border: '1px solid #f0baba',
+        color: '#9a3a3a',
+        padding: '0.85rem 1rem',
+        borderRadius: 6,
+        fontSize: 14,
+      }}>
+        Couldn't load reps: {error}
+      </div>
+    );
+  }
+
+  const orderedCarrierIds = Array.from(selectedCarrierIds);
+  const carriersById = new Map(agencyCarriers.map(ac => [ac.carrier_id, ac]));
+
+  return (
+    <>
+      <div style={{ color: '#3a4d68', fontSize: 14, marginBottom: 16 }}>
+        For each carrier, pick which reps should receive the email and which benefit lines apply.
+      </div>
+
+      {orderedCarrierIds.map((cid) => {
+        const ac = carriersById.get(cid);
+        if (!ac) return null;
+        const repsForCarrier = reps.filter(r => r.carrier_id === cid);
+        const repsSelected = selectedRepsByCarrier.get(cid) || new Set<string>();
+        const benefitsSelected = selectedBenefitsByCarrier.get(cid) || new Set<BenefitLineValue>();
+        const initials = ac.carrier.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+        const brandColor = ac.carrier.brand_color || '#1e3a5f';
+
+        return (
+          <div
+            key={cid}
+            style={{
+              border: '1px solid #e8e0d0',
+              borderRadius: 8,
+              marginBottom: 14,
+              overflow: 'hidden',
+            }}
+          >
+            {/* Carrier header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '12px 16px',
+                background: '#faf7f2',
+                borderBottom: '1px solid #e8e0d0',
+              }}
+            >
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 6,
+                  background: brandColor,
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  flexShrink: 0,
+                }}
+              >
+                {initials}
+              </div>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
+                {ac.carrier.name}
+              </span>
+            </div>
+
+            {/* Reps */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0e8d8' }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: '#3a4d68',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.4,
+                  marginBottom: 8,
+                }}
+              >
+                Reps ({repsSelected.size}/{repsForCarrier.length})
+              </div>
+              {repsForCarrier.length === 0 ? (
+                <div style={{ fontSize: 13, color: '#a94442' }}>
+                  No reps for this carrier. Go back and remove this carrier or add reps first.
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {repsForCarrier.map((rep) => {
+                    const checked = repsSelected.has(rep.id);
+                    const repLabel = rep.full_name || rep.email.split('@')[0];
+                    return (
+                      <label
+                        key={rep.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          background: checked ? '#f4f7f3' : 'transparent',
+                          transition: 'background 0.12s',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => onToggleRep(cid, rep.id)}
+                          style={{ width: 16, height: 16, cursor: 'pointer' }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#1e3a5f' }}>
+                            {repLabel}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#7a8a9b' }}>
+                            {rep.email}{rep.title ? ` · ${rep.title}` : ''}
+                          </div>
+                        </div>
+                        <RepStatusPill status={rep.status} />
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Benefit lines */}
+            <div style={{ padding: '12px 16px' }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: '#3a4d68',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.4,
+                  marginBottom: 8,
+                }}
+              >
+                Benefit lines ({benefitsSelected.size}/{BENEFIT_LINES.length})
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: 6,
+                }}
+              >
+                {BENEFIT_LINES.map((bl) => {
+                  const checked = benefitsSelected.has(bl.value);
+                  return (
+                    <label
+                      key={bl.value}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 10px',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        background: checked ? '#f4f7f3' : 'transparent',
+                        fontSize: 13,
+                        color: '#1e3a5f',
+                        transition: 'background 0.12s',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onToggleBenefit(cid, bl.value)}
+                        style={{ width: 16, height: 16, cursor: 'pointer' }}
+                      />
+                      {bl.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function RepStatusPill({ status }: { status: string }) {
+  const colors: Record<string, { bg: string; fg: string }> = {
+    invited: { bg: '#fef9ec', fg: '#7a5e1a' },
+    active: { bg: '#e8f0e6', fg: '#5a7a56' },
+    inactive: { bg: '#eef2f7', fg: '#7a8a9b' },
+  };
+  const c = colors[status] || colors.inactive;
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      background: c.bg,
+      color: c.fg,
+      fontSize: 10,
+      borderRadius: 4,
+      fontWeight: 500,
+      textTransform: 'capitalize',
+      flexShrink: 0,
+    }}>
+      {status}
+    </span>
+  );
+}
+
+// =====================================================================
+// Placeholder for Step 3 (filled in Push 7)
 // =====================================================================
 function PlaceholderStep({ stepNum }: { stepNum: number }) {
   return (
@@ -1289,9 +1698,6 @@ function tripleDollar(a: any, b: any, c: any): string {
   return out === '— / — / —' ? '—' : out;
 }
 
-// =====================================================================
-// Shared modal styles
-// =====================================================================
 const modalOverlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
