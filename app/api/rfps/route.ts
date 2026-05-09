@@ -145,14 +145,11 @@ export async function POST(request: NextRequest) {
     }> = [];
 
     if ((body.planOptions || []).length > 0) {
-      benefitRows.push({ rfp_id: rfpId!, benefit_type: 'medical', display_order: 0 });
-    }
-    if (body.rx?.carrier) {
-      benefitRows.push({ rfp_id: rfpId!, benefit_type: 'rx', display_order: 1 });
-    }
-    if (body.dental?.carrier) {
-      benefitRows.push({ rfp_id: rfpId!, benefit_type: 'dental', display_order: 2 });
-    }
+        benefitRows.push({ rfp_id: rfpId!, benefit_type: 'medical', display_order: 0 });
+      }
+      if (body.dental?.carrier) {
+        benefitRows.push({ rfp_id: rfpId!, benefit_type: 'dental', display_order: 2 });
+      }
     if (body.vision?.carrier) {
       benefitRows.push({ rfp_id: rfpId!, benefit_type: 'vision', display_order: 3 });
     }
