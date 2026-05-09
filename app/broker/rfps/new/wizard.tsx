@@ -39,6 +39,7 @@ export default function RFPWizard({
   user,
   agencyId,
   brokerId,
+  editingRfpId,
   onCancel,
   onExit,
 }: {
@@ -46,10 +47,12 @@ export default function RFPWizard({
   user: any;
   agencyId: string | null;
   brokerId: string | null;
+  editingRfpId?: string | null;
   onCancel: () => void;
   onExit: () => void;
 }) {
   const router = useRouter();
+  const isEditMode = !!editingRfpId;
   const currentYear = new Date().getFullYear();
   const defaultPlanYear = currentYear + 1;
 
@@ -74,6 +77,12 @@ export default function RFPWizard({
   const [clients, setClients] = useState<Client[]>([]);
   const [clientsLoading, setClientsLoading] = useState(true);
 
+  const [loadingExisting, setLoadingExisting] = useState(isEditMode);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // In edit mode, track whether the broker wants to replace the existing SPD
+  const [replaceSpd, setReplaceSpd] = useState(false);
+
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -81,6 +90,11 @@ export default function RFPWizard({
     if (!agencyId) return;
     loadClients();
   }, [agencyId]);
+
+  useEffect(() => {
+    if (!editingRfpId) return;
+    loadExistingRfp(editingRfpId);
+  }, [editingRfpId]);
 
   async function loadClients() {
     setClientsLoading(true);
@@ -91,6 +105,56 @@ export default function RFPWizard({
       .order('employer_name', { ascending: true, nullsFirst: false });
     setClients(rows || []);
     setClientsLoading(false);
+  }
+
+  async function loadExistingRfp(rfpId: string) {
+    setLoadingExisting(true);
+    setLoadError(null);
+    try {
+      const res = await fetch(`/api/rfps/${rfpId}`);
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        setLoadError(result.message || result.error || 'Failed to load RFP.');
+        setLoadingExisting(false);
+        return;
+      }
+
+      const r = result.rfp;
+      const planDesign = r.current_plan_design || {};
+      const filename = r.current_plan_doc_url
+        ? r.current_plan_doc_url.split('/').pop() || null
+        : null;
+
+      const effective = r.effective_date || `${defaultPlanYear}-01-01`;
+      const yearFromDesign = planDesign.planYear
+        ? Number(planDesign.planYear)
+        : effective
+        ? new Date(effective).getFullYear()
+        : defaultPlanYear;
+
+      setData({
+        clientId: r.client_id,
+        rfpName: r.name || '',
+        planYear: yearFromDesign,
+        effectiveDate: effective,
+        censusSize: r.employee_lives ?? null,
+        spdFilename: filename,
+        spdFile: null,
+        spdStoragePath: r.current_plan_doc_url || null,
+        extractedData: planDesign.extractedData || null,
+        planOptions: planDesign.planOptions || [],
+        rx: planDesign.rx || null,
+        dental: planDesign.dental || null,
+        vision: planDesign.vision || null,
+        life: planDesign.life || null,
+      });
+
+      setLoadingExisting(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to load RFP.';
+      setLoadError(msg);
+      setLoadingExisting(false);
+    }
   }
 
   function updateField<K extends keyof WizardData>(key: K, value: WizardData[K]) {
@@ -185,8 +249,11 @@ export default function RFPWizard({
         user?.email ||
         null;
 
-      const res = await fetch('/api/rfps', {
-        method: 'POST',
+      const url = isEditMode ? `/api/rfps/${editingRfpId}` : '/api/rfps';
+      const method = isEditMode ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agencyId,
@@ -217,7 +284,8 @@ export default function RFPWizard({
         return;
       }
 
-      router.push(`/broker/rfps/${result.rfp_id}`);
+      const targetId = isEditMode ? editingRfpId : result.rfp_id;
+      router.push(`/broker/rfps/${targetId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Save failed.';
       setSaveError(msg);
@@ -231,6 +299,33 @@ export default function RFPWizard({
     !!agencyId &&
     !!user?.id &&
     !saving;
+
+  if (loadingExisting) {
+    return (
+      <div style={{ maxWidth: 900 }}>
+        <div style={{ color: '#3a4d68', fontSize: 14 }}>Loading RFP...</div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div style={{ maxWidth: 900 }}>
+        <div
+          style={{
+            padding: 14,
+            background: '#fde8e8',
+            border: '1px solid #f5b7b7',
+            borderRadius: 8,
+            color: '#9b2c2c',
+            fontSize: 14,
+          }}
+        >
+          <strong>Couldn't load this RFP:</strong> {loadError}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 900 }}>
@@ -250,7 +345,7 @@ export default function RFPWizard({
             opacity: saving ? 0.5 : 1,
           }}
         >
-          ← Change start option
+          {isEditMode ? '← Cancel edit' : '← Change start option'}
         </button>
         <h1
           style={{
@@ -260,7 +355,7 @@ export default function RFPWizard({
             margin: 0,
           }}
         >
-          New RFP
+          {isEditMode ? 'Edit RFP' : 'New RFP'}
         </h1>
       </div>
 
@@ -288,6 +383,10 @@ export default function RFPWizard({
         {step === 2 && (
           <Step2UploadSPD
             startMode={startMode}
+            isEditMode={isEditMode}
+            replaceSpd={replaceSpd}
+            onReplaceClick={() => setReplaceSpd(true)}
+            onCancelReplace={() => setReplaceSpd(false)}
             data={data}
             updateField={updateField}
             onAutoAdvance={() => setStep(3)}
@@ -299,7 +398,9 @@ export default function RFPWizard({
         {step === 4 && (
           <Step4Ancillary data={data} updateField={updateField} />
         )}
-        {step === 5 && <Step5Review data={data} saveError={saveError} />}
+        {step === 5 && (
+          <Step5Review data={data} saveError={saveError} isEditMode={isEditMode} />
+        )}
       </div>
 
       <div
@@ -362,7 +463,13 @@ export default function RFPWizard({
               fontFamily: 'Figtree, sans-serif',
             }}
           >
-            {saving ? 'Saving...' : 'Save RFP'}
+            {saving
+              ? isEditMode
+                ? 'Updating...'
+                : 'Saving...'
+              : isEditMode
+              ? 'Update RFP'
+              : 'Save RFP'}
           </button>
         )}
       </div>
@@ -553,11 +660,19 @@ function Step1Basics({
 
 function Step2UploadSPD({
   startMode,
+  isEditMode,
+  replaceSpd,
+  onReplaceClick,
+  onCancelReplace,
   data,
   updateField,
   onAutoAdvance,
 }: {
   startMode: StartMode;
+  isEditMode: boolean;
+  replaceSpd: boolean;
+  onReplaceClick: () => void;
+  onCancelReplace: () => void;
   data: WizardData;
   updateField: <K extends keyof WizardData>(k: K, v: WizardData[K]) => void;
   onAutoAdvance: () => void;
@@ -566,7 +681,11 @@ function Step2UploadSPD({
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
-  const hasExtracted = !!data.extractedData;
+  // In edit mode, "hasExisting" means the RFP already has a SPD on file (filename) and the user hasn't asked to replace it
+  const hasExisting = isEditMode && !!data.spdFilename && !data.spdFile && !replaceSpd;
+
+  // "hasExtracted" means an extraction just ran in this session
+  const hasExtracted = !!data.extractedData && !!data.spdFile;
 
   async function handleFile(file: File) {
     setError(null);
@@ -640,7 +759,7 @@ function Step2UploadSPD({
   }
 
   function clearAndRetry() {
-    updateField('spdFilename', null);
+    updateField('spdFilename', isEditMode ? data.spdFilename : null);
     updateField('spdFile', null);
     updateField('extractedData', null);
     updateField('planOptions', []);
@@ -649,6 +768,9 @@ function Step2UploadSPD({
     updateField('vision', null);
     updateField('life', null);
     setError(null);
+    if (isEditMode) {
+      onCancelReplace();
+    }
   }
 
   return (
@@ -664,10 +786,74 @@ function Step2UploadSPD({
         Upload SPD
       </h2>
       <p style={{ color: '#3a4d68', fontSize: 14, marginTop: 0, marginBottom: 24 }}>
-        {startMode === 'from-spd'
+        {isEditMode
+          ? "The current SPD is shown below. Replace it if you've received an updated version."
+          : startMode === 'from-spd'
           ? "Upload the client's Summary Plan Description. We'll extract the plan design with AI."
           : 'Optional: drop in an SPD if you have one. Otherwise click Next to enter the plan design manually.'}
       </p>
+
+      {hasExisting && (
+        <div
+          style={{
+            background: '#f0f7ee',
+            border: '1px solid #c9dec4',
+            borderRadius: 12,
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                background: '#7a9b76',
+                color: 'white',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 18,
+                fontWeight: 700,
+              }}
+            >
+              ✓
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, color: '#1e3a5f', fontSize: 15 }}>
+                Currently uploaded: {data.spdFilename}
+              </div>
+              <div style={{ color: '#3a4d68', fontSize: 13 }}>
+                Plan design loaded from this file. Click Next to review or edit.
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={onReplaceClick}
+            style={{
+              marginTop: 4,
+              background: 'transparent',
+              border: '1px solid #c9dec4',
+              color: '#3a4d68',
+              padding: '8px 16px',
+              borderRadius: 6,
+              fontSize: 13,
+              cursor: 'pointer',
+              fontFamily: 'Figtree, sans-serif',
+            }}
+          >
+            Replace with a new SPD
+          </button>
+        </div>
+      )}
 
       {hasExtracted && !uploading && (
         <div
@@ -728,7 +914,7 @@ function Step2UploadSPD({
               fontFamily: 'Figtree, sans-serif',
             }}
           >
-            Upload a different SPD
+            {isEditMode ? 'Keep existing SPD' : 'Upload a different SPD'}
           </button>
         </div>
       )}
@@ -771,7 +957,7 @@ function Step2UploadSPD({
         </div>
       )}
 
-      {!hasExtracted && !uploading && (
+      {!hasExisting && !hasExtracted && !uploading && (
         <>
           <div
             onDrop={onDrop}
@@ -849,6 +1035,24 @@ function Step2UploadSPD({
               PDF only · Max 20 MB
             </div>
           </div>
+
+          {isEditMode && replaceSpd && (
+            <button
+              onClick={onCancelReplace}
+              style={{
+                marginTop: 12,
+                background: 'transparent',
+                border: 'none',
+                color: '#3a4d68',
+                padding: '4px 0',
+                fontSize: 13,
+                cursor: 'pointer',
+                fontFamily: 'Figtree, sans-serif',
+              }}
+            >
+              Keep current SPD instead
+            </button>
+          )}
 
           {error && (
             <div
@@ -2017,7 +2221,15 @@ function LifeSection({
   );
 }
 
-function Step5Review({ data, saveError }: { data: WizardData; saveError: string | null }) {
+function Step5Review({
+  data,
+  saveError,
+  isEditMode,
+}: {
+  data: WizardData;
+  saveError: string | null;
+  isEditMode: boolean;
+}) {
   const planCount = (data.planOptions || []).length;
   const tierCount = (data.planOptions || []).reduce(
     (sum: number, p: any) => sum + (p.tiers?.length || 0),
@@ -2047,7 +2259,9 @@ function Step5Review({ data, saveError }: { data: WizardData; saveError: string 
         Review
       </h2>
       <p style={{ color: '#3a4d68', fontSize: 14, marginTop: 0, marginBottom: 24 }}>
-        Review everything before saving the RFP as a draft.
+        {isEditMode
+          ? 'Review your changes before updating.'
+          : 'Review everything before saving the RFP as a draft.'}
       </p>
 
       <ReviewRow label="RFP name" value={data.rfpName || '—'} />
@@ -2096,7 +2310,10 @@ function Step5Review({ data, saveError }: { data: WizardData; saveError: string 
             color: '#3a4d68',
           }}
         >
-          Click <strong style={{ color: '#1e3a5f' }}>Save RFP</strong> to create a draft. You can edit it any time.
+          {isEditMode
+            ? <>Click <strong style={{ color: '#1e3a5f' }}>Update RFP</strong> to save your changes.</>
+            : <>Click <strong style={{ color: '#1e3a5f' }}>Save RFP</strong> to create a draft. You can edit it any time.</>
+          }
         </div>
       )}
     </div>
