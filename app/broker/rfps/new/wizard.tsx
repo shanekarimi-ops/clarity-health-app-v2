@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '../../../supabase';
 
 type StartMode = 'from-spd' | 'from-scratch';
@@ -20,6 +21,7 @@ export type WizardData = {
   effectiveDate: string;
   censusSize: number | null;
   spdFilename: string | null;
+  spdFile: File | null;
   spdStoragePath: string | null;
   extractedData: any | null;
   planOptions: any[];
@@ -47,6 +49,7 @@ export default function RFPWizard({
   onCancel: () => void;
   onExit: () => void;
 }) {
+  const router = useRouter();
   const currentYear = new Date().getFullYear();
   const defaultPlanYear = currentYear + 1;
 
@@ -58,6 +61,7 @@ export default function RFPWizard({
     effectiveDate: `${defaultPlanYear}-01-01`,
     censusSize: null,
     spdFilename: null,
+    spdFile: null,
     spdStoragePath: null,
     extractedData: null,
     planOptions: [],
@@ -69,6 +73,9 @@ export default function RFPWizard({
 
   const [clients, setClients] = useState<Client[]>([]);
   const [clientsLoading, setClientsLoading] = useState(true);
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!agencyId) return;
@@ -138,20 +145,109 @@ export default function RFPWizard({
     setStep(step - 1);
   }
 
+  async function fileToBase64(file: File): Promise<string> {
+    const buf = await file.arrayBuffer();
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(
+        null,
+        Array.from(bytes.subarray(i, i + chunkSize))
+      );
+    }
+    return btoa(binary);
+  }
+
+  async function handleSave() {
+    if (saving) return;
+    if (!agencyId || !user?.id) {
+      setSaveError('Missing agency or user context. Please refresh and try again.');
+      return;
+    }
+    if (!data.clientId || !data.rfpName.trim()) {
+      setSaveError('Client and RFP name are required.');
+      return;
+    }
+
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      let spdBase64: string | null = null;
+      if (data.spdFile) {
+        spdBase64 = await fileToBase64(data.spdFile);
+      }
+
+      const userName =
+        user?.user_metadata?.full_name ||
+        user?.user_metadata?.name ||
+        user?.email ||
+        null;
+
+      const res = await fetch('/api/rfps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agencyId,
+          userId: user.id,
+          userName,
+          clientId: data.clientId,
+          rfpName: data.rfpName,
+          effectiveDate: data.effectiveDate || null,
+          censusSize: data.censusSize,
+          spdFilename: data.spdFilename,
+          spdBase64,
+          planYear: data.planYear,
+          extractedData: data.extractedData,
+          planOptions: data.planOptions,
+          rx: data.rx,
+          dental: data.dental,
+          vision: data.vision,
+          life: data.life,
+        }),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok || !result.success) {
+        const msg = result.message || result.error || 'Save failed.';
+        setSaveError(msg);
+        setSaving(false);
+        return;
+      }
+
+      router.push(`/broker/rfps/${result.rfp_id}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Save failed.';
+      setSaveError(msg);
+      setSaving(false);
+    }
+  }
+
+  const canSave =
+    !!data.clientId &&
+    data.rfpName.trim().length > 0 &&
+    !!agencyId &&
+    !!user?.id &&
+    !saving;
+
   return (
     <div style={{ maxWidth: 900 }}>
       <div style={{ marginBottom: 24 }}>
         <button
           onClick={onCancel}
+          disabled={saving}
           style={{
             background: 'transparent',
             border: 'none',
             color: '#3a4d68',
-            cursor: 'pointer',
+            cursor: saving ? 'not-allowed' : 'pointer',
             fontSize: 14,
             padding: 0,
             marginBottom: 12,
             fontFamily: 'Figtree, sans-serif',
+            opacity: saving ? 0.5 : 1,
           }}
         >
           ← Change start option
@@ -203,7 +299,7 @@ export default function RFPWizard({
         {step === 4 && (
           <Step4Ancillary data={data} updateField={updateField} />
         )}
-        {step === 5 && <Step5Review data={data} />}
+        {step === 5 && <Step5Review data={data} saveError={saveError} />}
       </div>
 
       <div
@@ -215,6 +311,7 @@ export default function RFPWizard({
       >
         <button
           onClick={goBack}
+          disabled={saving}
           style={{
             background: 'white',
             color: '#3a4d68',
@@ -223,8 +320,9 @@ export default function RFPWizard({
             borderRadius: 8,
             fontSize: 14,
             fontWeight: 600,
-            cursor: 'pointer',
+            cursor: saving ? 'not-allowed' : 'pointer',
             fontFamily: 'Figtree, sans-serif',
+            opacity: saving ? 0.5 : 1,
           }}
         >
           ← Back
@@ -250,21 +348,21 @@ export default function RFPWizard({
           </button>
         ) : (
           <button
-            disabled
-            title="Save coming in next push"
+            onClick={handleSave}
+            disabled={!canSave}
             style={{
-              background: '#c5d1c2',
+              background: canSave ? '#7a9b76' : '#c5d1c2',
               color: 'white',
               border: 'none',
               padding: '10px 28px',
               borderRadius: 8,
               fontSize: 14,
               fontWeight: 600,
-              cursor: 'not-allowed',
+              cursor: canSave ? 'pointer' : 'not-allowed',
               fontFamily: 'Figtree, sans-serif',
             }}
           >
-            Save RFP (coming next)
+            {saving ? 'Saving...' : 'Save RFP'}
           </button>
         )}
       </div>
@@ -502,6 +600,7 @@ function Step2UploadSPD({
       }
 
       updateField('spdFilename', file.name);
+      updateField('spdFile', file);
       updateField('extractedData', result.extracted);
       updateField('planOptions', result.extracted?.plan_options || []);
       updateField('rx', result.extracted?.rx || null);
@@ -542,6 +641,7 @@ function Step2UploadSPD({
 
   function clearAndRetry() {
     updateField('spdFilename', null);
+    updateField('spdFile', null);
     updateField('extractedData', null);
     updateField('planOptions', []);
     updateField('rx', null);
@@ -1917,7 +2017,7 @@ function LifeSection({
   );
 }
 
-function Step5Review({ data }: { data: WizardData }) {
+function Step5Review({ data, saveError }: { data: WizardData; saveError: string | null }) {
   const planCount = (data.planOptions || []).length;
   const tierCount = (data.planOptions || []).reduce(
     (sum: number, p: any) => sum + (p.tiers?.length || 0),
@@ -1968,19 +2068,37 @@ function Step5Review({ data }: { data: WizardData }) {
         value={ancillaryLines.length === 0 ? '— (none configured)' : ancillaryLines.join(', ')}
       />
 
-      <div
-        style={{
-          marginTop: 24,
-          padding: 14,
-          background: '#fff8e6',
-          border: '1px solid #f5e0a3',
-          borderRadius: 8,
-          fontSize: 13,
-          color: '#665028',
-        }}
-      >
-        Save to database lands in the next push.
-      </div>
+      {saveError && (
+        <div
+          style={{
+            marginTop: 24,
+            padding: 14,
+            background: '#fde8e8',
+            border: '1px solid #f5b7b7',
+            borderRadius: 8,
+            fontSize: 13,
+            color: '#9b2c2c',
+          }}
+        >
+          <strong>Couldn't save:</strong> {saveError}
+        </div>
+      )}
+
+      {!saveError && (
+        <div
+          style={{
+            marginTop: 24,
+            padding: 14,
+            background: '#f0f7ee',
+            border: '1px solid #c9dec4',
+            borderRadius: 8,
+            fontSize: 13,
+            color: '#3a4d68',
+          }}
+        >
+          Click <strong style={{ color: '#1e3a5f' }}>Save RFP</strong> to create a draft. You can edit it any time.
+        </div>
+      )}
     </div>
   );
 }
@@ -1998,24 +2116,6 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
     >
       <div style={{ color: '#3a4d68', fontWeight: 600 }}>{label}</div>
       <div style={{ color: '#1e3a5f' }}>{value}</div>
-    </div>
-  );
-}
-
-function SkeletonNote({ text }: { text: string }) {
-  return (
-    <div
-      style={{
-        padding: 24,
-        background: '#faf7f2',
-        border: '1px dashed #d4d4d4',
-        borderRadius: 8,
-        fontSize: 14,
-        color: '#3a4d68',
-        textAlign: 'center',
-      }}
-    >
-      {text}
     </div>
   );
 }
