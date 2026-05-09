@@ -58,6 +58,7 @@ export default function CarrierDetailPage() {
   const [notFound, setNotFound] = useState(false);
 
   const [tab, setTab] = useState<TabKey>('reps');
+  const [showAddRepModal, setShowAddRepModal] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -88,7 +89,6 @@ export default function CarrierDetailPage() {
         setAgencyName((brokerRow.agencies as any).name || '');
       }
 
-      // Load carrier + agency_carriers row + reps in parallel
       const [carrierRes, agencyCarrierRes, repsRes] = await Promise.all([
         supabase
           .from('carriers')
@@ -148,6 +148,11 @@ export default function CarrierDetailPage() {
     }
   }
 
+  function handleRepAdded(newRep: CarrierUser) {
+    setReps(prev => [...prev, newRep]);
+    setShowAddRepModal(false);
+  }
+
   if (loading) {
     return (
       <div className="dash-layout">
@@ -168,10 +173,7 @@ export default function CarrierDetailPage() {
         />
         <main className="dash-main">
           <div style={{ padding: '2rem 2.5rem', maxWidth: 1400, margin: '0 auto' }}>
-            <button
-              onClick={() => router.push('/broker/carriers')}
-              style={backLinkStyle}
-            >
+            <button onClick={() => router.push('/broker/carriers')} style={backLinkStyle}>
               ← Back to Carriers
             </button>
             <div style={{ marginTop: '2rem', padding: '3rem', textAlign: 'center', background: '#faf7f2', borderRadius: 12, border: '1px solid #e8e0d0' }}>
@@ -203,7 +205,6 @@ export default function CarrierDetailPage() {
             ← Back to Carriers
           </button>
 
-          {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', marginTop: '1rem', marginBottom: '1.5rem' }}>
             <div style={{
               width: 64,
@@ -248,7 +249,6 @@ export default function CarrierDetailPage() {
             </div>
           </div>
 
-          {/* Add-to-agency banner */}
           {!isInAgency && (
             <div style={{
               background: '#fef9ec',
@@ -286,7 +286,6 @@ export default function CarrierDetailPage() {
             </div>
           )}
 
-          {/* Tabs */}
           <div style={{ display: 'flex', borderBottom: '1px solid #e8e0d0', marginBottom: '1.5rem' }}>
             <DetailTab active={tab === 'reps'} onClick={() => setTab('reps')} label="Reps" count={reps.length} />
             <DetailTab active={tab === 'engagement'} onClick={() => setTab('engagement')} label="Engagement" />
@@ -294,13 +293,27 @@ export default function CarrierDetailPage() {
             <DetailTab active={tab === 'notes'} onClick={() => setTab('notes')} label="Notes" />
           </div>
 
-          {/* Tab content */}
-          {tab === 'reps' && <RepsTab reps={reps} disabled={!isInAgency} />}
+          {tab === 'reps' && (
+            <RepsTab
+              reps={reps}
+              isInAgency={isInAgency}
+              onAddRepClick={() => setShowAddRepModal(true)}
+            />
+          )}
           {tab === 'engagement' && <EngagementTab />}
           {tab === 'history' && <HistoryTab />}
           {tab === 'notes' && <NotesTab notes={agencyCarrier?.notes || ''} />}
         </div>
       </main>
+
+      {showAddRepModal && (
+        <AddRepModal
+          carrierId={carrierId}
+          carrierName={carrier.name}
+          onClose={() => setShowAddRepModal(false)}
+          onAdded={handleRepAdded}
+        />
+      )}
     </div>
   );
 }
@@ -332,7 +345,7 @@ function DetailTab({ active, onClick, label, count }: { active: boolean; onClick
   );
 }
 
-function RepsTab({ reps, disabled }: { reps: CarrierUser[]; disabled: boolean }) {
+function RepsTab({ reps, isInAgency, onAddRepClick }: { reps: CarrierUser[]; isInAgency: boolean; onAddRepClick: () => void }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
@@ -340,17 +353,18 @@ function RepsTab({ reps, disabled }: { reps: CarrierUser[]; disabled: boolean })
           Carrier reps your agency works with at this carrier.
         </div>
         <button
-          disabled
-          title={disabled ? 'Add this carrier to your agency first' : 'Coming in Push 3'}
+          onClick={onAddRepClick}
+          disabled={!isInAgency}
+          title={!isInAgency ? 'Add this carrier to your agency first' : 'Add a new rep'}
           style={{
-            background: '#cbd5db',
+            background: isInAgency ? '#7a9b76' : '#cbd5db',
             color: '#fff',
             border: 'none',
             padding: '0.5rem 1rem',
             borderRadius: 6,
             fontSize: '0.88rem',
             fontWeight: 500,
-            cursor: 'not-allowed',
+            cursor: isInAgency ? 'pointer' : 'not-allowed',
             fontFamily: 'inherit',
           }}
         >
@@ -530,6 +544,244 @@ function NotesTab({ notes }: { notes: string }) {
     </div>
   );
 }
+
+function AddRepModal({
+  carrierId,
+  carrierName,
+  onClose,
+  onAdded,
+}: {
+  carrierId: string;
+  carrierName: string;
+  onClose: () => void;
+  onAdded: (rep: CarrierUser) => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [title, setTitle] = useState('');
+  const [phone, setPhone] = useState('');
+  const [region, setRegion] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit() {
+    setError(null);
+
+    if (!email.trim()) {
+      setError('Email is required');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        setError('Session expired. Please log in again.');
+        return;
+      }
+
+      const res = await fetch(`/api/carriers/${carrierId}/reps`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          full_name: fullName.trim(),
+          title: title.trim(),
+          phone: phone.trim(),
+          region: region.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Failed to add rep');
+        return;
+      }
+
+      onAdded(data.rep);
+    } catch (e: any) {
+      setError(e.message || 'Network error');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(30, 58, 95, 0.4)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1000,
+      padding: '1rem',
+    }}>
+      <div style={{
+        background: '#fff',
+        borderRadius: 12,
+        maxWidth: 540,
+        width: '100%',
+        maxHeight: '90vh',
+        overflowY: 'auto',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+      }}>
+        <div style={{ padding: '1.5rem 1.75rem 1rem', borderBottom: '1px solid #e8e0d0' }}>
+          <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.4rem', color: '#1e3a5f', margin: 0 }}>
+            Add Carrier Rep
+          </h2>
+          <div style={{ fontSize: '0.85rem', color: '#7a8a9b', marginTop: '0.25rem' }}>
+            New rep at <strong style={{ color: '#3a4d68' }}>{carrierName}</strong>
+          </div>
+        </div>
+
+        <div style={{ padding: '1.25rem 1.75rem' }}>
+          <FormField label="Email" required>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="rep@carrier.com"
+              style={inputStyle}
+            />
+          </FormField>
+
+          <FormField label="Full name">
+            <input
+              type="text"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="Jane Smith"
+              style={inputStyle}
+            />
+          </FormField>
+
+          <FormField label="Title">
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Senior Account Executive"
+              style={inputStyle}
+            />
+          </FormField>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <FormField label="Phone">
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="(555) 123-4567"
+                style={inputStyle}
+              />
+            </FormField>
+
+            <FormField label="Region">
+              <input
+                type="text"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                placeholder="West, AZ/NV/UT"
+                style={inputStyle}
+              />
+            </FormField>
+          </div>
+
+          {error && (
+            <div style={{
+              background: '#fdecec',
+              border: '1px solid #f0baba',
+              color: '#9a3a3a',
+              padding: '0.65rem 0.85rem',
+              borderRadius: 6,
+              fontSize: '0.88rem',
+              marginTop: '0.5rem',
+            }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          padding: '1rem 1.75rem 1.25rem',
+          borderTop: '1px solid #e8e0d0',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: '0.75rem',
+        }}>
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            style={{
+              background: 'transparent',
+              border: '1px solid #cbd5db',
+              color: '#3a4d68',
+              padding: '0.55rem 1.1rem',
+              borderRadius: 6,
+              fontSize: '0.88rem',
+              fontWeight: 500,
+              cursor: submitting ? 'wait' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            style={{
+              background: '#7a9b76',
+              color: '#fff',
+              border: 'none',
+              padding: '0.55rem 1.25rem',
+              borderRadius: 6,
+              fontSize: '0.88rem',
+              fontWeight: 500,
+              cursor: submitting ? 'wait' : 'pointer',
+              opacity: submitting ? 0.6 : 1,
+              fontFamily: 'inherit',
+            }}
+          >
+            {submitting ? 'Adding...' : 'Add Rep'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FormField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: '1rem' }}>
+      <label style={{
+        display: 'block',
+        fontSize: '0.82rem',
+        fontWeight: 500,
+        color: '#3a4d68',
+        marginBottom: '0.35rem',
+      }}>
+        {label}{required && <span style={{ color: '#9a3a3a', marginLeft: '0.2rem' }}>*</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '0.55rem 0.75rem',
+  fontSize: '0.92rem',
+  color: '#1e3a5f',
+  background: '#fff',
+  border: '1px solid #cbd5db',
+  borderRadius: 6,
+  fontFamily: 'inherit',
+};
 
 const backLinkStyle: React.CSSProperties = {
   background: 'transparent',
