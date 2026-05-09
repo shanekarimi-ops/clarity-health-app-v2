@@ -469,7 +469,7 @@ function RepsTab({
                 <th style={detailThStyle}>Phone</th>
                 <th style={detailThStyle}>Region</th>
                 <th style={detailThStyle}>Status</th>
-                <th style={{ ...detailThStyle, width: 50 }}></th>
+                <th style={{ ...detailThStyle, width: 140, textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -487,11 +487,15 @@ function RepsTab({
                   <td style={detailTdStyle}>
                     <StatusPill status={rep.status} />
                   </td>
-                  <td style={{ ...detailTdStyle, textAlign: 'right' }}>
-                    <RowActionMenu
-                      onEdit={() => onEditRep(rep)}
-                      onDelete={() => onDeleteRep(rep)}
-                    />
+                  <td style={{ ...detailTdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => onEditRep(rep)} style={rowActionLinkStyle}>Edit</button>
+                    <span style={{ color: '#cbd5db', margin: '0 0.4rem' }}>·</span>
+                    <button
+                      onClick={() => onDeleteRep(rep)}
+                      style={{ ...rowActionLinkStyle, color: '#9a3a3a' }}
+                    >
+                      Remove
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -988,14 +992,25 @@ const btnSecondaryStyle: React.CSSProperties = {
 };
 
 const menuItemStyle: React.CSSProperties = {
-  display: 'block',
-  width: '100%',
-  textAlign: 'left',
-  background: 'transparent',
-  border: 'none',
-  padding: '0.6rem 0.9rem',
-  fontSize: '0.88rem',
-  color: '#3a4d68',
-  cursor: 'pointer',
-  fontFamily: 'inherit',
-};
+    display: 'block',
+    width: '100%',
+    textAlign: 'left',
+    background: 'transparent',
+    border: 'none',
+    padding: '0.6rem 0.9rem',
+    fontSize: '0.88rem',
+    color: '#3a4d68',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  };
+  
+  const rowActionLinkStyle: React.CSSProperties = {
+    background: 'transparent',
+    border: 'none',
+    color: '#7a9b76',
+    fontSize: '0.85rem',
+    fontWeight: 500,
+    cursor: 'pointer',
+    padding: 0,
+    fontFamily: 'inherit',
+  };
