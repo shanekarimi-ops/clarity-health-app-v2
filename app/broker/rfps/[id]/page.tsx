@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '../../../supabase';
-import Sidebar from '../../../components/Sidebar';
+import BrokerSidebar from '../../../components/BrokerSidebar';
+import { getAccountType } from '../../../lib/account';
 
 type Rfp = {
   id: string;
@@ -16,20 +17,55 @@ type Rfp = {
 };
 
 export default function RfpDetailPlaceholder() {
+  const router = useRouter();
   const params = useParams();
   const rfpId = params?.id as string | undefined;
 
+  const [bootLoading, setBootLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
+  const [agencyName, setAgencyName] = useState('Your Agency');
+
   const [rfp, setRfp] = useState<Rfp | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [rfpLoading, setRfpLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!rfpId) return;
+    bootstrap();
+  }, []);
+
+  useEffect(() => {
+    if (!rfpId || bootLoading) return;
     loadRfp();
-  }, [rfpId]);
+  }, [rfpId, bootLoading]);
+
+  async function bootstrap() {
+    setBootLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+    if (getAccountType(user) !== 'broker') {
+      router.push('/profile');
+      return;
+    }
+    setUser(user);
+
+    const { data: brokerData } = await supabase
+      .from('brokers')
+      .select('agency_id, agencies(name)')
+      .eq('user_id', user.id)
+      .single();
+
+    if (brokerData?.agencies) {
+      setAgencyName((brokerData.agencies as any).name || 'Your Agency');
+    }
+
+    setBootLoading(false);
+  }
 
   async function loadRfp() {
-    setLoading(true);
+    setRfpLoading(true);
     setError(null);
     const { data, error: err } = await supabase
       .from('rfps')
@@ -39,17 +75,29 @@ export default function RfpDetailPlaceholder() {
 
     if (err) {
       setError(err.message);
-      setLoading(false);
+      setRfpLoading(false);
       return;
     }
     setRfp(data);
-    setLoading(false);
+    setRfpLoading(false);
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push('/');
   }
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#faf7f2' }}>
-      <Sidebar />
-      <div style={{ flex: 1, padding: 40 }}>
+      <BrokerSidebar
+        active="rfps"
+        firstName={user?.user_metadata?.first_name || ''}
+        lastName={user?.user_metadata?.last_name || ''}
+        agencyName={agencyName}
+        onLogout={handleLogout}
+      />
+
+      <div style={{ flex: 1, padding: 40, fontFamily: 'Figtree, sans-serif' }}>
         <div style={{ maxWidth: 800 }}>
           <a
             href="/broker/rfps"
@@ -76,11 +124,11 @@ export default function RfpDetailPlaceholder() {
             {rfp?.name || 'RFP'}
           </h1>
 
-          {loading && (
+          {(bootLoading || rfpLoading) && (
             <div style={{ color: '#3a4d68', fontSize: 14 }}>Loading...</div>
           )}
 
-          {error && (
+          {!bootLoading && !rfpLoading && error && (
             <div
               style={{
                 marginTop: 24,
@@ -96,7 +144,7 @@ export default function RfpDetailPlaceholder() {
             </div>
           )}
 
-          {!loading && !error && !rfp && (
+          {!bootLoading && !rfpLoading && !error && !rfp && (
             <div
               style={{
                 marginTop: 24,
@@ -112,7 +160,7 @@ export default function RfpDetailPlaceholder() {
             </div>
           )}
 
-          {!loading && rfp && (
+          {!bootLoading && !rfpLoading && rfp && (
             <>
               <div
                 style={{
