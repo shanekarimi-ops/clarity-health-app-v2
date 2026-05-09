@@ -300,35 +300,35 @@ export default function RFPWizard({
     !!user?.id &&
     !saving;
 
-  if (loadingExisting) {
-    return (
-      <div style={{ maxWidth: 900 }}>
-        <div style={{ color: '#3a4d68', fontSize: 14 }}>Loading RFP...</div>
-      </div>
-    );
-  }
-
-  if (loadError) {
-    return (
-      <div style={{ maxWidth: 900 }}>
-        <div
-          style={{
-            padding: 14,
-            background: '#fde8e8',
-            border: '1px solid #f5b7b7',
-            borderRadius: 8,
-            color: '#9b2c2c',
-            fontSize: 14,
-          }}
-        >
-          <strong>Couldn't load this RFP:</strong> {loadError}
+    if (loadingExisting) {
+      return (
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          <div style={{ color: '#3a4d68', fontSize: 14 }}>Loading RFP...</div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
+
+    if (loadError) {
+      return (
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          <div
+            style={{
+              padding: 14,
+              background: '#fde8e8',
+              border: '1px solid #f5b7b7',
+              borderRadius: 8,
+              color: '#9b2c2c',
+              fontSize: 14,
+            }}
+          >
+            <strong>Couldn't load this RFP:</strong> {loadError}
+          </div>
+        </div>
+      );
+    }
 
   return (
-    <div style={{ maxWidth: 900 }}>
+    <div style={{ maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: 24 }}>
         <button
           onClick={onCancel}
@@ -1998,7 +1998,7 @@ function RxSection({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
+          gridTemplateColumns: 'repeat(4, 1fr)',
           gap: 10,
           marginBottom: 18,
         }}
@@ -2040,7 +2040,7 @@ function RxSection({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
+          gridTemplateColumns: 'repeat(4, 1fr)',
           gap: 10,
         }}
       >
