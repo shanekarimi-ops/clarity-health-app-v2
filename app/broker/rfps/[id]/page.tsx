@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 import { getAccountType } from '../../../lib/account';
-import { BENEFIT_LINES, BENEFIT_LINE_LABELS, BenefitLineValue } from '../../../lib/benefit-lines';
+import { BENEFIT_LINES, BENEFIT_LINE_LABELS, BenefitLineValue, filterValidBenefitLines } from '../../../lib/benefit-lines';
 
 type Rfp = {
   id: string;
@@ -29,6 +29,39 @@ type Rfp = {
   } | null;
 };
 
+type DistributionRow = {
+  id: string; // rfp_carriers.id
+  carrier_id: string;
+  assigned_carrier_user_id: string | null;
+  requested_benefits: string[];
+  status: string;
+  sent_at: string | null;
+  first_opened_at: string | null;
+  last_opened_at: string | null;
+  open_count: number;
+  downloaded_at: string | null;
+  declined_at: string | null;
+  decline_reason: string | null;
+  created_at: string;
+  carrier: {
+    id: string;
+    name: string;
+    brand_color: string | null;
+  };
+  carrier_user: {
+    id: string;
+    email: string;
+    full_name: string | null;
+    title: string | null;
+  } | null;
+};
+
+type PrefillCarrier = {
+  carrier_id: string;
+  carrier_user_id: string;
+  requested_benefits: BenefitLineValue[];
+};
+
 export default function RFPDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -46,7 +79,12 @@ export default function RFPDetailPage() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
 
+  const [distributions, setDistributions] = useState<DistributionRow[]>([]);
+  const [distributionsLoading, setDistributionsLoading] = useState(true);
+  const [distributionsError, setDistributionsError] = useState<string | null>(null);
+
   const [showSendModal, setShowSendModal] = useState(false);
+  const [prefillCarrier, setPrefillCarrier] = useState<PrefillCarrier | null>(null);
 
   useEffect(() => {
     bootstrap();
@@ -55,6 +93,7 @@ export default function RFPDetailPage() {
   useEffect(() => {
     if (!rfpId || bootLoading) return;
     loadRfp();
+    loadDistributions();
   }, [rfpId, bootLoading]);
 
   async function bootstrap() {
@@ -106,6 +145,43 @@ export default function RFPDetailPage() {
     }
   }
 
+  async function loadDistributions() {
+    if (!rfpId) return;
+    setDistributionsLoading(true);
+    setDistributionsError(null);
+    try {
+      const { data, error: distErr } = await supabase
+        .from('rfp_carriers')
+        .select(`
+          id,
+          carrier_id,
+          assigned_carrier_user_id,
+          requested_benefits,
+          status,
+          sent_at,
+          first_opened_at,
+          last_opened_at,
+          open_count,
+          downloaded_at,
+          declined_at,
+          decline_reason,
+          created_at,
+          carrier:carriers (id, name, brand_color),
+          carrier_user:carrier_users!rfp_carriers_assigned_carrier_user_id_fkey (id, email, full_name, title)
+        `)
+        .eq('rfp_id', rfpId)
+        .order('sent_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false });
+
+      if (distErr) throw distErr;
+      setDistributions((data || []) as unknown as DistributionRow[]);
+    } catch (e: any) {
+      setDistributionsError(e?.message || 'Failed to load distributions');
+    } finally {
+      setDistributionsLoading(false);
+    }
+  }
+
   async function handleDownloadSpd() {
     if (!rfp?.current_plan_doc_url) return;
     setDownloadLoading(true);
@@ -139,9 +215,22 @@ export default function RFPDetailPage() {
 
   function handleSendModalClose(refresh: boolean) {
     setShowSendModal(false);
+    setPrefillCarrier(null);
     if (refresh) {
       loadRfp();
+      loadDistributions();
     }
+  }
+
+  function handleResendClick(dist: DistributionRow) {
+    if (!dist.assigned_carrier_user_id) return;
+    const validBenefits = filterValidBenefitLines(dist.requested_benefits || []);
+    setPrefillCarrier({
+      carrier_id: dist.carrier_id,
+      carrier_user_id: dist.assigned_carrier_user_id,
+      requested_benefits: validBenefits,
+    });
+    setShowSendModal(true);
   }
 
   const planDesign = rfp?.current_plan_design || {};
@@ -411,7 +500,7 @@ export default function RFPDetailPage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setShowSendModal(true)}
+                    onClick={() => { setPrefillCarrier(null); setShowSendModal(true); }}
                     disabled={!canSend}
                     title={!canSend ? 'This RFP is closed and cannot be sent.' : 'Send to carriers'}
                     style={{
@@ -430,6 +519,15 @@ export default function RFPDetailPage() {
                     {isAlreadyDistributed ? 'Send to more carriers' : 'Send to carriers'}
                   </button>
                 </div>
+              </SectionCard>
+
+              <SectionCard title="Distribution">
+                <DistributionList
+                  loading={distributionsLoading}
+                  error={distributionsError}
+                  rows={distributions}
+                  onResend={handleResendClick}
+                />
               </SectionCard>
 
               <div
@@ -459,6 +557,7 @@ export default function RFPDetailPage() {
           rfpName={rfp.name}
           rfp={rfp}
           agencyId={agencyId}
+          prefillCarrier={prefillCarrier}
           onClose={handleSendModalClose}
         />
       )}
@@ -467,10 +566,224 @@ export default function RFPDetailPage() {
 }
 
 // =====================================================================
-// Send Carriers Modal — multi-step wizard
-// Step 1 = Pick carriers     ✅ Push 5
-// Step 2 = Reps + benefits   ✅ Push 6
-// Step 3 = Review + send     ✅ Push 7 (this push)
+// Distribution list — shows every rfp_carriers row with status + resend
+// =====================================================================
+function DistributionList({
+  loading,
+  error,
+  rows,
+  onResend,
+}: {
+  loading: boolean;
+  error: string | null;
+  rows: DistributionRow[];
+  onResend: (dist: DistributionRow) => void;
+}) {
+  if (loading) {
+    return <div style={{ color: '#3a4d68', fontSize: 13, padding: '0.5rem 0' }}>Loading...</div>;
+  }
+  if (error) {
+    return (
+      <div style={{
+        background: '#fdecec',
+        border: '1px solid #f0baba',
+        color: '#9a3a3a',
+        padding: '0.65rem 0.85rem',
+        borderRadius: 6,
+        fontSize: 13,
+      }}>
+        Couldn't load distribution: {error}
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div style={{
+        background: '#faf7f2',
+        border: '1px dashed #d4c8b0',
+        borderRadius: 8,
+        padding: '1.5rem',
+        textAlign: 'center',
+        color: '#3a4d68',
+        fontSize: 13,
+      }}>
+        No carriers yet. Send this RFP to start tracking responses here.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {rows.map((dist) => (
+        <DistributionRowCard key={dist.id} dist={dist} onResend={onResend} />
+      ))}
+    </div>
+  );
+}
+
+function DistributionRowCard({
+  dist,
+  onResend,
+}: {
+  dist: DistributionRow;
+  onResend: (dist: DistributionRow) => void;
+}) {
+  const carrierName = dist.carrier?.name || 'Unknown carrier';
+  const initials = carrierName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const brandColor = dist.carrier?.brand_color || '#1e3a5f';
+
+  const repName = dist.carrier_user?.full_name || dist.carrier_user?.email?.split('@')[0] || '—';
+  const repEmail = dist.carrier_user?.email || '—';
+
+  // Pick the most informative timestamp to show
+  const timeline = buildTimelineLabel(dist);
+
+  // Humanize the benefit array
+  const benefitLabels = (dist.requested_benefits || [])
+    .filter(v => v in BENEFIT_LINE_LABELS)
+    .map(v => BENEFIT_LINE_LABELS[v as BenefitLineValue])
+    .join(' · ');
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        padding: '12px 14px',
+        border: '1px solid #eef1f4',
+        borderRadius: 8,
+        background: '#fff',
+      }}
+    >
+      <div
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          background: brandColor,
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 12,
+          fontWeight: 700,
+          flexShrink: 0,
+        }}
+      >
+        {initials}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
+            {carrierName}
+          </span>
+          <CarrierStatusPill status={dist.status} />
+        </div>
+        <div style={{ fontSize: 12, color: '#3a4d68', marginTop: 2 }}>
+          <span style={{ fontWeight: 500 }}>{repName}</span>
+          {repEmail !== '—' && <span style={{ color: '#7a8a9b' }}> · {repEmail}</span>}
+        </div>
+        {benefitLabels && (
+          <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 2 }}>
+            {benefitLabels}
+          </div>
+        )}
+        {timeline && (
+          <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 4 }}>
+            {timeline}
+          </div>
+        )}
+      </div>
+
+      <div style={{ flexShrink: 0 }}>
+        <button
+          onClick={() => onResend(dist)}
+          disabled={!dist.assigned_carrier_user_id}
+          title={dist.assigned_carrier_user_id ? 'Send a fresh invite to this rep' : 'No rep assigned to resend'}
+          style={{
+            background: 'transparent',
+            border: '1px solid #cbd5db',
+            color: '#3a4d68',
+            padding: '6px 12px',
+            borderRadius: 6,
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: dist.assigned_carrier_user_id ? 'pointer' : 'not-allowed',
+            fontFamily: 'Figtree, sans-serif',
+            opacity: dist.assigned_carrier_user_id ? 1 : 0.5,
+          }}
+        >
+          Resend
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// rfp_carriers.status: pending | sent | opened | downloaded | in_progress | submitted | declined | won | lost
+function CarrierStatusPill({ status }: { status: string }) {
+  const map: Record<string, { bg: string; fg: string; label: string }> = {
+    pending: { bg: '#f5f5f5', fg: '#666', label: 'Pending' },
+    sent: { bg: '#eef2f7', fg: '#1e3a5f', label: 'Sent' },
+    opened: { bg: '#fef9ec', fg: '#7a5e1a', label: 'Opened' },
+    downloaded: { bg: '#fef9ec', fg: '#7a5e1a', label: 'Downloaded' },
+    in_progress: { bg: '#fef9ec', fg: '#7a5e1a', label: 'In Progress' },
+    submitted: { bg: '#e8f0e6', fg: '#5a7a56', label: 'Quoted' },
+    declined: { bg: '#fdecec', fg: '#9a3a3a', label: 'Declined' },
+    won: { bg: '#dff0d8', fg: '#3c763d', label: 'Won' },
+    lost: { bg: '#f2dede', fg: '#a94442', label: 'Lost' },
+  };
+  const c = map[status] || { bg: '#f5f5f5', fg: '#666', label: status };
+  return (
+    <span
+      style={{
+        background: c.bg,
+        color: c.fg,
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '2px 8px',
+        borderRadius: 4,
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+      }}
+    >
+      {c.label}
+    </span>
+  );
+}
+
+// Build a single line summarizing the most recent meaningful event for a row
+function buildTimelineLabel(dist: DistributionRow): string {
+  if (dist.declined_at) return `Declined ${formatRelative(dist.declined_at)}${dist.decline_reason ? ` — ${dist.decline_reason}` : ''}`;
+  if (dist.downloaded_at) return `Downloaded SPD ${formatRelative(dist.downloaded_at)}`;
+  if (dist.last_opened_at) {
+    const opens = dist.open_count || 1;
+    return `Opened ${formatRelative(dist.last_opened_at)}${opens > 1 ? ` · ${opens} opens` : ''}`;
+  }
+  if (dist.sent_at) return `Sent ${formatRelative(dist.sent_at)}`;
+  return '';
+}
+
+function formatRelative(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
+
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin} min${diffMin === 1 ? '' : 's'} ago`;
+  if (diffHour < 24) return `${diffHour} hr${diffHour === 1 ? '' : 's'} ago`;
+  if (diffDay < 7) return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: now.getFullYear() === d.getFullYear() ? undefined : 'numeric' });
+}
+
+// =====================================================================
+// Send Carriers Modal — multi-step wizard (Pushes 5-7)
+// Push 8: prefillCarrier prop pre-loads state to a single carrier+rep
 // =====================================================================
 
 type AgencyCarrierRow = {
@@ -533,31 +846,41 @@ function SendCarriersModal({
   rfpName,
   rfp,
   agencyId,
+  prefillCarrier,
   onClose,
 }: {
   rfpId: string;
   rfpName: string;
   rfp: Rfp;
   agencyId: string;
+  prefillCarrier: PrefillCarrier | null;
   onClose: (refresh: boolean) => void;
 }) {
-  const [step, setStep] = useState<WizardStep>(1);
+  // If prefillCarrier is set, jump straight to step 3 (review) — broker just wants to resend
+  const [step, setStep] = useState<WizardStep>(prefillCarrier ? 3 : 1);
 
-  // Step 1 state
   const [agencyCarriers, setAgencyCarriers] = useState<AgencyCarrierRow[]>([]);
   const [loadingCarriers, setLoadingCarriers] = useState(true);
   const [carriersError, setCarriersError] = useState<string | null>(null);
-  const [selectedCarrierIds, setSelectedCarrierIds] = useState<Set<string>>(new Set());
+  const [selectedCarrierIds, setSelectedCarrierIds] = useState<Set<string>>(
+    prefillCarrier ? new Set([prefillCarrier.carrier_id]) : new Set()
+  );
   const [showZeroRep, setShowZeroRep] = useState(false);
 
-  // Step 2 state
   const [reps, setReps] = useState<CarrierUserRow[]>([]);
   const [loadingReps, setLoadingReps] = useState(false);
   const [repsError, setRepsError] = useState<string | null>(null);
-  const [selectedRepsByCarrier, setSelectedRepsByCarrier] = useState<Map<string, Set<string>>>(new Map());
-  const [selectedBenefitsByCarrier, setSelectedBenefitsByCarrier] = useState<Map<string, Set<BenefitLineValue>>>(new Map());
+  const [selectedRepsByCarrier, setSelectedRepsByCarrier] = useState<Map<string, Set<string>>>(
+    prefillCarrier
+      ? new Map([[prefillCarrier.carrier_id, new Set([prefillCarrier.carrier_user_id])]])
+      : new Map()
+  );
+  const [selectedBenefitsByCarrier, setSelectedBenefitsByCarrier] = useState<Map<string, Set<BenefitLineValue>>>(
+    prefillCarrier
+      ? new Map([[prefillCarrier.carrier_id, new Set(prefillCarrier.requested_benefits)]])
+      : new Map()
+  );
 
-  // Step 3 / send state
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<SendApiResult | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -567,6 +890,15 @@ function SendCarriersModal({
   useEffect(() => {
     loadAgencyCarriers();
   }, [agencyId]);
+
+  // If we got here from a Resend click, also load the reps for the prefilled carrier
+  // so step 3 review can render the rep name properly
+  useEffect(() => {
+    if (prefillCarrier) {
+      loadRepsForSelectedCarriers();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function loadAgencyCarriers() {
     if (!agencyId) return;
@@ -736,7 +1068,6 @@ function SendCarriersModal({
   }
   const canProceedFromStep2 = step2Issues.length === 0 && selectedCarrierIds.size > 0;
 
-  // Compute the email count for the Send button label
   const totalEmailCount = Array.from(selectedRepsByCarrier.values()).reduce((s, set) => s + set.size, 0);
 
   function handleNext() {
@@ -767,7 +1098,6 @@ function SendCarriersModal({
         return;
       }
 
-      // Build the recipients payload from state
       const recipients = Array.from(selectedCarrierIds).map(cid => {
         const repIds = Array.from(selectedRepsByCarrier.get(cid) || []);
         const benefits = Array.from(selectedBenefitsByCarrier.get(cid) || []);
@@ -803,18 +1133,16 @@ function SendCarriersModal({
     }
   }
 
-  // If we have a send result, render the final-state screen instead of the wizard
   const showResultScreen = !!sendResult || !!sendError;
 
   return (
     <div style={modalOverlayStyle}>
       <div style={modalCardStyle}>
-        {/* Header */}
         <div style={{ padding: '1.5rem 1.75rem 1rem', borderBottom: '1px solid #e8e0d0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
             <div>
               <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.4rem', color: '#1e3a5f', margin: 0 }}>
-                Send to carriers
+                {prefillCarrier && !showResultScreen ? 'Resend invite' : 'Send to carriers'}
               </h2>
               <div style={{ fontSize: '0.85rem', color: '#7a8a9b', marginTop: '0.25rem' }}>
                 Distributing <strong style={{ color: '#3a4d68' }}>{rfpName}</strong>
@@ -839,7 +1167,7 @@ function SendCarriersModal({
             )}
           </div>
 
-          {!showResultScreen && (
+          {!showResultScreen && !prefillCarrier && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18 }}>
               <Stepper num={1} label="Pick carriers" current={step} />
               <StepperLine done={step > 1} />
@@ -850,7 +1178,6 @@ function SendCarriersModal({
           )}
         </div>
 
-        {/* Body */}
         <div style={{ padding: '1.25rem 1.75rem', minHeight: 360 }}>
           {showResultScreen ? (
             <SendResultScreen
@@ -894,13 +1221,13 @@ function SendCarriersModal({
                   selectedRepsByCarrier={selectedRepsByCarrier}
                   selectedBenefitsByCarrier={selectedBenefitsByCarrier}
                   totalEmailCount={totalEmailCount}
+                  isResend={!!prefillCarrier}
                 />
               )}
             </>
           )}
         </div>
 
-        {/* Footer */}
         <div
           style={{
             padding: '1rem 1.75rem 1.25rem',
@@ -937,7 +1264,7 @@ function SendCarriersModal({
                   <>Ready to review</>
                 )}
                 {step === 3 && (
-                  <>Final review — click Send when ready.</>
+                  <>{prefillCarrier ? 'Resending invite — click Send to refresh and re-email.' : 'Final review — click Send when ready.'}</>
                 )}
               </div>
               <div style={{ display: 'flex', gap: '0.6rem' }}>
@@ -946,9 +1273,14 @@ function SendCarriersModal({
                     Cancel
                   </button>
                 )}
-                {step > 1 && !sending && (
+                {step > 1 && !prefillCarrier && !sending && (
                   <button onClick={handleBack} style={btnSecondaryStyle}>
                     ← Back
+                  </button>
+                )}
+                {prefillCarrier && step === 3 && !sending && (
+                  <button onClick={() => onClose(false)} style={btnSecondaryStyle}>
+                    Cancel
                   </button>
                 )}
                 <button
@@ -1034,9 +1366,6 @@ function StepperLine({ done }: { done: boolean }) {
   );
 }
 
-// =====================================================================
-// Step 1 — Pick carriers
-// =====================================================================
 function Step1PickCarriers({
   loading,
   error,
@@ -1200,9 +1529,6 @@ function Step1PickCarriers({
   );
 }
 
-// =====================================================================
-// Step 2 — Reps + benefit lines
-// =====================================================================
 function Step2RepsBenefits({
   loading,
   error,
@@ -1441,9 +1767,6 @@ function RepStatusPill({ status }: { status: string }) {
   );
 }
 
-// =====================================================================
-// Step 3 — Review + send
-// =====================================================================
 function Step3ReviewSend({
   selectedCarrierIds,
   agencyCarriers,
@@ -1451,6 +1774,7 @@ function Step3ReviewSend({
   selectedRepsByCarrier,
   selectedBenefitsByCarrier,
   totalEmailCount,
+  isResend,
 }: {
   selectedCarrierIds: Set<string>;
   agencyCarriers: AgencyCarrierRow[];
@@ -1458,6 +1782,7 @@ function Step3ReviewSend({
   selectedRepsByCarrier: Map<string, Set<string>>;
   selectedBenefitsByCarrier: Map<string, Set<BenefitLineValue>>;
   totalEmailCount: number;
+  isResend: boolean;
 }) {
   const orderedCarrierIds = Array.from(selectedCarrierIds);
   const carriersById = new Map(agencyCarriers.map(ac => [ac.carrier_id, ac]));
@@ -1478,14 +1803,23 @@ function Step3ReviewSend({
           color: '#3a4d68',
         }}
       >
-        You're about to send <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> email{totalEmailCount === 1 ? '' : 's'}{' '}
-        to{' '}
-        <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> rep{totalEmailCount === 1 ? '' : 's'}{' '}
-        across{' '}
-        <strong style={{ color: '#1e3a5f' }}>{carrierCount}</strong> carrier{carrierCount === 1 ? '' : 's'}.
-        <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 4 }}>
-          Click ← Back to make changes.
-        </div>
+        {isResend ? (
+          <>
+            You're resending the invite to <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> rep{totalEmailCount === 1 ? '' : 's'}.
+            <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 4 }}>
+              The previous invite link will be replaced. The rep gets a fresh email with a new link.
+            </div>
+          </>
+        ) : (
+          <>
+            You're about to send <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> email{totalEmailCount === 1 ? '' : 's'}{' '}
+            to <strong style={{ color: '#1e3a5f' }}>{totalEmailCount}</strong> rep{totalEmailCount === 1 ? '' : 's'}{' '}
+            across <strong style={{ color: '#1e3a5f' }}>{carrierCount}</strong> carrier{carrierCount === 1 ? '' : 's'}.
+            <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 4 }}>
+              Click ← Back to make changes.
+            </div>
+          </>
+        )}
       </div>
 
       {orderedCarrierIds.map((cid) => {
@@ -1546,7 +1880,11 @@ function Step3ReviewSend({
                 <div style={{ marginTop: 4, paddingLeft: 8 }}>
                   {repIds.map((rid, idx) => {
                     const rep = repsById.get(rid);
-                    if (!rep) return null;
+                    if (!rep) return (
+                      <div key={rid} style={{ marginBottom: idx < repIds.length - 1 ? 4 : 0, color: '#7a8a9b' }}>
+                        • Rep details loading...
+                      </div>
+                    );
                     const repLabel = rep.full_name || rep.email.split('@')[0];
                     return (
                       <div key={rid} style={{ marginBottom: idx < repIds.length - 1 ? 4 : 0 }}>
@@ -1572,9 +1910,6 @@ function Step3ReviewSend({
   );
 }
 
-// =====================================================================
-// Send result screen — shown after API call returns
-// =====================================================================
 function SendResultScreen({
   result,
   error,
@@ -1584,7 +1919,6 @@ function SendResultScreen({
   error: string | null;
   agencyCarriers: AgencyCarrierRow[];
 }) {
-  // Total failure
   if (error || !result) {
     return (
       <div
@@ -1616,7 +1950,6 @@ function SendResultScreen({
   const isAllFailed = failed > 0 && totalSucceeded === 0;
   const isAllSuccess = failed === 0 && totalSucceeded > 0;
 
-  // Group results by carrier for display
   const carriersById = new Map(agencyCarriers.map(ac => [ac.carrier_id, ac]));
   const byCarrier = new Map<string, SendApiResultRow[]>();
   for (const r of results) {
@@ -1644,7 +1977,6 @@ function SendResultScreen({
     title = `All ${failed} send${failed === 1 ? '' : 's'} failed`;
     summaryColor = '#9a3a3a';
   } else {
-    // partial
     bgColor = '#fef9ec';
     borderColor = '#f0d68a';
     icon = '⚠️';
@@ -1675,7 +2007,6 @@ function SendResultScreen({
         </p>
       </div>
 
-      {/* Per-carrier results */}
       {Array.from(byCarrier.entries()).map(([cid, rows]) => {
         const ac = carriersById.get(cid);
         const carrierName = ac?.carrier.name || 'Unknown carrier';
@@ -1784,9 +2115,6 @@ function ResultStatusPill({ status }: { status: 'sent' | 'resent' | 'failed' }) 
   );
 }
 
-// =====================================================================
-// StatusBadge — covers full DB vocabulary
-// =====================================================================
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { bg: string; fg: string; label: string }> = {
     draft: { bg: '#f5f5f5', fg: '#666', label: 'Draft' },
