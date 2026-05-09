@@ -7,20 +7,14 @@ import { filterValidBenefitLines, BENEFIT_LINE_LABELS, BenefitLineValue } from '
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-// Token lifetime: 14 days (matches the constant in the API contract)
+// Token lifetime: 14 days
 const INVITE_TOKEN_EXPIRY_DAYS = 14;
 
-// Request body shape:
-// {
-//   recipients: [
-//     {
-//       carrier_id: uuid,
-//       carrier_user_ids: [uuid, ...],   // multi-rep: one rfp_carriers row per rep
-//       requested_benefits: ['medical', 'dental', ...]
-//     },
-//     ...
-//   ]
-// }
+// Status vocabulary (from DB CHECK constraints — see S34 handoff for full list):
+//   rfps.status:           draft | distributed | collecting_quotes | comparing | won | lost | cancelled
+//   rfp_carriers.status:   pending | sent | opened | downloaded | in_progress | submitted | declined | won | lost
+//   rfp_engagement_log.event_type: rfp_sent | rfp_opened | rfp_downloaded | reminder_sent | proposal_uploaded | declined | reassigned | won_notification_sent | lost_notification_sent
+
 type SendRequestBody = {
   recipients: {
     carrier_id: string;
@@ -29,7 +23,6 @@ type SendRequestBody = {
   }[];
 };
 
-// Each rfp_carriers row that was either created or updated (resend case)
 type SendResultRow = {
   rfp_carrier_id: string;
   carrier_id: string;
@@ -67,7 +60,6 @@ export async function POST(
     }
     const userId = userData.user.id;
 
-    // Service-role client for the actual writes (RLS would also gate but explicit is safer)
     const admin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
@@ -99,7 +91,6 @@ export async function POST(
       return NextResponse.json({ error: 'RFP does not belong to your agency' }, { status: 403 });
     }
 
-    // Build a friendly client label for the email body
     const clientObj = (rfpRow.clients as any) || {};
     const clientLabel =
       clientObj.employer_name ||
@@ -114,7 +105,6 @@ export async function POST(
       return NextResponse.json({ error: 'recipients array required' }, { status: 400 });
     }
 
-    // Flatten + validate every (carrier_id, carrier_user_id) pair
     type FlatRecipient = {
       carrier_id: string;
       carrier_user_id: string;
@@ -333,8 +323,6 @@ export async function POST(
           text: textBody,
         });
       } catch (emailErr: any) {
-        // Email failed — but the rfp_carriers row exists. Log and continue.
-        // The broker can resend later; we don't roll back the row.
         results.push({
           rfp_carrier_id: rfpCarrierId,
           carrier_id: f.carrier_id,
@@ -346,15 +334,18 @@ export async function POST(
         continue;
       }
 
-      // 7d. Log the send to rfp_engagement_log
-      await admin.from('rfp_engagement_log').insert({
+      // 7d. Log the send to rfp_engagement_log (event_type 'rfp_sent' per CHECK constraint)
+      const { error: logErr } = await admin.from('rfp_engagement_log').insert({
         rfp_id: rfpId,
         rfp_carrier_id: rfpCarrierId,
         carrier_user_id: f.carrier_user_id,
-        event_type: 'sent',
+        event_type: 'rfp_sent',
         metadata: { is_resend: isResend, requested_benefits: f.requested_benefits },
       });
-      // (Engagement log failures are non-fatal — we don't surface them.)
+      if (logErr) {
+        // Non-fatal but we surface it now that we've been bitten once
+        console.error('rfp_engagement_log insert failed:', logErr);
+      }
 
       results.push({
         rfp_carrier_id: rfpCarrierId,
@@ -365,10 +356,17 @@ export async function POST(
       });
     }
 
-    // ===== Step 8: Bump rfp.status to 'sent' if any send succeeded and it's still 'draft' =====
+    // ===== Step 8: Bump rfp.status to 'distributed' if any send succeeded and it's still 'draft' =====
+    // Status vocabulary per CHECK constraint: draft | distributed | collecting_quotes | comparing | won | lost | cancelled
     const anySucceeded = results.some(r => r.status === 'sent' || r.status === 'resent');
     if (anySucceeded && rfpRow.status === 'draft') {
-      await admin.from('rfps').update({ status: 'sent' }).eq('id', rfpId);
+      const { error: statusErr } = await admin
+        .from('rfps')
+        .update({ status: 'distributed' })
+        .eq('id', rfpId);
+      if (statusErr) {
+        console.error('rfps status update failed:', statusErr);
+      }
     }
 
     // ===== Step 9: Return summary =====
@@ -475,7 +473,6 @@ Sent via Clarity Health.
   `.trim();
 }
 
-// Minimal HTML escaping for email bodies
 function escapeHtml(s: string | null | undefined): string {
   if (s == null) return '';
   return String(s)
