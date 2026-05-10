@@ -21,6 +21,8 @@ type RfpDetail = {
   rc_status: string;
   requested_benefits: string[];
   sent_at: string | null;
+  declined_at: string | null;
+  decline_reason: string | null;
   rfp_id: string;
   rfp_name: string;
   rfp_type: string | null;
@@ -35,6 +37,14 @@ type RfpDetail = {
   client_state: string | null;
   agency_name: string;
 };
+
+const DECLINE_REASONS = [
+  { code: 'group_too_small', label: 'Group too small' },
+  { code: 'industry_not_appetite', label: 'Industry not in appetite' },
+  { code: 'timeline_too_short', label: 'Timeline too short' },
+  { code: 'state_not_supported', label: 'State not supported' },
+  { code: 'other', label: 'Other' },
+];
 
 export default function CarrierRfpDetailPage() {
   return (
@@ -54,72 +64,78 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
   const [detail, setDetail] = useState<RfpDetail | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string>('');
+  const [showDeclineModal, setShowDeclineModal] = useState(false);
+
+  const loadDetail = async () => {
+    setLoading(true);
+    const { data, error: queryError } = await supabase
+      .from('rfp_carriers')
+      .select(`
+        id,
+        status,
+        requested_benefits,
+        sent_at,
+        declined_at,
+        decline_reason,
+        rfps:rfp_id (
+          id,
+          name,
+          rfp_type,
+          effective_date,
+          proposal_due_date,
+          employee_lives,
+          est_premium_volume,
+          current_plan_doc_url,
+          renewal_plan_doc_url,
+          current_plan_design,
+          agencies:agency_id ( name ),
+          clients:client_id ( employer_name, state )
+        )
+      `)
+      .eq('assigned_carrier_user_id', carrierUserId)
+      .eq('rfp_id', rfpId)
+      .maybeSingle();
+
+    if (queryError) {
+      console.error('[RfpDetailInner] query error:', queryError);
+      setError('Could not load this RFP. Please try again or go back to your inbox.');
+      setLoading(false);
+      return;
+    }
+
+    if (!data || !data.rfps) {
+      setError('RFP not found, or you no longer have access to it.');
+      setLoading(false);
+      return;
+    }
+
+    const rfp: any = data.rfps;
+    setDetail({
+      rfp_carrier_id: data.id,
+      rc_status: data.status,
+      requested_benefits: data.requested_benefits ?? [],
+      sent_at: data.sent_at,
+      declined_at: data.declined_at,
+      decline_reason: data.decline_reason,
+      rfp_id: rfp.id,
+      rfp_name: rfp.name,
+      rfp_type: rfp.rfp_type,
+      effective_date: rfp.effective_date,
+      proposal_due_date: rfp.proposal_due_date,
+      employee_lives: rfp.employee_lives,
+      est_premium_volume: rfp.est_premium_volume,
+      current_plan_doc_url: rfp.current_plan_doc_url,
+      renewal_plan_doc_url: rfp.renewal_plan_doc_url,
+      current_plan_design: rfp.current_plan_design,
+      client_name: rfp.clients?.employer_name ?? null,
+      client_state: rfp.clients?.state ?? null,
+      agency_name: rfp.agencies?.name ?? 'Unknown agency',
+    });
+    setLoading(false);
+  };
 
   useEffect(() => {
     if (!rfpId) return;
-    const loadDetail = async () => {
-      setLoading(true);
-      const { data, error: queryError } = await supabase
-        .from('rfp_carriers')
-        .select(`
-          id,
-          status,
-          requested_benefits,
-          sent_at,
-          rfps:rfp_id (
-            id,
-            name,
-            rfp_type,
-            effective_date,
-            proposal_due_date,
-            employee_lives,
-            est_premium_volume,
-            current_plan_doc_url,
-            renewal_plan_doc_url,
-            current_plan_design,
-            agencies:agency_id ( name ),
-            clients:client_id ( employer_name, state )
-          )
-        `)
-        .eq('assigned_carrier_user_id', carrierUserId)
-        .eq('rfp_id', rfpId)
-        .maybeSingle();
-
-      if (queryError) {
-        console.error('[RfpDetailInner] query error:', queryError);
-        setError('Could not load this RFP. Please try again or go back to your inbox.');
-        setLoading(false);
-        return;
-      }
-
-      if (!data || !data.rfps) {
-        setError('RFP not found, or you no longer have access to it.');
-        setLoading(false);
-        return;
-      }
-
-      const rfp: any = data.rfps;
-      setDetail({
-        rfp_carrier_id: data.id,
-        rc_status: data.status,
-        requested_benefits: data.requested_benefits ?? [],
-        sent_at: data.sent_at,
-        rfp_id: rfp.id,
-        rfp_name: rfp.name,
-        rfp_type: rfp.rfp_type,
-        effective_date: rfp.effective_date,
-        proposal_due_date: rfp.proposal_due_date,
-        employee_lives: rfp.employee_lives,
-        est_premium_volume: rfp.est_premium_volume,
-        current_plan_doc_url: rfp.current_plan_doc_url,
-        renewal_plan_doc_url: rfp.renewal_plan_doc_url,
-        current_plan_design: rfp.current_plan_design,
-        client_name: rfp.clients?.employer_name ?? null,
-        client_state: rfp.clients?.state ?? null,
-        agency_name: rfp.agencies?.name ?? 'Unknown agency',
-      });
-      setLoading(false);
-    };
     loadDetail();
   }, [rfpId, carrierUserId]);
 
@@ -133,7 +149,6 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         setDownloading(false);
         return;
       }
-
       const res = await fetch(`/api/carrier/rfps/${rfpId}/download-spd`, {
         method: 'POST',
         headers: {
@@ -157,6 +172,11 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
     }
   };
 
+  const handleDeclineSuccess = async () => {
+    setShowDeclineModal(false);
+    await loadDetail();
+  };
+
   if (loading) {
     return <div style={containerStyle}><div style={loadingStyle}>Loading RFP details…</div></div>;
   }
@@ -172,6 +192,10 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
 
   const planDesign = parsePlanDesign(detail.current_plan_design);
   const tabs = tabsForRequestedBenefits(detail.requested_benefits);
+
+  const isDeclined = detail.rc_status === 'declined';
+  const isLockedFromDecline = ['submitted', 'won', 'lost'].includes(detail.rc_status);
+  const canDecline = !isDeclined && !isLockedFromDecline;
 
   return (
     <div style={containerStyle}>
@@ -211,6 +235,21 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         </div>
       </div>
 
+      {/* Decline notice if already declined */}
+      {isDeclined && detail.declined_at && (
+        <div style={declinedNoticeStyle}>
+          <div style={declinedNoticeHeaderStyle}>
+            <span style={{ fontSize: '20px' }}>🚫</span>
+            <strong>You declined this RFP on {formatDate(detail.declined_at)}.</strong>
+          </div>
+          {detail.decline_reason && (
+            <div style={declinedReasonStyle}>
+              <strong>Reason:</strong> {detail.decline_reason}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Plan Documents */}
       <div style={sectionCardStyle}>
         <h2 style={sectionTitleStyle}>Plan Documents</h2>
@@ -219,22 +258,14 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         </p>
         <div style={docsRowStyle}>
           {detail.current_plan_doc_url ? (
-            <button
-              onClick={() => handleDownload('current')}
-              disabled={downloading}
-              style={downloadButtonStyle}
-            >
+            <button onClick={() => handleDownload('current')} disabled={downloading} style={downloadButtonStyle}>
               📄 {downloading ? 'Preparing download…' : 'Download Current Plan Document'}
             </button>
           ) : (
             <div style={noDocStyle}>No current plan document provided</div>
           )}
           {detail.renewal_plan_doc_url && (
-            <button
-              onClick={() => handleDownload('renewal')}
-              disabled={downloading}
-              style={downloadButtonStyle}
-            >
+            <button onClick={() => handleDownload('renewal')} disabled={downloading} style={downloadButtonStyle}>
               📄 {downloading ? 'Preparing download…' : 'Download Renewal Plan Document'}
             </button>
           )}
@@ -249,13 +280,141 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         <PlanDesignTabbed tabs={tabs} planDesign={planDesign} />
       )}
 
-      {/* Footer / actions placeholder */}
-      <div style={footerNoteStyle}>
-        Quote upload and decline-to-quote actions are coming in the next update.
+      {/* Footer with Decline button */}
+      <div style={footerCardStyle}>
+        <div style={footerNoteStyle}>
+          Quote upload is coming in a future update.
+        </div>
+        {canDecline && (
+          <button onClick={() => setShowDeclineModal(true)} style={declineButtonStyle}>
+            Decline to quote
+          </button>
+        )}
+      </div>
+
+      {/* Decline Modal */}
+      {showDeclineModal && (
+        <DeclineModal
+          rfpId={rfpId}
+          rfpName={detail.rfp_name}
+          clientName={detail.client_name || 'this employer'}
+          onClose={() => setShowDeclineModal(false)}
+          onSuccess={handleDeclineSuccess}
+        />
+      )}
+    </div>
+  );
+}
+
+// === DECLINE MODAL ===
+
+function DeclineModal({
+  rfpId,
+  rfpName,
+  clientName,
+  onClose,
+  onSuccess,
+}: {
+  rfpId: string;
+  rfpName: string;
+  clientName: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [reasonCode, setReasonCode] = useState<string>('');
+  const [reasonNote, setReasonNote] = useState<string>('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string>('');
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setSubmitError('Your session has expired. Please log in again.');
+        setSubmitting(false);
+        return;
+      }
+
+      const res = await fetch(`/api/carrier/rfps/${rfpId}/decline`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          reason_code: reasonCode || null,
+          reason_note: reasonNote || null,
+        }),
+      });
+
+      const body = await res.json();
+      if (!res.ok) {
+        setSubmitError(body.error || 'Could not submit decline.');
+        setSubmitting(false);
+        return;
+      }
+
+      onSuccess();
+    } catch (err) {
+      console.error('[DeclineModal] error:', err);
+      setSubmitError('Network error. Please try again.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={modalBackdropStyle} onClick={onClose}>
+      <div style={modalContentStyle} onClick={(e) => e.stopPropagation()}>
+        <h2 style={modalTitleStyle}>Decline to quote</h2>
+        <p style={modalSubtitleStyle}>
+          You&apos;re declining the <strong>{rfpName}</strong> RFP for {clientName}. The broker will be notified.
+        </p>
+
+        <label style={fieldLabelStyle}>Reason (optional)</label>
+        <select
+          value={reasonCode}
+          onChange={(e) => setReasonCode(e.target.value)}
+          style={selectStyle}
+          disabled={submitting}
+        >
+          <option value="">— Select a reason —</option>
+          {DECLINE_REASONS.map((r) => (
+            <option key={r.code} value={r.code}>{r.label}</option>
+          ))}
+        </select>
+
+        <label style={fieldLabelStyle}>Additional notes (optional)</label>
+        <textarea
+          value={reasonNote}
+          onChange={(e) => setReasonNote(e.target.value)}
+          placeholder="Anything else you'd like to share with the broker..."
+          rows={3}
+          maxLength={500}
+          style={textareaStyle}
+          disabled={submitting}
+        />
+        <div style={charCountStyle}>{reasonNote.length}/500</div>
+
+        {submitError && (
+          <div style={submitErrorStyle}>{submitError}</div>
+        )}
+
+        <div style={modalButtonsStyle}>
+          <button onClick={onClose} disabled={submitting} style={cancelButtonStyle}>
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={submitting} style={confirmDeclineStyle}>
+            {submitting ? 'Submitting…' : 'Confirm decline'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+// === PLAN DESIGN TABS (unchanged from Push 4) ===
 
 function PlanDesignTabbed({
   tabs,
@@ -570,4 +729,25 @@ const kvRowStyle: React.CSSProperties = { display: 'flex', justifyContent: 'spac
 const kvLabelStyle: React.CSSProperties = { color: '#5a6c7d' };
 const kvValueStyle: React.CSSProperties = { color: '#1e3a5f', fontWeight: 500 };
 const emptyTabStyle: React.CSSProperties = { textAlign: 'center', padding: '32px 16px', backgroundColor: '#faf7f2', borderRadius: '8px' };
-const footerNoteStyle: React.CSSProperties = { textAlign: 'center', padding: '20px', color: '#8a98a8', fontSize: '13px', fontStyle: 'italic' };
+
+const declinedNoticeStyle: React.CSSProperties = { backgroundColor: '#fee2e2', borderRadius: '12px', padding: '20px 24px', marginBottom: '20px', border: '1px solid #fecaca' };
+const declinedNoticeHeaderStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '10px', color: '#991b1b', fontSize: '15px', marginBottom: '6px' };
+const declinedReasonStyle: React.CSSProperties = { color: '#7f1d1d', fontSize: '14px', marginLeft: '30px', lineHeight: 1.5 };
+
+const footerCardStyle: React.CSSProperties = { backgroundColor: '#ffffff', borderRadius: '12px', padding: '20px 28px', marginBottom: '40px', boxShadow: '0 2px 8px rgba(30,58,95,0.06)', border: '1px solid #f0ebe0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' };
+const footerNoteStyle: React.CSSProperties = { color: '#8a98a8', fontSize: '13px', fontStyle: 'italic' };
+const declineButtonStyle: React.CSSProperties = { padding: '10px 18px', background: 'transparent', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '14px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
+
+// === MODAL STYLES ===
+const modalBackdropStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(30, 58, 95, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', zIndex: 1000 };
+const modalContentStyle: React.CSSProperties = { backgroundColor: '#ffffff', borderRadius: '16px', padding: '32px', maxWidth: '520px', width: '100%', boxShadow: '0 12px 48px rgba(30, 58, 95, 0.25)' };
+const modalTitleStyle: React.CSSProperties = { fontFamily: '"Playfair Display", Georgia, serif', fontSize: '22px', fontWeight: 600, color: '#1e3a5f', margin: '0 0 8px 0' };
+const modalSubtitleStyle: React.CSSProperties = { fontSize: '14px', color: '#5a6c7d', margin: '0 0 20px 0', lineHeight: 1.5 };
+const fieldLabelStyle: React.CSSProperties = { display: 'block', fontSize: '13px', fontWeight: 600, color: '#1e3a5f', marginTop: '12px', marginBottom: '6px' };
+const selectStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', fontSize: '14px', borderRadius: '8px', border: '1px solid #e8e2d4', backgroundColor: '#ffffff', color: '#1e3a5f', fontFamily: 'inherit', cursor: 'pointer' };
+const textareaStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', fontSize: '14px', borderRadius: '8px', border: '1px solid #e8e2d4', backgroundColor: '#ffffff', color: '#1e3a5f', fontFamily: 'inherit', resize: 'vertical', minHeight: '70px', boxSizing: 'border-box' };
+const charCountStyle: React.CSSProperties = { fontSize: '11px', color: '#8a98a8', textAlign: 'right', marginTop: '4px' };
+const submitErrorStyle: React.CSSProperties = { marginTop: '12px', padding: '10px 12px', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '6px', fontSize: '13px' };
+const modalButtonsStyle: React.CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '24px' };
+const cancelButtonStyle: React.CSSProperties = { padding: '10px 18px', background: 'transparent', color: '#5a6c7d', border: '1px solid #e8e2d4', borderRadius: '8px', fontSize: '14px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
+const confirmDeclineStyle: React.CSSProperties = { padding: '10px 18px', backgroundColor: '#991b1b', color: '#ffffff', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
