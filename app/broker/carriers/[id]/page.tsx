@@ -430,7 +430,7 @@ export default function CarrierDetailPage() {
               onDeleteRep={(rep) => setDeletingRep(rep)}
             />
           )}
-          {tab === 'engagement' && <EngagementTab />}
+          {tab === 'engagement' && <EngagementTab carrierId={carrierId} />}
           {tab === 'history' && <HistoryTab />}
           {tab === 'notes' && (
             <NotesTab
@@ -618,42 +618,243 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function EngagementTab() {
+function EngagementTab({ carrierId }: { carrierId: string }) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+  const [events, setEvents] = useState<EngagementEvent[]>([]);
+  const [stats, setStats] = useState<EngagementStats>({ totalSent: 0, totalOpened: 0, totalDownloaded: 0, totalDeclined: 0 });
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      setError('');
+
+      const { data, error: queryError } = await supabase
+        .from('rfp_engagement_log')
+        .select(`
+          id,
+          event_type,
+          occurred_at,
+          metadata,
+          rfp_carrier_id,
+          rfp_carriers!inner ( carrier_id ),
+          carrier_users:carrier_user_id ( full_name, email ),
+          rfps:rfp_id ( id, name, clients:client_id ( employer_name ) )
+        `)
+        .eq('rfp_carriers.carrier_id', carrierId)
+        .order('occurred_at', { ascending: false })
+        .limit(50);
+
+      if (queryError) {
+        console.error('[EngagementTab] query error:', queryError);
+        setError('Could not load engagement activity.');
+        setLoading(false);
+        return;
+      }
+
+      const flattened: EngagementEvent[] = (data ?? []).map((row: any) => ({
+        id: row.id,
+        eventType: row.event_type,
+        occurredAt: row.occurred_at,
+        metadata: row.metadata,
+        repName: row.carrier_users?.full_name ?? null,
+        repEmail: row.carrier_users?.email ?? null,
+        rfpId: row.rfps?.id ?? null,
+        rfpName: row.rfps?.name ?? 'Unknown RFP',
+        clientName: row.rfps?.clients?.employer_name ?? null,
+      }));
+
+      setEvents(flattened);
+
+      // Compute stats
+      const totals = { totalSent: 0, totalOpened: 0, totalDownloaded: 0, totalDeclined: 0 };
+      for (const ev of flattened) {
+        if (ev.eventType === 'rfp_sent') totals.totalSent++;
+        else if (ev.eventType === 'rfp_opened') totals.totalOpened++;
+        else if (ev.eventType === 'rfp_downloaded') totals.totalDownloaded++;
+        else if (ev.eventType === 'declined') totals.totalDeclined++;
+      }
+      setStats(totals);
+
+      setLoading(false);
+    };
+
+    load();
+  }, [carrierId]);
+
   return (
     <div>
       <div style={{ color: '#3a4d68', fontSize: '0.92rem', marginBottom: '1rem' }}>
-        Engagement metrics across all RFPs sent to this carrier.
+        Activity from {events.length > 0 ? `${events.length} event${events.length === 1 ? '' : 's'}` : 'all RFPs'} sent to this carrier.
       </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
-        <StatBox label="Avg Open Time" value="—" />
-        <StatBox label="Open Rate" value="—" />
-        <StatBox label="Response Rate" value="—" />
-        <StatBox label="Avg Response Time" value="—" />
+        <EngagementStatBox label="RFPs Sent" value={String(stats.totalSent)} />
+        <EngagementStatBox label="Opens" value={String(stats.totalOpened)} />
+        <EngagementStatBox label="Downloads" value={String(stats.totalDownloaded)} />
+        <EngagementStatBox label="Declines" value={String(stats.totalDeclined)} highlight={stats.totalDeclined > 0} />
       </div>
+
+      {loading && (
+        <div style={{ background: '#faf7f2', border: '1px dashed #d4c8b0', borderRadius: 8, padding: '2rem', textAlign: 'center', color: '#3a4d68', fontSize: '0.92rem' }}>
+          Loading activity…
+        </div>
+      )}
+
+      {!loading && error && (
+        <div style={{ background: '#fdecec', border: '1px solid #f0baba', color: '#9a3a3a', padding: '0.85rem 1rem', borderRadius: 8, fontSize: '0.9rem' }}>
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && events.length === 0 && (
+        <div style={{ background: '#faf7f2', border: '1px dashed #d4c8b0', borderRadius: 8, padding: '2rem', textAlign: 'center', color: '#3a4d68', fontSize: '0.92rem' }}>
+          Engagement tracking will populate once you start sending RFPs to this carrier.
+        </div>
+      )}
+
+      {!loading && !error && events.length > 0 && (
+        <div style={{ background: '#fff', border: '1px solid #e8e0d0', borderRadius: 8, overflow: 'hidden' }}>
+          {events.map((ev, idx) => (
+            <EngagementEventRow
+              key={ev.id}
+              event={ev}
+              isLast={idx === events.length - 1}
+              onRfpClick={(rfpId) => router.push(`/broker/rfps/${rfpId}`)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EngagementEventRow({ event, isLast, onRfpClick }: { event: EngagementEvent; isLast: boolean; onRfpClick: (rfpId: string) => void }) {
+  const config = EVENT_CONFIG[event.eventType] ?? { icon: '•', label: event.eventType, color: '#7a8a9b' };
+  const repLabel = event.repName || event.repEmail || 'A rep';
+  const subject = `${event.clientName ? event.clientName + ' — ' : ''}${event.rfpName}`;
+
+  // Build optional metadata snippet (e.g. decline reason)
+  let metaLine: string | null = null;
+  if (event.eventType === 'declined' && event.metadata) {
+    const reasonCode = event.metadata.reason_code;
+    const reasonNote = event.metadata.reason_note;
+    const codeLabel = reasonCode ? DECLINE_REASON_LABELS[reasonCode] ?? reasonCode : null;
+    if (codeLabel && reasonNote) metaLine = `${codeLabel} — ${reasonNote}`;
+    else if (codeLabel) metaLine = codeLabel;
+    else if (reasonNote) metaLine = reasonNote;
+  }
+
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: '0.85rem',
+      padding: '0.95rem 1.1rem',
+      borderBottom: isLast ? 'none' : '1px solid #f0e8d8',
+      cursor: event.rfpId ? 'pointer' : 'default',
+      transition: 'background 0.15s',
+    }}
+      onClick={() => event.rfpId && onRfpClick(event.rfpId)}
+      onMouseEnter={(e) => { if (event.rfpId) (e.currentTarget as HTMLElement).style.background = '#faf7f2'; }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+    >
       <div style={{
-        background: '#faf7f2',
-        border: '1px dashed #d4c8b0',
-        borderRadius: 8,
-        padding: '2rem',
-        textAlign: 'center',
-        color: '#3a4d68',
-        fontSize: '0.92rem',
+        width: 32,
+        height: 32,
+        borderRadius: '50%',
+        background: config.color + '15',
+        color: config.color,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '1rem',
+        flexShrink: 0,
       }}>
-        Engagement tracking will populate once you start sending RFPs to this carrier.
+        {config.icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '0.92rem', color: '#1e3a5f', lineHeight: 1.5 }}>
+          <strong style={{ fontWeight: 600 }}>{repLabel}</strong>{' '}
+          <span style={{ color: config.color, fontWeight: 500 }}>{config.label}</span>{' '}
+          <span style={{ color: '#3a4d68' }}>{subject}</span>
+        </div>
+        {metaLine && (
+          <div style={{ fontSize: '0.82rem', color: '#7a8a9b', marginTop: '0.2rem', fontStyle: 'italic' }}>
+            {metaLine}
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: '0.8rem', color: '#a0aec0', whiteSpace: 'nowrap', flexShrink: 0 }}>
+        {formatRelativeTime(event.occurredAt)}
       </div>
     </div>
   );
 }
 
-function StatBox({ label, value }: { label: string; value: string }) {
+function EngagementStatBox({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
     <div style={{ background: '#fff', border: '1px solid #e8e0d0', borderRadius: 8, padding: '1rem 1.25rem' }}>
       <div style={{ fontSize: '0.75rem', color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>
         {label}
       </div>
-      <div style={{ fontSize: '1.5rem', fontWeight: 600, color: '#1e3a5f' }}>{value}</div>
+      <div style={{ fontSize: '1.5rem', fontWeight: 600, color: highlight ? '#9a3a3a' : '#1e3a5f' }}>{value}</div>
     </div>
   );
+}
+
+type EngagementEvent = {
+  id: string;
+  eventType: string;
+  occurredAt: string;
+  metadata: any;
+  repName: string | null;
+  repEmail: string | null;
+  rfpId: string | null;
+  rfpName: string;
+  clientName: string | null;
+};
+
+type EngagementStats = {
+  totalSent: number;
+  totalOpened: number;
+  totalDownloaded: number;
+  totalDeclined: number;
+};
+
+const EVENT_CONFIG: Record<string, { icon: string; label: string; color: string }> = {
+  rfp_sent: { icon: '📤', label: 'received', color: '#5a7a9b' },
+  rfp_opened: { icon: '👁', label: 'viewed', color: '#7a9b76' },
+  rfp_downloaded: { icon: '📥', label: 'downloaded the plan doc for', color: '#7a9b76' },
+  reminder_sent: { icon: '🔔', label: 'was reminded about', color: '#a08a4a' },
+  proposal_uploaded: { icon: '📄', label: 'submitted a quote for', color: '#5a7a56' },
+  declined: { icon: '🚫', label: 'declined to quote on', color: '#9a3a3a' },
+  reassigned: { icon: '↔️', label: 'was reassigned on', color: '#7a8a9b' },
+  won_notification_sent: { icon: '🏆', label: 'was notified of winning', color: '#5a7a56' },
+  lost_notification_sent: { icon: '⛔', label: 'was notified of losing', color: '#7a8a9b' },
+};
+
+const DECLINE_REASON_LABELS: Record<string, string> = {
+  group_too_small: 'Group too small',
+  industry_not_appetite: 'Industry not in appetite',
+  timeline_too_short: 'Timeline too short',
+  state_not_supported: 'State not supported',
+  other: 'Other',
+};
+
+function formatRelativeTime(dateStr: string): string {
+  const then = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - then.getTime();
+  const minutes = Math.floor(diffMs / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7) return `${days}d ago`;
+  return then.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function HistoryTab() {
