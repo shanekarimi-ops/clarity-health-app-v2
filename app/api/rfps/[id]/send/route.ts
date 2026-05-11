@@ -215,13 +215,19 @@ export async function POST(
       let rfpCarrierId = existingRows?.id || '';
 
       if (isResend) {
-        // Update the existing row: bump sent_at, set status='sent', refresh requested_benefits
+        // Update the existing row: bump sent_at, set status='sent', refresh requested_benefits,
+        // and clear stale engagement timestamps so the new send has a fresh tracking baseline
         const { error: updErr } = await admin
           .from('rfp_carriers')
           .update({
             sent_at: new Date().toISOString(),
             status: 'sent',
             requested_benefits: f.requested_benefits,
+            resend_message_id: null,
+            first_opened_at: null,
+            last_opened_at: null,
+            open_count: 0,
+            downloaded_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq('id', rfpCarrierId);
@@ -315,13 +321,15 @@ export async function POST(
         isResend,
       });
 
+      let resendMessageId: string | null = null;
       try {
-        await sendEmail({
+        const sendResult = await sendEmail({
           to: cu.email,
           subject,
           html: htmlBody,
           text: textBody,
         });
+        resendMessageId = sendResult.id;
       } catch (emailErr: any) {
         results.push({
           rfp_carrier_id: rfpCarrierId,
@@ -334,16 +342,31 @@ export async function POST(
         continue;
       }
 
-      // 7d. Log the send to rfp_engagement_log (event_type 'rfp_sent' per CHECK constraint)
+      // 7d. Store the Resend message ID on the rfp_carriers row for webhook matching
+      if (resendMessageId) {
+        const { error: msgIdErr } = await admin
+          .from('rfp_carriers')
+          .update({ resend_message_id: resendMessageId })
+          .eq('id', rfpCarrierId);
+        if (msgIdErr) {
+          // Non-fatal — webhook matching will fail for this row but the send itself succeeded
+          console.error('rfp_carriers resend_message_id update failed:', msgIdErr);
+        }
+      }
+
+      // 7e. Log the send to rfp_engagement_log (event_type 'rfp_sent' per CHECK constraint)
       const { error: logErr } = await admin.from('rfp_engagement_log').insert({
         rfp_id: rfpId,
         rfp_carrier_id: rfpCarrierId,
         carrier_user_id: f.carrier_user_id,
         event_type: 'rfp_sent',
-        metadata: { is_resend: isResend, requested_benefits: f.requested_benefits },
+        metadata: {
+          is_resend: isResend,
+          requested_benefits: f.requested_benefits,
+          resend_message_id: resendMessageId,
+        },
       });
       if (logErr) {
-        // Non-fatal but we surface it now that we've been bitten once
         console.error('rfp_engagement_log insert failed:', logErr);
       }
 
@@ -357,7 +380,6 @@ export async function POST(
     }
 
     // ===== Step 8: Bump rfp.status to 'distributed' if any send succeeded and it's still 'draft' =====
-    // Status vocabulary per CHECK constraint: draft | distributed | collecting_quotes | comparing | won | lost | cancelled
     const anySucceeded = results.some(r => r.status === 'sent' || r.status === 'resent');
     if (anySucceeded && rfpRow.status === 'draft') {
       const { error: statusErr } = await admin
