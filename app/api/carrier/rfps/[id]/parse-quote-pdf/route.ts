@@ -1,0 +1,249 @@
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import Anthropic from '@anthropic-ai/sdk';
+
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// Build the prompt dynamically based on which benefit lines the RFP requested
+function buildExtractionPrompt(requestedBenefits: string[]) {
+  const benefitList = requestedBenefits.length
+    ? requestedBenefits.join(', ')
+    : 'medical, dental, vision';
+
+  return `You are reviewing a carrier insurance quote / proposal PDF. Extract structured quote data for these benefit lines: ${benefitList}.
+
+Return ONLY a valid JSON object (no markdown, no code fences, no preamble) with this exact shape:
+
+{
+  "carrier_name": "<carrier name as it appears, or null>",
+  "effective_date": "<YYYY-MM-DD or null>",
+  "total_annual_cost": <total annual premium across all lines as number, or null>,
+  "monthly_cost": <total monthly premium across all lines as number, or null>,
+  "lines": [
+    {
+      "benefit_type": "medical" | "dental" | "vision" | "life" | "std" | "ltd",
+      "plan_name": "<plan name or null>",
+      "rate_structure": "tiered_4" | "tiered_2" | "composite" | "age_banded",
+      "monthly_premium": <total monthly premium for this line, or null>,
+      "annual_cost": <total annual cost for this line, or null>,
+      "rates": {
+        "employee_only": <number or null>,
+        "employee_spouse": <number or null>,
+        "employee_children": <number or null>,
+        "family": <number or null>
+      },
+      "plan_design": {
+        "deductible_individual": <number or null>,
+        "deductible_family": <number or null>,
+        "oop_max_individual": <number or null>,
+        "oop_max_family": <number or null>,
+        "coinsurance_pct": <number 0-100 or null>,
+        "pcp_copay": <number or null>,
+        "specialist_copay": <number or null>,
+        "er_copay": <number or null>,
+        "urgent_care_copay": <number or null>,
+        "rx_generic": <number or null>,
+        "rx_preferred_brand": <number or null>,
+        "rx_non_preferred_brand": <number or null>,
+        "rx_specialty": <number or null>,
+        "notes": "<short free text for anything notable, or null>"
+      }
+    }
+  ]
+}
+
+Rate structure rules:
+- "tiered_4": four-tier (EE / EE+spouse / EE+children / family) — most common for medical/dental/vision
+- "tiered_2": two-tier (EE / family)
+- "composite": single blended rate for all employees
+- "age_banded": rates vary by age (common for voluntary life and disability)
+
+Field rules:
+- Only include benefit lines you actually find in the document. Do NOT invent lines that aren't there.
+- Only include the benefit types listed above (${benefitList}). Skip any others.
+- For tiered_4 rates, fill in all four tiers. For tiered_2, fill employee_only + family, leave the other two null. For composite, fill employee_only only.
+- For rates you can't find, use null. Do NOT guess.
+- For plan_design fields not present in the document (e.g. dental has no rx fields), use null.
+- monthly_premium and annual_cost on a line are the TOTAL for that line (employer + employee combined, or as quoted), not per-employee.
+- Numbers should be plain numbers (no currency symbols, no commas).
+- Dates in YYYY-MM-DD format.
+
+Do not invent data. If a field is unclear, use null.`;
+}
+
+export async function POST(
+  request: Request,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const rfpId = params.id;
+
+    // 1. Auth: extract user from Bearer token
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return NextResponse.json({ error: 'Missing or invalid Authorization header' }, { status: 401 });
+    }
+    const token = authHeader.substring(7);
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
+    if (userError || !user) {
+      return NextResponse.json({ error: 'Invalid auth token' }, { status: 401 });
+    }
+
+    // 2. Resolve carrier_user for this auth user
+    const { data: carrierUser, error: cuError } = await supabaseAdmin
+      .from('carrier_users')
+      .select('id, carrier_id')
+      .eq('user_id', user.id)
+      .single();
+    if (cuError || !carrierUser) {
+      return NextResponse.json({ error: 'No carrier account linked to this user' }, { status: 403 });
+    }
+
+    // 3. Verify this carrier_user is assigned to this RFP, and fetch RFP info we need
+    const { data: rfpCarrier, error: rcError } = await supabaseAdmin
+      .from('rfp_carriers')
+      .select(`
+        id,
+        carrier_id,
+        status,
+        rfps:rfp_id (
+          id,
+          agency_id,
+          requested_benefits
+        )
+      `)
+      .eq('rfp_id', rfpId)
+      .eq('assigned_carrier_user_id', carrierUser.id)
+      .single();
+    if (rcError || !rfpCarrier) {
+      return NextResponse.json({ error: 'RFP not found or not assigned to you' }, { status: 404 });
+    }
+
+    const rfp = rfpCarrier.rfps as any;
+    if (!rfp) {
+      return NextResponse.json({ error: 'RFP record missing' }, { status: 404 });
+    }
+
+    // 4. Disallow parsing if already submitted/declined
+    if (['submitted', 'won', 'lost'].includes(rfpCarrier.status)) {
+      return NextResponse.json(
+        { error: `Quote already submitted (current status: ${rfpCarrier.status}). Cannot upload another.` },
+        { status: 409 }
+      );
+    }
+    if (rfpCarrier.status === 'declined') {
+      return NextResponse.json(
+        { error: 'This RFP was declined. Cannot upload a quote.' },
+        { status: 409 }
+      );
+    }
+
+    // 5. Parse request body
+    const { pdf_base64, filename } = await request.json();
+    if (!pdf_base64 || !filename) {
+      return NextResponse.json({ error: 'Missing pdf_base64 or filename' }, { status: 400 });
+    }
+    if (!filename.toLowerCase().endsWith('.pdf')) {
+      return NextResponse.json({ error: 'Only PDF files are supported' }, { status: 400 });
+    }
+
+    // 6. Build storage path matching RLS: {agency_id}/{rfp_id}/{carrier_id}/{filename}
+    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const timestamp = Date.now();
+    const storagePath = `${rfp.agency_id}/${rfp.id}/${carrierUser.carrier_id}/${timestamp}-${safeFilename}`;
+
+    // 7. Upload to quote-proposals bucket
+    const pdfBuffer = Buffer.from(pdf_base64, 'base64');
+    const { error: uploadError } = await supabaseAdmin
+      .storage
+      .from('quote-proposals')
+      .upload(storagePath, pdfBuffer, {
+        contentType: 'application/pdf',
+        upsert: false,
+      });
+    if (uploadError) {
+      console.error('quote-proposals upload error:', uploadError);
+      return NextResponse.json(
+        { error: 'Failed to upload PDF to storage', details: uploadError.message },
+        { status: 500 }
+      );
+    }
+
+    // 8. Call Claude with the PDF
+    const requestedBenefits: string[] = Array.isArray(rfp.requested_benefits)
+      ? rfp.requested_benefits
+      : [];
+    const prompt = buildExtractionPrompt(requestedBenefits);
+
+    let extracted: any;
+    let extractionError: string | null = null;
+
+    try {
+      const message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 4000,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: pdf_base64,
+                },
+              },
+              { type: 'text', text: prompt },
+            ],
+          },
+        ],
+      });
+
+      const textBlock = message.content.find((b: any) => b.type === 'text') as any;
+      let responseText = textBlock?.text || '';
+
+      // Strip code fences if Claude added them
+      responseText = responseText
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```\s*$/i, '')
+        .trim();
+
+      try {
+        extracted = JSON.parse(responseText);
+      } catch (e: any) {
+        extractionError = `Could not parse extraction result as JSON. Raw: ${responseText.slice(0, 500)}`;
+        extracted = null;
+      }
+    } catch (e: any) {
+      console.error('Claude API error:', e);
+      extractionError = `Claude API error: ${e.message || 'unknown'}`;
+      extracted = null;
+    }
+
+    // 9. Return result — PDF is uploaded regardless. UI decides what to do on extraction failure.
+    return NextResponse.json({
+      success: true,
+      proposal_doc_url: storagePath,
+      extracted_data: extracted,
+      extraction_error: extractionError,
+    });
+  } catch (error: any) {
+    console.error('Unexpected parse-quote-pdf error:', error);
+    return NextResponse.json(
+      { error: 'Unexpected error', details: error.message },
+      { status: 500 }
+    );
+  }
+}

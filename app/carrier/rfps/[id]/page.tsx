@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/app/supabase';
 import CarrierShell from '@/app/components/CarrierShell';
@@ -196,6 +196,7 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
   const isDeclined = detail.rc_status === 'declined';
   const isLockedFromDecline = ['submitted', 'won', 'lost'].includes(detail.rc_status);
   const canDecline = !isDeclined && !isLockedFromDecline;
+  const canUpload = !isDeclined && !isLockedFromDecline;
 
   return (
     <div style={containerStyle}>
@@ -280,17 +281,25 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         <PlanDesignTabbed tabs={tabs} planDesign={planDesign} />
       )}
 
+      {/* Submit a Quote section (NEW in Push 3) */}
+      {canUpload && (
+        <QuoteUploadSection
+          rfpId={rfpId}
+          requestedBenefits={detail.requested_benefits}
+        />
+      )}
+
       {/* Footer with Decline button */}
-      <div style={footerCardStyle}>
-        <div style={footerNoteStyle}>
-          Quote upload is coming in a future update.
-        </div>
-        {canDecline && (
+      {canDecline && (
+        <div style={footerCardStyle}>
+          <div style={footerNoteStyle}>
+            Not a fit for your team? You can decline this RFP.
+          </div>
           <button onClick={() => setShowDeclineModal(true)} style={declineButtonStyle}>
             Decline to quote
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Decline Modal */}
       {showDeclineModal && (
@@ -304,6 +313,222 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
       )}
     </div>
   );
+}
+
+// === QUOTE UPLOAD SECTION (NEW in Push 3) ===
+
+type UploadState =
+  | { kind: 'choose' }
+  | { kind: 'parsing'; filename: string }
+  | { kind: 'parsed'; extracted_data: any; proposal_doc_url: string; filename: string; extraction_error: string | null }
+  | { kind: 'manual' }
+  | { kind: 'error'; message: string };
+
+function QuoteUploadSection({
+  rfpId,
+  requestedBenefits,
+}: {
+  rfpId: string;
+  requestedBenefits: string[];
+}) {
+  const [state, setState] = useState<UploadState>({ kind: 'choose' });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handlePdfPicked = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setState({ kind: 'error', message: 'Please select a PDF file.' });
+      return;
+    }
+    // Max 15 MB
+    if (file.size > 15 * 1024 * 1024) {
+      setState({ kind: 'error', message: 'PDF must be under 15 MB.' });
+      return;
+    }
+
+    setState({ kind: 'parsing', filename: file.name });
+
+    try {
+      // Read file as base64
+      const base64 = await fileToBase64(file);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setState({ kind: 'error', message: 'Your session has expired. Please log in again.' });
+        return;
+      }
+
+      const res = await fetch(`/api/carrier/rfps/${rfpId}/parse-quote-pdf`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          pdf_base64: base64,
+          filename: file.name,
+        }),
+      });
+
+      const body = await res.json();
+
+      if (!res.ok) {
+        setState({ kind: 'error', message: body.error || 'Could not parse the PDF.' });
+        return;
+      }
+
+      setState({
+        kind: 'parsed',
+        extracted_data: body.extracted_data,
+        proposal_doc_url: body.proposal_doc_url,
+        filename: file.name,
+        extraction_error: body.extraction_error || null,
+      });
+    } catch (err: any) {
+      console.error('[QuoteUploadSection] parse error:', err);
+      setState({ kind: 'error', message: 'Network error. Please try again.' });
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handlePdfPicked(file);
+    }
+    // Reset input so the same file can be re-picked if needed
+    e.target.value = '';
+  };
+
+  const handleReset = () => setState({ kind: 'choose' });
+
+  return (
+    <div style={uploadSectionCardStyle}>
+      <h2 style={sectionTitleStyle}>Submit a Quote</h2>
+      <p style={sectionSubtitleStyle}>
+        Upload your quote proposal PDF and we&apos;ll extract the details automatically. You&apos;ll get to review everything before submitting.
+      </p>
+
+      {/* Hidden file input always rendered */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        onChange={handleFileInputChange}
+        style={{ display: 'none' }}
+      />
+
+      {state.kind === 'choose' && (
+        <div style={uploadChoiceRowStyle}>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={uploadPrimaryButtonStyle}
+          >
+            📄 Upload PDF
+            <div style={uploadButtonSubtextStyle}>We&apos;ll auto-fill the form using AI</div>
+          </button>
+          <button
+            onClick={() => setState({ kind: 'manual' })}
+            style={uploadSecondaryButtonStyle}
+          >
+            ✍️ Enter manually
+            <div style={uploadButtonSubtextStyle}>Type in the quote details by hand</div>
+          </button>
+        </div>
+      )}
+
+      {state.kind === 'parsing' && (
+        <div style={parsingBoxStyle}>
+          <div style={spinnerStyle} />
+          <div>
+            <div style={parsingTitleStyle}>Reading {state.filename}…</div>
+            <div style={parsingSubtitleStyle}>This usually takes 15–30 seconds.</div>
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'parsed' && (
+        <div>
+          {state.extraction_error || !state.extracted_data ? (
+            <div style={extractionWarningStyle}>
+              <strong>⚠️ We couldn&apos;t auto-extract the data from this PDF.</strong>
+              <div style={{ marginTop: '6px', fontSize: '13px', color: '#7c2d12' }}>
+                Your PDF was uploaded successfully ({state.filename}), but we couldn&apos;t parse it. You can still enter the quote details manually below.
+              </div>
+              <div style={{ marginTop: '12px' }}>
+                <button onClick={() => setState({ kind: 'manual' })} style={uploadSecondaryButtonStyle}>
+                  ✍️ Enter manually
+                </button>
+                <button onClick={handleReset} style={{ ...uploadTextButtonStyle, marginLeft: '10px' }}>
+                  Try a different PDF
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={parsedSuccessBoxStyle}>
+              <div style={parsedSuccessHeaderStyle}>
+                <span style={{ fontSize: '20px' }}>✅</span>
+                <strong>Parsed {state.filename}</strong>
+              </div>
+              <div style={parsedSuccessSubtextStyle}>
+                The PDF is uploaded. The review-and-submit form is coming in Push 4.
+              </div>
+              <details style={{ marginTop: '14px' }}>
+                <summary style={detailsSummaryStyle}>Show extracted data (debug)</summary>
+                <pre style={extractedDataPreStyle}>
+                  {JSON.stringify(state.extracted_data, null, 2)}
+                </pre>
+              </details>
+              <div style={{ marginTop: '14px' }}>
+                <button onClick={handleReset} style={uploadTextButtonStyle}>
+                  Start over
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {state.kind === 'manual' && (
+        <div style={manualPlaceholderStyle}>
+          <strong>Manual entry form coming in Push 4.</strong>
+          <div style={{ fontSize: '13px', color: '#5a6c7d', marginTop: '6px' }}>
+            You&apos;ll be able to fill in plan details for: {requestedBenefits.map(b => BENEFIT_LINE_LABELS[b as BenefitLineValue] ?? b).join(', ')}.
+          </div>
+          <div style={{ marginTop: '14px' }}>
+            <button onClick={handleReset} style={uploadTextButtonStyle}>
+              ← Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'error' && (
+        <div style={uploadErrorBoxStyle}>
+          <strong>Something went wrong.</strong>
+          <div style={{ marginTop: '6px', fontSize: '13px' }}>{state.message}</div>
+          <div style={{ marginTop: '12px' }}>
+            <button onClick={handleReset} style={uploadTextButtonStyle}>
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Read a File as base64 (without the data: prefix)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // result is like "data:application/pdf;base64,XXXX"
+      const base64 = result.split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 // === DECLINE MODAL ===
@@ -737,6 +962,26 @@ const declinedReasonStyle: React.CSSProperties = { color: '#7f1d1d', fontSize: '
 const footerCardStyle: React.CSSProperties = { backgroundColor: '#ffffff', borderRadius: '12px', padding: '20px 28px', marginBottom: '40px', boxShadow: '0 2px 8px rgba(30,58,95,0.06)', border: '1px solid #f0ebe0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' };
 const footerNoteStyle: React.CSSProperties = { color: '#8a98a8', fontSize: '13px', fontStyle: 'italic' };
 const declineButtonStyle: React.CSSProperties = { padding: '10px 18px', background: 'transparent', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '14px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
+
+// === UPLOAD SECTION STYLES (NEW in Push 3) ===
+const uploadSectionCardStyle: React.CSSProperties = { backgroundColor: '#ffffff', borderRadius: '12px', padding: '28px', marginBottom: '20px', boxShadow: '0 2px 8px rgba(30,58,95,0.06)', border: '1px solid #f0ebe0' };
+const uploadChoiceRowStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' };
+const uploadPrimaryButtonStyle: React.CSSProperties = { padding: '20px 24px', backgroundColor: '#1e3a5f', color: '#ffffff', border: 'none', borderRadius: '10px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' };
+const uploadSecondaryButtonStyle: React.CSSProperties = { padding: '20px 24px', backgroundColor: '#faf7f2', color: '#1e3a5f', border: '1px solid #e8e2d4', borderRadius: '10px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' };
+const uploadButtonSubtextStyle: React.CSSProperties = { fontSize: '12px', fontWeight: 400, marginTop: '4px', opacity: 0.85 };
+const uploadTextButtonStyle: React.CSSProperties = { padding: '8px 14px', background: 'transparent', color: '#5a6c7d', border: '1px solid #e8e2d4', borderRadius: '6px', fontSize: '13px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
+const parsingBoxStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '16px', padding: '20px 22px', backgroundColor: '#faf7f2', border: '1px solid #f0ebe0', borderRadius: '10px' };
+const spinnerStyle: React.CSSProperties = { width: '24px', height: '24px', border: '3px solid #e8e2d4', borderTopColor: '#1e3a5f', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 };
+const parsingTitleStyle: React.CSSProperties = { fontSize: '15px', fontWeight: 600, color: '#1e3a5f' };
+const parsingSubtitleStyle: React.CSSProperties = { fontSize: '13px', color: '#5a6c7d', marginTop: '2px' };
+const parsedSuccessBoxStyle: React.CSSProperties = { padding: '20px 22px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px' };
+const parsedSuccessHeaderStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '10px', color: '#065f46', fontSize: '15px' };
+const parsedSuccessSubtextStyle: React.CSSProperties = { fontSize: '13px', color: '#047857', marginTop: '6px', marginLeft: '30px' };
+const detailsSummaryStyle: React.CSSProperties = { cursor: 'pointer', fontSize: '13px', color: '#5a6c7d', fontWeight: 500, marginLeft: '30px' };
+const extractedDataPreStyle: React.CSSProperties = { marginTop: '10px', padding: '14px', backgroundColor: '#ffffff', border: '1px solid #e8e2d4', borderRadius: '6px', fontSize: '12px', color: '#1e3a5f', overflow: 'auto', maxHeight: '400px', fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace' };
+const extractionWarningStyle: React.CSSProperties = { padding: '18px 22px', backgroundColor: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '10px', color: '#9a3412', fontSize: '14px' };
+const manualPlaceholderStyle: React.CSSProperties = { padding: '20px 22px', backgroundColor: '#faf7f2', border: '1px dashed #e8e2d4', borderRadius: '10px', color: '#1e3a5f', fontSize: '14px' };
+const uploadErrorBoxStyle: React.CSSProperties = { padding: '16px 20px', backgroundColor: '#fee2e2', border: '1px solid #fecaca', borderRadius: '10px', color: '#991b1b', fontSize: '14px' };
 
 // === MODAL STYLES ===
 const modalBackdropStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(30, 58, 95, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', zIndex: 1000 };
