@@ -23,6 +23,32 @@ type ActivityEvent = {
   created_at: string;
 };
 
+type CarrierEngagementEvent = {
+  id: string;
+  event_type: string;
+  occurred_at: string;
+  metadata: any;
+  rep_name: string | null;
+  rep_email: string | null;
+  rfp_id: string;
+  rfp_name: string;
+  client_name: string | null;
+  carrier_id: string;
+  carrier_name: string;
+};
+
+const CARRIER_EVENT_CONFIG: Record<string, { icon: string; label: string; color: string }> = {
+  rfp_sent: { icon: '📤', label: 'received', color: '#5a7a9b' },
+  rfp_opened: { icon: '👁', label: 'viewed', color: '#7a9b76' },
+  rfp_downloaded: { icon: '📥', label: 'downloaded the doc for', color: '#7a9b76' },
+  reminder_sent: { icon: '🔔', label: 'was reminded about', color: '#a08a4a' },
+  proposal_uploaded: { icon: '📄', label: 'submitted a quote for', color: '#5a7a56' },
+  declined: { icon: '🚫', label: 'declined', color: '#9a3a3a' },
+  reassigned: { icon: '↔️', label: 'was reassigned on', color: '#7a8a9b' },
+  won_notification_sent: { icon: '🏆', label: 'was notified of winning', color: '#5a7a56' },
+  lost_notification_sent: { icon: '⛔', label: 'was notified of losing', color: '#7a8a9b' },
+};
+
 export default function BrokerDashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -32,6 +58,7 @@ export default function BrokerDashboardPage() {
   const [recentRecCount, setRecentRecCount] = useState(0);
   const [pendingLinks, setPendingLinks] = useState(0);
   const [recentActivity, setRecentActivity] = useState<ActivityEvent[]>([]);
+  const [carrierActivity, setCarrierActivity] = useState<CarrierEngagementEvent[]>([]);
 
   useEffect(() => {
     async function init() {
@@ -41,7 +68,6 @@ export default function BrokerDashboardPage() {
         return;
       }
 
-      // Gate: only brokers can be here
       const accountType = getAccountType(user);
       if (accountType !== 'broker') {
         router.push('/profile');
@@ -50,7 +76,6 @@ export default function BrokerDashboardPage() {
 
       setUser(user);
 
-      // Load the user's agency
       const { data: brokerRow } = await supabase
         .from('brokers')
         .select('agency_id, agencies(*)')
@@ -69,7 +94,6 @@ export default function BrokerDashboardPage() {
   const fetchStats = useCallback(async () => {
     if (!user || !agency) return;
 
-    // Active clients in this agency
     const { count: activeClients } = await supabase
       .from('clients')
       .select('*', { count: 'exact', head: true })
@@ -78,7 +102,6 @@ export default function BrokerDashboardPage() {
 
     setClientCount(activeClients || 0);
 
-    // Recommendations created in last 30 days for clients in this agency
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -90,7 +113,6 @@ export default function BrokerDashboardPage() {
 
     setRecentRecCount(recs || 0);
 
-    // Pending link requests for this agency's clients
     const { count: links } = await supabase
       .from('client_links')
       .select('*', { count: 'exact', head: true })
@@ -98,7 +120,6 @@ export default function BrokerDashboardPage() {
 
     setPendingLinks(links || 0);
 
-    // Recent activity (last 10 events) for this agency
     const { data: activityRows } = await supabase
       .from('activity_log')
       .select('id, client_id, actor_name, event_type, event_summary, created_at')
@@ -107,6 +128,54 @@ export default function BrokerDashboardPage() {
       .limit(10);
 
     setRecentActivity(activityRows || []);
+
+    // Carrier engagement events for this agency's RFPs
+    const { data: engagementRows } = await supabase
+      .from('rfp_engagement_log')
+      .select(`
+        id,
+        event_type,
+        occurred_at,
+        metadata,
+        carrier_users:carrier_user_id ( full_name, email ),
+        rfps:rfp_id!inner (
+          id,
+          name,
+          agency_id,
+          clients:client_id ( employer_name )
+        ),
+        rfp_carriers:rfp_carrier_id (
+          carrier_id,
+          carriers:carrier_id ( id, name )
+        )
+      `)
+      .eq('rfps.agency_id', agency.id)
+      .order('occurred_at', { ascending: false })
+      .limit(10);
+
+    const flattened: CarrierEngagementEvent[] = (engagementRows ?? [])
+      .map((row: any) => {
+        const rfp = row.rfps;
+        if (!rfp) return null;
+        const rc = row.rfp_carriers;
+        const carrier = rc?.carriers;
+        return {
+          id: row.id,
+          event_type: row.event_type,
+          occurred_at: row.occurred_at,
+          metadata: row.metadata,
+          rep_name: row.carrier_users?.full_name ?? null,
+          rep_email: row.carrier_users?.email ?? null,
+          rfp_id: rfp.id,
+          rfp_name: rfp.name,
+          client_name: rfp.clients?.employer_name ?? null,
+          carrier_id: carrier?.id ?? '',
+          carrier_name: carrier?.name ?? 'Unknown carrier',
+        };
+      })
+      .filter((e: CarrierEngagementEvent | null): e is CarrierEngagementEvent => e !== null);
+
+    setCarrierActivity(flattened);
   }, [user, agency]);
 
   useEffect(() => {
@@ -149,6 +218,8 @@ export default function BrokerDashboardPage() {
       link_revoked: '🚫',
       renewal_date_set: '📅',
       report_generated: '📄',
+      rfp_created: '📋',
+      rfp_updated: '✏️',
     };
     return icons[eventType] || '•';
   }
@@ -240,106 +311,196 @@ export default function BrokerDashboardPage() {
 
         <div className="dash-two-col">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            <div className="dash-card">
-            <div className="dash-card-header">
-                <div className="dash-card-title">Recent Activity</div>
-              </div>
-              {recentActivity.length === 0 ? (
-                <div className="empty-state">
-                  <div className="empty-state-icon">📋</div>
-                  <div className="empty-state-title">No activity yet</div>
-                  <div className="empty-state-desc">
-                    Activity will appear here as you add clients, run recommendations,
-                    and upload documents.
+
+            {/* === SPLIT ACTIVITY ROW: Team Activity (left) | Carrier Engagement (right) === */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem' }}>
+
+              {/* Team Activity (formerly Recent Activity) */}
+              <div className="dash-card">
+                <div className="dash-card-header">
+                  <div className="dash-card-title">Team Activity</div>
+                </div>
+                {recentActivity.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-state-icon">📋</div>
+                    <div className="empty-state-title">No activity yet</div>
+                    <div className="empty-state-desc">
+                      Activity will appear here as you add clients, run recommendations,
+                      and upload documents.
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  maxHeight: '320px',
-                  overflowY: 'auto',
-                  paddingRight: '4px',
-                }}>
-                  {recentActivity.map((event) => {
-                    const inner = (
-                      <>
-                        <div style={{
-                          width: '36px',
-                          height: '36px',
-                          borderRadius: '50%',
-                          background: event.client_id ? '#1e3a5f' : '#7a9b76',
-                          color: 'white',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: '16px',
-                          flexShrink: 0,
-                        }}>
-                          {iconForEvent(event.event_type)}
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
+                ) : (
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    maxHeight: '380px',
+                    overflowY: 'auto',
+                    paddingRight: '4px',
+                  }}>
+                    {recentActivity.map((event) => {
+                      const inner = (
+                        <>
                           <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            background: event.client_id ? '#1e3a5f' : '#7a9b76',
+                            color: 'white',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
                             fontSize: '14px',
-                            fontWeight: 600,
-                            color: '#1e3a5f',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
+                            flexShrink: 0,
                           }}>
-                            {event.event_summary}
+                            {iconForEvent(event.event_type)}
                           </div>
-                          <div style={{
-                            fontSize: '12px',
-                            color: '#3a4d68',
-                            marginTop: '2px',
-                          }}>
-                            {event.actor_name}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontSize: '13px',
+                              fontWeight: 600,
+                              color: '#1e3a5f',
+                              lineHeight: 1.4,
+                              wordBreak: 'break-word',
+                            }}>
+                              {event.event_summary}
+                            </div>
+                            <div style={{
+                              fontSize: '11px',
+                              color: '#7a8a9b',
+                              marginTop: '4px',
+                              display: 'flex',
+                              gap: '6px',
+                              alignItems: 'center',
+                            }}>
+                              <span>{event.actor_name}</span>
+                              <span style={{ color: '#cbd5db' }}>·</span>
+                              <span>{formatRelativeTime(event.created_at)}</span>
+                            </div>
                           </div>
-                        </div>
-                        <div style={{
-                          fontSize: '12px',
-                          color: '#888',
-                          flexShrink: 0,
-                        }}>
-                          {formatRelativeTime(event.created_at)}
-                        </div>
-                      </>
-                    );
+                        </>
+                      );
 
-                    const rowStyle: React.CSSProperties = {
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '12px',
-                      padding: '12px 4px',
-                      borderBottom: '1px solid #eef1f4',
-                      textDecoration: 'none',
-                      color: 'inherit',
-                      transition: 'background 0.15s',
-                    };
+                      const rowStyle: React.CSSProperties = {
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '10px',
+                        padding: '10px 4px',
+                        borderBottom: '1px solid #eef1f4',
+                        textDecoration: 'none',
+                        color: 'inherit',
+                        transition: 'background 0.15s',
+                      };
 
-                    return event.client_id ? (
-                      <Link
-                        key={event.id}
-                        href={`/broker/clients/${event.client_id}`}
-                        style={rowStyle}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                      >
-                        {inner}
-                      </Link>
-                    ) : (
-                      <div
-                        key={event.id}
-                        style={rowStyle}
-                      >
-                        {inner}
-                      </div>
-                    );
-                  })}
+                      return event.client_id ? (
+                        <Link
+                          key={event.id}
+                          href={`/broker/clients/${event.client_id}`}
+                          style={rowStyle}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          {inner}
+                        </Link>
+                      ) : (
+                        <div key={event.id} style={rowStyle}>
+                          {inner}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Carrier Engagement (NEW) */}
+              <div className="dash-card">
+                <div className="dash-card-header">
+                  <div className="dash-card-title">Carrier Engagement</div>
                 </div>
-              )}
+                {carrierActivity.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-state-icon">📨</div>
+                    <div className="empty-state-title">No carrier activity yet</div>
+                    <div className="empty-state-desc">
+                      Once you send an RFP, carrier responses and engagement will show here.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    maxHeight: '380px',
+                    overflowY: 'auto',
+                    paddingRight: '4px',
+                  }}>
+                    {carrierActivity.map((event) => {
+                      const config = CARRIER_EVENT_CONFIG[event.event_type] ?? { icon: '•', label: event.event_type, color: '#7a8a9b' };
+                      const repLabel = event.rep_name || event.rep_email || 'A rep';
+                      const subject = `${event.client_name ? event.client_name + ' — ' : ''}${event.rfp_name}`;
+
+                      return (
+                        <Link
+                          key={event.id}
+                          href={`/broker/rfps/${event.rfp_id}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '10px',
+                            padding: '10px 4px',
+                            borderBottom: '1px solid #eef1f4',
+                            textDecoration: 'none',
+                            color: 'inherit',
+                            transition: 'background 0.15s',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            background: config.color + '15',
+                            color: config.color,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '14px',
+                            flexShrink: 0,
+                          }}>
+                            {config.icon}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontSize: '13px',
+                              color: '#1e3a5f',
+                              lineHeight: 1.4,
+                              wordBreak: 'break-word',
+                            }}>
+                              <strong style={{ fontWeight: 600 }}>{repLabel}</strong>{' '}
+                              <span style={{ color: config.color, fontWeight: 500 }}>{config.label}</span>{' '}
+                              <span style={{ color: '#3a4d68' }}>{subject}</span>
+                            </div>
+                            <div style={{
+                              fontSize: '11px',
+                              color: '#7a8a9b',
+                              marginTop: '4px',
+                              display: 'flex',
+                              gap: '6px',
+                              alignItems: 'center',
+                            }}>
+                              <span>{event.carrier_name}</span>
+                              <span style={{ color: '#cbd5db' }}>·</span>
+                              <span>{formatRelativeTime(event.occurred_at)}</span>
+                            </div>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
             </div>
+            {/* === END SPLIT ACTIVITY ROW === */}
 
             <div className="dash-card">
               <div className="dash-card-header">
