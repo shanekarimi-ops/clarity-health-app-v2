@@ -164,7 +164,7 @@ export async function POST(req: NextRequest) {
 // ===== Event handlers =====
 
 async function applyOpenedEvent(
-  admin: ReturnType<typeof createClient>,
+  admin: any,
   rcRow: { id: string; rfp_id: string; assigned_carrier_user_id: string | null; status: string; first_opened_at: string | null; open_count: number | null },
   nowIso: string
 ) {
@@ -212,7 +212,7 @@ async function applyOpenedEvent(
 }
 
 async function applyDeliveredEvent(
-  admin: ReturnType<typeof createClient>,
+  admin: any,
   rcRow: { id: string },
   nowIso: string,
   payload: ResendWebhookPayload
@@ -225,7 +225,7 @@ async function applyDeliveredEvent(
 }
 
 async function applyFailureEvent(
-  admin: ReturnType<typeof createClient>,
+  admin: any,
   rcRow: { id: string; rfp_id: string; assigned_carrier_user_id: string | null },
   nowIso: string,
   eventType: 'email.bounced' | 'email.complained',
