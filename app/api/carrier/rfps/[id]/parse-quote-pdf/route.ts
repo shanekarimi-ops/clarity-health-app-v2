@@ -110,6 +110,7 @@ export async function POST(
     }
 
     // 3. Verify this carrier_user is assigned to this RFP, and fetch RFP info we need
+    console.log('[parse-quote-pdf] looking up rfp_carriers', { rfp_id: rfpId, assigned_carrier_user_id: carrierUser.id });
     const { data: rfpCarrier, error: rcError } = await supabaseAdmin
       .from('rfp_carriers')
       .select(`
@@ -125,9 +126,24 @@ export async function POST(
       .eq('rfp_id', rfpId)
       .eq('assigned_carrier_user_id', carrierUser.id)
       .single();
-    if (rcError || !rfpCarrier) {
-      return NextResponse.json({ error: 'RFP not found or not assigned to you' }, { status: 404 });
-    }
+      if (rcError || !rfpCarrier) {
+        console.error('[parse-quote-pdf] rfp_carriers lookup failed', {
+          rfpId,
+          carrierUserId: carrierUser.id,
+          carrierUserCarrierId: carrierUser.carrier_id,
+          rcError,
+          rfpCarrier,
+        });
+        return NextResponse.json({
+          error: 'RFP not found or not assigned to you',
+          debug: {
+            rfp_id_used: rfpId,
+            carrier_user_id_used: carrierUser.id,
+            rc_error_message: rcError?.message ?? null,
+            rc_error_code: rcError?.code ?? null,
+          },
+        }, { status: 404 });
+      }
 
     const rfp = rfpCarrier.rfps as any;
     if (!rfp) {
