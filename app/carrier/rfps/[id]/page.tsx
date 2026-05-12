@@ -372,10 +372,12 @@ function QuoteUploadSection({
       const body = await res.json();
 
       if (!res.ok) {
-        setState({ kind: 'error', message: body.error || 'Could not parse the PDF.' });
+        const debugSuffix = body.debug
+          ? `\n\nDEBUG: ${JSON.stringify(body.debug, null, 2)}`
+          : '';
+        setState({ kind: 'error', message: (body.error || 'Could not parse the PDF.') + debugSuffix });
         return;
       }
-
       setState({
         kind: 'parsed',
         extracted_data: body.extracted_data,
@@ -504,7 +506,7 @@ function QuoteUploadSection({
       {state.kind === 'error' && (
         <div style={uploadErrorBoxStyle}>
           <strong>Something went wrong.</strong>
-          <div style={{ marginTop: '6px', fontSize: '13px' }}>{state.message}</div>
+          <div style={{ marginTop: '6px', fontSize: '13px', whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, monospace' }}>{state.message}</div>
           <div style={{ marginTop: '12px' }}>
             <button onClick={handleReset} style={uploadTextButtonStyle}>
               Try again
