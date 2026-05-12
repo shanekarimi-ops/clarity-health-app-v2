@@ -117,10 +117,10 @@ export async function POST(
         id,
         carrier_id,
         status,
+        requested_benefits,
         rfps:rfp_id (
           id,
-          agency_id,
-          requested_benefits
+          agency_id
         )
       `)
       .eq('rfp_id', rfpId)
@@ -196,8 +196,8 @@ export async function POST(
     }
 
     // 8. Call Claude with the PDF
-    const requestedBenefits: string[] = Array.isArray(rfp.requested_benefits)
-      ? rfp.requested_benefits
+    const requestedBenefits: string[] = Array.isArray((rfpCarrier as any).requested_benefits)
+      ? (rfpCarrier as any).requested_benefits
       : [];
     const prompt = buildExtractionPrompt(requestedBenefits);
 
