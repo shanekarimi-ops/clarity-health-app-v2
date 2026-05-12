@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/app/supabase';
 import CarrierShell from '@/app/components/CarrierShell';
@@ -38,6 +38,26 @@ type RfpDetail = {
   agency_name: string;
 };
 
+type SubmittedQuote = {
+  id: string;
+  submitted_at: string | null;
+  proposal_doc_url: string | null;
+  total_annual_cost: number | null;
+  monthly_cost: number | null;
+  notes: string | null;
+  lines: Array<{
+    id: string;
+    benefit_type: string;
+    plan_name: string | null;
+    rate_structure: string | null;
+    monthly_premium: number | null;
+    annual_cost: number | null;
+    rates: any;
+    plan_design: any;
+    display_order: number;
+  }>;
+};
+
 const DECLINE_REASONS = [
   { code: 'group_too_small', label: 'Group too small' },
   { code: 'industry_not_appetite', label: 'Industry not in appetite' },
@@ -45,6 +65,36 @@ const DECLINE_REASONS = [
   { code: 'state_not_supported', label: 'State not supported' },
   { code: 'other', label: 'Other' },
 ];
+
+const BENEFIT_TYPE_OPTIONS: Array<{ value: BenefitTypeValue; label: string }> = [
+  { value: 'medical', label: 'Medical' },
+  { value: 'dental', label: 'Dental' },
+  { value: 'vision', label: 'Vision' },
+  { value: 'life', label: 'Life & AD&D' },
+  { value: 'std', label: 'Short-Term Disability' },
+  { value: 'ltd', label: 'Long-Term Disability' },
+];
+
+type BenefitTypeValue = 'medical' | 'dental' | 'vision' | 'life' | 'std' | 'ltd';
+
+const RATE_STRUCTURE_OPTIONS = [
+  { value: 'tiered_4', label: '4-tier (EE / EE+Sp / EE+Ch / Family)' },
+  { value: 'tiered_2', label: '2-tier (EE / Family)' },
+  { value: 'composite', label: 'Composite (single rate)' },
+  { value: 'age_banded', label: 'Age-banded' },
+];
+
+// Map RFP benefit-line keys to canonical benefit_type values
+function rfpBenefitToType(rfpBenefit: string): BenefitTypeValue | null {
+  const lower = rfpBenefit.toLowerCase();
+  if (lower.includes('medical')) return 'medical';
+  if (lower.includes('dental')) return 'dental';
+  if (lower.includes('vision')) return 'vision';
+  if (lower.includes('life')) return 'life';
+  if (lower.includes('short') || lower === 'std') return 'std';
+  if (lower.includes('long') || lower === 'ltd') return 'ltd';
+  return null;
+}
 
 export default function CarrierRfpDetailPage() {
   return (
@@ -62,9 +112,11 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
   const [detail, setDetail] = useState<RfpDetail | null>(null);
+  const [submittedQuote, setSubmittedQuote] = useState<SubmittedQuote | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string>('');
   const [showDeclineModal, setShowDeclineModal] = useState(false);
+  const [isRevising, setIsRevising] = useState(false);
 
   const loadDetail = async () => {
     setLoading(true);
@@ -131,6 +183,49 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
       client_state: rfp.clients?.state ?? null,
       agency_name: rfp.agencies?.name ?? 'Unknown agency',
     });
+
+    // If status is submitted, load the existing quote so we can display it
+    if (data.status === 'submitted') {
+      const { data: quoteRow } = await supabase
+        .from('quotes')
+        .select(`
+          id,
+          submitted_at,
+          proposal_doc_url,
+          total_annual_cost,
+          monthly_cost,
+          notes,
+          quote_lines (
+            id,
+            benefit_type,
+            plan_name,
+            rate_structure,
+            monthly_premium,
+            annual_cost,
+            rates,
+            plan_design,
+            display_order
+          )
+        `)
+        .eq('rfp_carrier_id', data.id)
+        .maybeSingle();
+      if (quoteRow) {
+        const lines = ((quoteRow as any).quote_lines || []) as SubmittedQuote['lines'];
+        lines.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+        setSubmittedQuote({
+          id: quoteRow.id,
+          submitted_at: quoteRow.submitted_at,
+          proposal_doc_url: quoteRow.proposal_doc_url,
+          total_annual_cost: quoteRow.total_annual_cost,
+          monthly_cost: quoteRow.monthly_cost,
+          notes: quoteRow.notes,
+          lines,
+        });
+      }
+    } else {
+      setSubmittedQuote(null);
+    }
+
     setLoading(false);
   };
 
@@ -177,6 +272,11 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
     await loadDetail();
   };
 
+  const handleSubmitSuccess = async () => {
+    setIsRevising(false);
+    await loadDetail();
+  };
+
   if (loading) {
     return <div style={containerStyle}><div style={loadingStyle}>Loading RFP details…</div></div>;
   }
@@ -196,7 +296,10 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
   const isDeclined = detail.rc_status === 'declined';
   const isLockedFromDecline = ['submitted', 'won', 'lost'].includes(detail.rc_status);
   const canDecline = !isDeclined && !isLockedFromDecline;
-  const canUpload = !isDeclined && !isLockedFromDecline;
+  const isSubmitted = detail.rc_status === 'submitted';
+  const isClosed = ['won', 'lost'].includes(detail.rc_status);
+  const canUpload = !isDeclined && !isClosed && !isSubmitted;
+  const canRevise = isSubmitted && !isClosed;
 
   return (
     <div style={containerStyle}>
@@ -251,6 +354,15 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         </div>
       )}
 
+      {/* Submitted banner (read-only view) */}
+      {isSubmitted && submittedQuote && !isRevising && (
+        <SubmittedQuoteView
+          quote={submittedQuote}
+          canRevise={canRevise}
+          onRevise={() => setIsRevising(true)}
+        />
+      )}
+
       {/* Plan Documents */}
       <div style={sectionCardStyle}>
         <h2 style={sectionTitleStyle}>Plan Documents</h2>
@@ -281,11 +393,15 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
         <PlanDesignTabbed tabs={tabs} planDesign={planDesign} />
       )}
 
-      {/* Submit a Quote section (NEW in Push 3) */}
-      {canUpload && (
+      {/* Quote upload + form (first submit OR revision) */}
+      {(canUpload || isRevising) && (
         <QuoteUploadSection
           rfpId={rfpId}
           requestedBenefits={detail.requested_benefits}
+          isRevision={isRevising}
+          initialQuote={isRevising ? submittedQuote : null}
+          onSubmitSuccess={handleSubmitSuccess}
+          onCancelRevision={() => setIsRevising(false)}
         />
       )}
 
@@ -315,75 +431,283 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
   );
 }
 
-// === QUOTE UPLOAD SECTION (NEW in Push 3) ===
+// === SUBMITTED QUOTE VIEW (read-only) ===
+
+function SubmittedQuoteView({
+  quote,
+  canRevise,
+  onRevise,
+}: {
+  quote: SubmittedQuote;
+  canRevise: boolean;
+  onRevise: () => void;
+}) {
+  const submittedDate = quote.submitted_at ? formatDate(quote.submitted_at) : 'recently';
+  return (
+    <div style={submittedSuccessCardStyle}>
+      <div style={submittedHeaderStyle}>
+        <div>
+          <div style={submittedTitleStyle}>
+            <span style={{ fontSize: '22px', marginRight: '8px' }}>✅</span>
+            Quote submitted on {submittedDate}
+          </div>
+          <div style={submittedSubtitleStyle}>
+            The broker has been notified and your quote is now under review.
+          </div>
+        </div>
+        {canRevise && (
+          <button onClick={onRevise} style={reviseButtonStyle}>
+            Submit a revised quote
+          </button>
+        )}
+      </div>
+
+      <div style={submittedTotalsRowStyle}>
+        <div>
+          <div style={metaLabelStyle}>Total Monthly</div>
+          <div style={submittedTotalValueStyle}>{quote.monthly_cost ? fmtMoney(quote.monthly_cost) : '—'}</div>
+        </div>
+        <div>
+          <div style={metaLabelStyle}>Total Annual</div>
+          <div style={submittedTotalValueStyle}>{quote.total_annual_cost ? fmtMoney(quote.total_annual_cost) : '—'}</div>
+        </div>
+        <div>
+          <div style={metaLabelStyle}>Benefit Lines</div>
+          <div style={submittedTotalValueStyle}>{quote.lines.length}</div>
+        </div>
+      </div>
+
+      <div style={submittedLinesListStyle}>
+        {quote.lines.map((line) => (
+          <div key={line.id} style={submittedLineRowStyle}>
+            <div style={{ flex: 1 }}>
+              <div style={submittedLineTitleStyle}>
+                {BENEFIT_TYPE_OPTIONS.find(o => o.value === line.benefit_type)?.label ?? line.benefit_type}
+                {line.plan_name && <span style={{ color: '#5a6c7d', fontWeight: 400, marginLeft: '8px' }}>· {line.plan_name}</span>}
+              </div>
+              <div style={submittedLineMetaStyle}>
+                {line.rate_structure && <span>{RATE_STRUCTURE_OPTIONS.find(o => o.value === line.rate_structure)?.label.split(' ')[0]}</span>}
+                {line.monthly_premium != null && <span> · Monthly {fmtMoney(line.monthly_premium)}</span>}
+                {line.annual_cost != null && <span> · Annual {fmtMoney(line.annual_cost)}</span>}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {quote.notes && (
+        <div style={submittedNotesStyle}>
+          <strong>Notes:</strong> {quote.notes}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// === QUOTE UPLOAD SECTION (NEW in Push 4) ===
+
+type FormLine = {
+  uiKey: string;                  // stable React key for this line
+  benefit_type: BenefitTypeValue;
+  plan_name: string;
+  rate_structure: string;
+  monthly_premium: string;        // strings while editing, parsed on submit
+  annual_cost: string;
+  rates: {
+    employee_only: string;
+    employee_spouse: string;
+    employee_children: string;
+    family: string;
+  };
+  plan_design: any;               // per-type shape; edited inline
+};
 
 type UploadState =
   | { kind: 'choose' }
   | { kind: 'parsing'; filename: string }
-  | { kind: 'parsed'; extracted_data: any; proposal_doc_url: string; filename: string; extraction_error: string | null }
-  | { kind: 'manual' }
+  | { kind: 'reviewing'; proposalDocUrl: string | null; extractedData: any; extractionStatus: 'extracted' | 'manual' }
+  | { kind: 'submitting' }
   | { kind: 'error'; message: string };
+
+function makeBlankLine(benefitType: BenefitTypeValue): FormLine {
+  return {
+    uiKey: `${benefitType}-${Math.random().toString(36).slice(2, 9)}`,
+    benefit_type: benefitType,
+    plan_name: '',
+    rate_structure: 'tiered_4',
+    monthly_premium: '',
+    annual_cost: '',
+    rates: {
+      employee_only: '',
+      employee_spouse: '',
+      employee_children: '',
+      family: '',
+    },
+    plan_design: defaultPlanDesignForType(benefitType),
+  };
+}
+
+function defaultPlanDesignForType(benefitType: BenefitTypeValue): any {
+  switch (benefitType) {
+    case 'medical':
+      return { deductible_individual: null, deductible_family: null, oop_max_individual: null, oop_max_family: null, coinsurance_pct: null, pcp_copay: null, specialist_copay: null, er_copay: null, urgent_care_copay: null, telehealth_copay: null, rx_generic: null, rx_preferred_brand: null, rx_non_preferred_brand: null, rx_specialty: null, rx_specialty_is_percentage: null, notes: null };
+    case 'dental':
+      return { annual_max: null, deductible_individual: null, deductible_family: null, preventive_coverage_pct: null, basic_coverage_pct: null, major_coverage_pct: null, ortho_coverage_pct: null, ortho_lifetime_max: null, ortho_covered: null, notes: null };
+    case 'vision':
+      return { exam_copay: null, exam_frequency_months: null, frames_allowance: null, frames_frequency_months: null, lenses_copay: null, lenses_frequency_months: null, contacts_allowance: null, contacts_frequency_months: null, notes: null };
+    case 'life':
+      return { benefit_amount: null, ad_d_amount: null, is_multiple_of_salary: null, salary_multiple: null, max_benefit: null, age_reduction_schedule: null, notes: null };
+    case 'std':
+      return { benefit_pct: null, max_weekly_benefit: null, elimination_period_days: null, max_benefit_duration_weeks: null, notes: null };
+    case 'ltd':
+      return { benefit_pct: null, max_monthly_benefit: null, elimination_period_days: null, max_benefit_duration: null, notes: null };
+    default:
+      return {};
+  }
+}
+
+function lineFromExtracted(extractedLine: any): FormLine | null {
+  if (!extractedLine || !ALLOWED_BENEFIT_TYPES.includes(extractedLine.benefit_type)) return null;
+  const benefitType = extractedLine.benefit_type as BenefitTypeValue;
+  const rates = extractedLine.rates || {};
+  return {
+    uiKey: `${benefitType}-${Math.random().toString(36).slice(2, 9)}`,
+    benefit_type: benefitType,
+    plan_name: extractedLine.plan_name || '',
+    rate_structure: extractedLine.rate_structure || 'tiered_4',
+    monthly_premium: extractedLine.monthly_premium != null ? String(extractedLine.monthly_premium) : '',
+    annual_cost: extractedLine.annual_cost != null ? String(extractedLine.annual_cost) : '',
+    rates: {
+      employee_only: rates.employee_only != null ? String(rates.employee_only) : '',
+      employee_spouse: rates.employee_spouse != null ? String(rates.employee_spouse) : '',
+      employee_children: rates.employee_children != null ? String(rates.employee_children) : '',
+      family: rates.family != null ? String(rates.family) : '',
+    },
+    plan_design: { ...defaultPlanDesignForType(benefitType), ...(extractedLine.plan_design || {}) },
+  };
+}
+
+function lineFromExistingQuote(quoteLine: SubmittedQuote['lines'][number]): FormLine {
+  const benefitType = (ALLOWED_BENEFIT_TYPES.includes(quoteLine.benefit_type) ? quoteLine.benefit_type : 'medical') as BenefitTypeValue;
+  const rates = quoteLine.rates || {};
+  return {
+    uiKey: `${quoteLine.id}-${Math.random().toString(36).slice(2, 9)}`,
+    benefit_type: benefitType,
+    plan_name: quoteLine.plan_name || '',
+    rate_structure: quoteLine.rate_structure || 'tiered_4',
+    monthly_premium: quoteLine.monthly_premium != null ? String(quoteLine.monthly_premium) : '',
+    annual_cost: quoteLine.annual_cost != null ? String(quoteLine.annual_cost) : '',
+    rates: {
+      employee_only: rates.employee_only != null ? String(rates.employee_only) : '',
+      employee_spouse: rates.employee_spouse != null ? String(rates.employee_spouse) : '',
+      employee_children: rates.employee_children != null ? String(rates.employee_children) : '',
+      family: rates.family != null ? String(rates.family) : '',
+    },
+    plan_design: { ...defaultPlanDesignForType(benefitType), ...(quoteLine.plan_design || {}) },
+  };
+}
+
+const ALLOWED_BENEFIT_TYPES: BenefitTypeValue[] = ['medical', 'dental', 'vision', 'life', 'std', 'ltd'];
 
 function QuoteUploadSection({
   rfpId,
   requestedBenefits,
+  isRevision,
+  initialQuote,
+  onSubmitSuccess,
+  onCancelRevision,
 }: {
   rfpId: string;
   requestedBenefits: string[];
+  isRevision: boolean;
+  initialQuote: SubmittedQuote | null;
+  onSubmitSuccess: () => void;
+  onCancelRevision: () => void;
 }) {
-  const [state, setState] = useState<UploadState>({ kind: 'choose' });
+  // If revising, seed state with reviewing+existing lines. Otherwise choose state.
+  const initialState: UploadState = isRevision && initialQuote
+    ? { kind: 'reviewing', proposalDocUrl: initialQuote.proposal_doc_url, extractedData: null, extractionStatus: 'manual' }
+    : { kind: 'choose' };
+
+  const [state, setState] = useState<UploadState>(initialState);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Initial set of form lines
+  const initialLines = useMemo<FormLine[]>(() => {
+    if (isRevision && initialQuote) {
+      return initialQuote.lines.map(lineFromExistingQuote);
+    }
+    return [];
+  }, [isRevision, initialQuote]);
+
+  const [lines, setLines] = useState<FormLine[]>(initialLines);
+  const [carrierNameField, setCarrierNameField] = useState<string>('');
+  const [effectiveDateField, setEffectiveDateField] = useState<string>(initialQuote ? '' : '');
+  const [notesField, setNotesField] = useState<string>(initialQuote?.notes ?? '');
+  const [submitError, setSubmitError] = useState<string>('');
 
   const handlePdfPicked = async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       setState({ kind: 'error', message: 'Please select a PDF file.' });
       return;
     }
-    // Max 15 MB
     if (file.size > 15 * 1024 * 1024) {
       setState({ kind: 'error', message: 'PDF must be under 15 MB.' });
       return;
     }
-
     setState({ kind: 'parsing', filename: file.name });
-
     try {
-      // Read file as base64
       const base64 = await fileToBase64(file);
-
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
         setState({ kind: 'error', message: 'Your session has expired. Please log in again.' });
         return;
       }
-
       const res = await fetch(`/api/carrier/rfps/${rfpId}/parse-quote-pdf`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({
-          pdf_base64: base64,
-          filename: file.name,
-        }),
+        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
       });
-
       const body = await res.json();
-
       if (!res.ok) {
-        const debugSuffix = body.debug
-          ? `\n\nDEBUG: ${JSON.stringify(body.debug, null, 2)}`
-          : '';
+        const debugSuffix = body.debug ? `\n\nDEBUG: ${JSON.stringify(body.debug, null, 2)}` : '';
         setState({ kind: 'error', message: (body.error || 'Could not parse the PDF.') + debugSuffix });
         return;
       }
+
+      // Build initial form lines from extraction
+      const extracted = body.extracted_data;
+      const extractedLines: FormLine[] = [];
+      if (extracted && Array.isArray(extracted.lines)) {
+        for (const el of extracted.lines) {
+          const fl = lineFromExtracted(el);
+          if (fl) extractedLines.push(fl);
+        }
+      }
+
+      // For any requested benefit not represented in extraction, pre-create a blank line
+      const seenTypes = new Set(extractedLines.map(l => l.benefit_type));
+      for (const rb of requestedBenefits) {
+        const typeMaybe = rfpBenefitToType(rb);
+        if (typeMaybe && !seenTypes.has(typeMaybe)) {
+          extractedLines.push(makeBlankLine(typeMaybe));
+          seenTypes.add(typeMaybe);
+        }
+      }
+
+      setLines(extractedLines);
+      if (extracted) {
+        if (extracted.carrier_name) setCarrierNameField(extracted.carrier_name);
+        if (extracted.effective_date) setEffectiveDateField(extracted.effective_date);
+      }
       setState({
-        kind: 'parsed',
-        extracted_data: body.extracted_data,
-        proposal_doc_url: body.proposal_doc_url,
-        filename: file.name,
-        extraction_error: body.extraction_error || null,
+        kind: 'reviewing',
+        proposalDocUrl: body.proposal_doc_url || null,
+        extractedData: extracted,
+        extractionStatus: extracted ? 'extracted' : 'manual',
       });
     } catch (err: any) {
       console.error('[QuoteUploadSection] parse error:', err);
@@ -393,15 +717,234 @@ function QuoteUploadSection({
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      handlePdfPicked(file);
-    }
-    // Reset input so the same file can be re-picked if needed
+    if (file) handlePdfPicked(file);
     e.target.value = '';
+  };
+
+  const handleStartManual = () => {
+    // Pre-create one blank line per requested benefit
+    const blankLines: FormLine[] = [];
+    for (const rb of requestedBenefits) {
+      const typeMaybe = rfpBenefitToType(rb);
+      if (typeMaybe) blankLines.push(makeBlankLine(typeMaybe));
+    }
+    if (blankLines.length === 0) blankLines.push(makeBlankLine('medical'));
+    setLines(blankLines);
+    setState({ kind: 'reviewing', proposalDocUrl: null, extractedData: null, extractionStatus: 'manual' });
+  };
+
+  const handleAddLine = () => {
+    setLines([...lines, makeBlankLine('medical')]);
+  };
+
+  const handleRemoveLine = (uiKey: string) => {
+    setLines(lines.filter(l => l.uiKey !== uiKey));
+  };
+
+  const handleUpdateLine = (uiKey: string, updates: Partial<FormLine>) => {
+    setLines(lines.map(l => {
+      if (l.uiKey !== uiKey) return l;
+      // If benefit_type changed, also swap to default plan_design for that type
+      if (updates.benefit_type && updates.benefit_type !== l.benefit_type) {
+        return { ...l, ...updates, plan_design: defaultPlanDesignForType(updates.benefit_type) };
+      }
+      return { ...l, ...updates };
+    }));
+  };
+
+  const handleUpdateLineRate = (uiKey: string, tier: keyof FormLine['rates'], value: string) => {
+    setLines(lines.map(l => {
+      if (l.uiKey !== uiKey) return l;
+      return { ...l, rates: { ...l.rates, [tier]: value } };
+    }));
+  };
+
+  const handleUpdatePlanDesign = (uiKey: string, field: string, value: any) => {
+    setLines(lines.map(l => {
+      if (l.uiKey !== uiKey) return l;
+      return { ...l, plan_design: { ...l.plan_design, [field]: value } };
+    }));
+  };
+
+  const handleSubmit = async () => {
+    setSubmitError('');
+    if (state.kind !== 'reviewing') return;
+    setState({ kind: 'submitting' });
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setSubmitError('Your session has expired. Please log in again.');
+        setState({ kind: 'reviewing', proposalDocUrl: state.proposalDocUrl, extractedData: state.extractedData, extractionStatus: state.extractionStatus });
+        return;
+      }
+
+      // Convert lines to API shape (parse number strings)
+      const payloadLines = lines.map(l => ({
+        benefit_type: l.benefit_type,
+        plan_name: l.plan_name || null,
+        rate_structure: l.rate_structure || null,
+        monthly_premium: parseNumOrNull(l.monthly_premium),
+        annual_cost: parseNumOrNull(l.annual_cost),
+        rates: {
+          employee_only: parseNumOrNull(l.rates.employee_only),
+          employee_spouse: parseNumOrNull(l.rates.employee_spouse),
+          employee_children: parseNumOrNull(l.rates.employee_children),
+          family: parseNumOrNull(l.rates.family),
+        },
+        plan_design: l.plan_design,
+      }));
+
+      // Aggregate totals from lines if blank
+      const sumMonthly = payloadLines.reduce((sum, l) => sum + (l.monthly_premium ?? 0), 0);
+      const sumAnnual = payloadLines.reduce((sum, l) => sum + (l.annual_cost ?? 0), 0);
+
+      const res = await fetch(`/api/carrier/rfps/${rfpId}/submit-quote`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          proposal_doc_url: (state as any).proposalDocUrl,
+          extracted_data: (state as any).extractedData,
+          carrier_name: carrierNameField || null,
+          effective_date: effectiveDateField || null,
+          total_annual_cost: sumAnnual > 0 ? sumAnnual : null,
+          monthly_cost: sumMonthly > 0 ? sumMonthly : null,
+          lines: payloadLines,
+          notes: notesField || null,
+          extraction_status: (state as any).extractionStatus,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setSubmitError(body.error || 'Could not submit the quote.');
+        setState({ kind: 'reviewing', proposalDocUrl: (state as any).proposalDocUrl, extractedData: (state as any).extractedData, extractionStatus: (state as any).extractionStatus });
+        return;
+      }
+      onSubmitSuccess();
+    } catch (err: any) {
+      console.error('[QuoteUploadSection] submit error:', err);
+      setSubmitError('Network error. Please try again.');
+      setState({ kind: 'reviewing', proposalDocUrl: (state as any).proposalDocUrl, extractedData: (state as any).extractedData, extractionStatus: (state as any).extractionStatus });
+    }
   };
 
   const handleReset = () => setState({ kind: 'choose' });
 
+  // Reviewing mode UI is shown for both PDF-extracted and manual entry
+  if (state.kind === 'reviewing' || state.kind === 'submitting') {
+    return (
+      <div style={uploadSectionCardStyle}>
+        <div style={reviewHeaderRowStyle}>
+          <div>
+            <h2 style={sectionTitleStyle}>{isRevision ? 'Revise Your Quote' : 'Review & Submit Quote'}</h2>
+            <p style={sectionSubtitleStyle}>
+              {isRevision
+                ? 'Edit any fields and submit to replace your previous quote.'
+                : 'Review the extracted data, edit anything that needs correction, and submit when ready.'}
+            </p>
+          </div>
+          {isRevision && (
+            <button onClick={onCancelRevision} style={uploadTextButtonStyle}>
+              Cancel revision
+            </button>
+          )}
+        </div>
+
+        {state.kind === 'reviewing' && state.extractedData == null && state.extractionStatus === 'manual' && !isRevision && (
+          <div style={manualNoticeStyle}>
+            <strong>📝 Manual entry</strong>
+            <div style={{ fontSize: '13px', marginTop: '4px', color: '#5a6c7d' }}>
+              You&apos;re entering the quote details by hand. All fields are optional — fill in what you have.
+            </div>
+          </div>
+        )}
+
+        {/* Top-level metadata */}
+        <div style={formGridStyle}>
+          <div>
+            <label style={fieldLabelStyle}>Carrier name</label>
+            <input
+              type="text"
+              value={carrierNameField}
+              onChange={(e) => setCarrierNameField(e.target.value)}
+              placeholder="e.g. Aetna, UHC, BCBS"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={fieldLabelStyle}>Effective date</label>
+            <input
+              type="date"
+              value={effectiveDateField}
+              onChange={(e) => setEffectiveDateField(e.target.value)}
+              style={inputStyle}
+            />
+          </div>
+        </div>
+
+        {/* Per-line forms */}
+        <div style={{ marginTop: '20px' }}>
+          {lines.length === 0 && (
+            <div style={emptyLinesStyle}>
+              <div style={{ fontSize: '24px', marginBottom: '8px' }}>📋</div>
+              <div>No benefit lines yet. Click &quot;Add benefit line&quot; below to start.</div>
+            </div>
+          )}
+          {lines.map((line) => (
+            <BenefitLineEditor
+              key={line.uiKey}
+              line={line}
+              onUpdate={(updates) => handleUpdateLine(line.uiKey, updates)}
+              onUpdateRate={(tier, value) => handleUpdateLineRate(line.uiKey, tier, value)}
+              onUpdatePlanDesign={(field, value) => handleUpdatePlanDesign(line.uiKey, field, value)}
+              onRemove={() => handleRemoveLine(line.uiKey)}
+            />
+          ))}
+        </div>
+
+        <button onClick={handleAddLine} style={addLineButtonStyle}>
+          + Add benefit line
+        </button>
+
+        {/* Notes */}
+        <div style={{ marginTop: '24px' }}>
+          <label style={fieldLabelStyle}>Notes for the broker (optional)</label>
+          <textarea
+            value={notesField}
+            onChange={(e) => setNotesField(e.target.value)}
+            placeholder="Anything else you'd like the broker to know about this quote..."
+            rows={3}
+            maxLength={1000}
+            style={textareaInputStyle}
+          />
+        </div>
+
+        {submitError && (
+          <div style={submitErrorStyle}>{submitError}</div>
+        )}
+
+        {/* Submit row */}
+        <div style={submitRowStyle}>
+          {!isRevision && (
+            <button onClick={handleReset} disabled={state.kind === 'submitting'} style={uploadTextButtonStyle}>
+              ← Start over
+            </button>
+          )}
+          <button
+            onClick={handleSubmit}
+            disabled={state.kind === 'submitting'}
+            style={submitButtonStyle}
+          >
+            {state.kind === 'submitting' ? 'Submitting…' : (isRevision ? 'Submit revised quote' : 'Submit quote')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Choose / parsing / error states
   return (
     <div style={uploadSectionCardStyle}>
       <h2 style={sectionTitleStyle}>Submit a Quote</h2>
@@ -409,7 +952,6 @@ function QuoteUploadSection({
         Upload your quote proposal PDF and we&apos;ll extract the details automatically. You&apos;ll get to review everything before submitting.
       </p>
 
-      {/* Hidden file input always rendered */}
       <input
         ref={fileInputRef}
         type="file"
@@ -427,10 +969,7 @@ function QuoteUploadSection({
             📄 Upload PDF
             <div style={uploadButtonSubtextStyle}>We&apos;ll auto-fill the form using AI</div>
           </button>
-          <button
-            onClick={() => setState({ kind: 'manual' })}
-            style={uploadSecondaryButtonStyle}
-          >
+          <button onClick={handleStartManual} style={uploadSecondaryButtonStyle}>
             ✍️ Enter manually
             <div style={uploadButtonSubtextStyle}>Type in the quote details by hand</div>
           </button>
@@ -443,62 +982,6 @@ function QuoteUploadSection({
           <div>
             <div style={parsingTitleStyle}>Reading {state.filename}…</div>
             <div style={parsingSubtitleStyle}>This usually takes 15–30 seconds.</div>
-          </div>
-        </div>
-      )}
-
-      {state.kind === 'parsed' && (
-        <div>
-          {state.extraction_error || !state.extracted_data ? (
-            <div style={extractionWarningStyle}>
-              <strong>⚠️ We couldn&apos;t auto-extract the data from this PDF.</strong>
-              <div style={{ marginTop: '6px', fontSize: '13px', color: '#7c2d12' }}>
-                Your PDF was uploaded successfully ({state.filename}), but we couldn&apos;t parse it. You can still enter the quote details manually below.
-              </div>
-              <div style={{ marginTop: '12px' }}>
-                <button onClick={() => setState({ kind: 'manual' })} style={uploadSecondaryButtonStyle}>
-                  ✍️ Enter manually
-                </button>
-                <button onClick={handleReset} style={{ ...uploadTextButtonStyle, marginLeft: '10px' }}>
-                  Try a different PDF
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div style={parsedSuccessBoxStyle}>
-              <div style={parsedSuccessHeaderStyle}>
-                <span style={{ fontSize: '20px' }}>✅</span>
-                <strong>Parsed {state.filename}</strong>
-              </div>
-              <div style={parsedSuccessSubtextStyle}>
-                The PDF is uploaded. The review-and-submit form is coming in Push 4.
-              </div>
-              <details style={{ marginTop: '14px' }}>
-                <summary style={detailsSummaryStyle}>Show extracted data (debug)</summary>
-                <pre style={extractedDataPreStyle}>
-                  {JSON.stringify(state.extracted_data, null, 2)}
-                </pre>
-              </details>
-              <div style={{ marginTop: '14px' }}>
-                <button onClick={handleReset} style={uploadTextButtonStyle}>
-                  Start over
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {state.kind === 'manual' && (
-        <div style={manualPlaceholderStyle}>
-          <strong>Manual entry form coming in Push 4.</strong>
-          <div style={{ fontSize: '13px', color: '#5a6c7d', marginTop: '6px' }}>
-            You&apos;ll be able to fill in plan details for: {requestedBenefits.map(b => BENEFIT_LINE_LABELS[b as BenefitLineValue] ?? b).join(', ')}.
-          </div>
-          <div style={{ marginTop: '14px' }}>
-            <button onClick={handleReset} style={uploadTextButtonStyle}>
-              ← Back
-            </button>
           </div>
         </div>
       )}
@@ -518,13 +1001,315 @@ function QuoteUploadSection({
   );
 }
 
-// Read a File as base64 (without the data: prefix)
+// === BENEFIT LINE EDITOR ===
+
+function BenefitLineEditor({
+  line,
+  onUpdate,
+  onUpdateRate,
+  onUpdatePlanDesign,
+  onRemove,
+}: {
+  line: FormLine;
+  onUpdate: (updates: Partial<FormLine>) => void;
+  onUpdateRate: (tier: keyof FormLine['rates'], value: string) => void;
+  onUpdatePlanDesign: (field: string, value: any) => void;
+  onRemove: () => void;
+}) {
+  const showSpouse = line.rate_structure === 'tiered_4';
+  const showChildren = line.rate_structure === 'tiered_4';
+  const showFamily = ['tiered_4', 'tiered_2'].includes(line.rate_structure);
+
+  return (
+    <div style={lineCardStyle}>
+      <div style={lineCardHeaderStyle}>
+        <select
+          value={line.benefit_type}
+          onChange={(e) => onUpdate({ benefit_type: e.target.value as BenefitTypeValue })}
+          style={lineBenefitSelectStyle}
+        >
+          {BENEFIT_TYPE_OPTIONS.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <button onClick={onRemove} style={removeLineButtonStyle} title="Remove this benefit line">
+          ✕ Remove
+        </button>
+      </div>
+
+      <div style={formGridStyle}>
+        <div>
+          <label style={fieldLabelStyle}>Plan name</label>
+          <input
+            type="text"
+            value={line.plan_name}
+            onChange={(e) => onUpdate({ plan_name: e.target.value })}
+            placeholder="e.g. PPO 2000"
+            style={inputStyle}
+          />
+        </div>
+        <div>
+          <label style={fieldLabelStyle}>Rate structure</label>
+          <select
+            value={line.rate_structure}
+            onChange={(e) => onUpdate({ rate_structure: e.target.value })}
+            style={inputStyle}
+          >
+            {RATE_STRUCTURE_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ marginTop: '14px' }}>
+        <div style={subsectionLabelStyle}>Premium totals</div>
+        <div style={formGridStyle}>
+          <div>
+            <label style={fieldLabelStyle}>Total monthly premium</label>
+            <input
+              type="number"
+              step="0.01"
+              value={line.monthly_premium}
+              onChange={(e) => onUpdate({ monthly_premium: e.target.value })}
+              placeholder="0.00"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={fieldLabelStyle}>Total annual cost</label>
+            <input
+              type="number"
+              step="0.01"
+              value={line.annual_cost}
+              onChange={(e) => onUpdate({ annual_cost: e.target.value })}
+              placeholder="0.00"
+              style={inputStyle}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: '14px' }}>
+        <div style={subsectionLabelStyle}>Tier rates (monthly)</div>
+        <div style={ratesGridStyle}>
+          <div>
+            <label style={fieldLabelStyle}>Employee only</label>
+            <input
+              type="number"
+              step="0.01"
+              value={line.rates.employee_only}
+              onChange={(e) => onUpdateRate('employee_only', e.target.value)}
+              placeholder="0.00"
+              style={inputStyle}
+            />
+          </div>
+          {showSpouse && (
+            <div>
+              <label style={fieldLabelStyle}>EE + Spouse</label>
+              <input
+                type="number"
+                step="0.01"
+                value={line.rates.employee_spouse}
+                onChange={(e) => onUpdateRate('employee_spouse', e.target.value)}
+                placeholder="0.00"
+                style={inputStyle}
+              />
+            </div>
+          )}
+          {showChildren && (
+            <div>
+              <label style={fieldLabelStyle}>EE + Children</label>
+              <input
+                type="number"
+                step="0.01"
+                value={line.rates.employee_children}
+                onChange={(e) => onUpdateRate('employee_children', e.target.value)}
+                placeholder="0.00"
+                style={inputStyle}
+              />
+            </div>
+          )}
+          {showFamily && (
+            <div>
+              <label style={fieldLabelStyle}>Family</label>
+              <input
+                type="number"
+                step="0.01"
+                value={line.rates.family}
+                onChange={(e) => onUpdateRate('family', e.target.value)}
+                placeholder="0.00"
+                style={inputStyle}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ marginTop: '14px' }}>
+        <div style={subsectionLabelStyle}>Plan design</div>
+        <PlanDesignEditor benefitType={line.benefit_type} planDesign={line.plan_design} onUpdate={onUpdatePlanDesign} />
+      </div>
+    </div>
+  );
+}
+
+// === PLAN DESIGN EDITOR (per-type field sets) ===
+
+function PlanDesignEditor({
+  benefitType,
+  planDesign,
+  onUpdate,
+}: {
+  benefitType: BenefitTypeValue;
+  planDesign: any;
+  onUpdate: (field: string, value: any) => void;
+}) {
+  const fields = PLAN_DESIGN_FIELDS[benefitType] || [];
+  return (
+    <div style={planDesignGridStyle}>
+      {fields.map(f => (
+        <PlanDesignField
+          key={f.key}
+          field={f}
+          value={planDesign?.[f.key]}
+          onChange={(v) => onUpdate(f.key, v)}
+        />
+      ))}
+      <div style={{ gridColumn: '1 / -1' }}>
+        <label style={fieldLabelStyle}>Notes</label>
+        <textarea
+          value={planDesign?.notes ?? ''}
+          onChange={(e) => onUpdate('notes', e.target.value || null)}
+          placeholder="Anything notable about this plan..."
+          rows={2}
+          style={textareaInputStyle}
+        />
+      </div>
+    </div>
+  );
+}
+
+type FieldDef = { key: string; label: string; type: 'number' | 'text' | 'select'; options?: string[]; placeholder?: string };
+
+const PLAN_DESIGN_FIELDS: Record<BenefitTypeValue, FieldDef[]> = {
+  medical: [
+    { key: 'deductible_individual', label: 'Deductible (Individual)', type: 'number' },
+    { key: 'deductible_family', label: 'Deductible (Family)', type: 'number' },
+    { key: 'oop_max_individual', label: 'OOP Max (Individual)', type: 'number' },
+    { key: 'oop_max_family', label: 'OOP Max (Family)', type: 'number' },
+    { key: 'coinsurance_pct', label: 'Coinsurance %', type: 'number' },
+    { key: 'pcp_copay', label: 'PCP Copay', type: 'number' },
+    { key: 'specialist_copay', label: 'Specialist Copay', type: 'number' },
+    { key: 'er_copay', label: 'ER Copay', type: 'number' },
+    { key: 'urgent_care_copay', label: 'Urgent Care Copay', type: 'number' },
+    { key: 'telehealth_copay', label: 'Telehealth Copay', type: 'number' },
+    { key: 'rx_generic', label: 'Rx Generic', type: 'number' },
+    { key: 'rx_preferred_brand', label: 'Rx Preferred Brand', type: 'number' },
+    { key: 'rx_non_preferred_brand', label: 'Rx Non-Preferred Brand', type: 'number' },
+    { key: 'rx_specialty', label: 'Rx Specialty (amount or cap)', type: 'number' },
+  ],
+  dental: [
+    { key: 'annual_max', label: 'Annual Max (per person)', type: 'number' },
+    { key: 'deductible_individual', label: 'Deductible (Individual)', type: 'number' },
+    { key: 'deductible_family', label: 'Deductible (Family)', type: 'number' },
+    { key: 'preventive_coverage_pct', label: 'Preventive Coverage %', type: 'number' },
+    { key: 'basic_coverage_pct', label: 'Basic Coverage %', type: 'number' },
+    { key: 'major_coverage_pct', label: 'Major Coverage %', type: 'number' },
+    { key: 'ortho_coverage_pct', label: 'Ortho Coverage %', type: 'number' },
+    { key: 'ortho_lifetime_max', label: 'Ortho Lifetime Max', type: 'number' },
+    { key: 'ortho_covered', label: 'Ortho Coverage', type: 'select', options: ['', 'child_only', 'adult_and_child', 'none'] },
+  ],
+  vision: [
+    { key: 'exam_copay', label: 'Exam Copay', type: 'number' },
+    { key: 'exam_frequency_months', label: 'Exam Frequency (months)', type: 'number' },
+    { key: 'frames_allowance', label: 'Frames Allowance', type: 'number' },
+    { key: 'frames_frequency_months', label: 'Frames Frequency (months)', type: 'number' },
+    { key: 'lenses_copay', label: 'Lenses Copay', type: 'number' },
+    { key: 'lenses_frequency_months', label: 'Lenses Frequency (months)', type: 'number' },
+    { key: 'contacts_allowance', label: 'Contacts Allowance', type: 'number' },
+    { key: 'contacts_frequency_months', label: 'Contacts Frequency (months)', type: 'number' },
+  ],
+  life: [
+    { key: 'benefit_amount', label: 'Benefit Amount (flat)', type: 'number' },
+    { key: 'ad_d_amount', label: 'AD&D Amount', type: 'number' },
+    { key: 'salary_multiple', label: 'Salary Multiple (if applicable)', type: 'number' },
+    { key: 'max_benefit', label: 'Max Benefit Cap', type: 'number' },
+    { key: 'age_reduction_schedule', label: 'Age Reduction Schedule', type: 'text', placeholder: 'e.g. 35% at 65, 50% at 70' },
+  ],
+  std: [
+    { key: 'benefit_pct', label: 'Benefit % of Salary', type: 'number' },
+    { key: 'max_weekly_benefit', label: 'Max Weekly Benefit', type: 'number' },
+    { key: 'elimination_period_days', label: 'Elimination Period (days)', type: 'number' },
+    { key: 'max_benefit_duration_weeks', label: 'Max Duration (weeks)', type: 'number' },
+  ],
+  ltd: [
+    { key: 'benefit_pct', label: 'Benefit % of Salary', type: 'number' },
+    { key: 'max_monthly_benefit', label: 'Max Monthly Benefit', type: 'number' },
+    { key: 'elimination_period_days', label: 'Elimination Period (days)', type: 'number' },
+    { key: 'max_benefit_duration', label: 'Max Duration', type: 'text', placeholder: 'e.g. to age 65, 5 years' },
+  ],
+};
+
+function PlanDesignField({
+  field,
+  value,
+  onChange,
+}: {
+  field: FieldDef;
+  value: any;
+  onChange: (v: any) => void;
+}) {
+  const displayValue = value == null ? '' : String(value);
+  return (
+    <div>
+      <label style={fieldLabelStyle}>{field.label}</label>
+      {field.type === 'select' ? (
+        <select
+          value={displayValue}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        >
+          {(field.options || []).map(opt => (
+            <option key={opt} value={opt}>{opt || '— Not specified —'}</option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type={field.type}
+          value={displayValue}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (field.type === 'number') {
+              if (raw === '') { onChange(null); return; }
+              const n = parseFloat(raw);
+              onChange(isNaN(n) ? null : n);
+            } else {
+              onChange(raw || null);
+            }
+          }}
+          placeholder={field.placeholder || ''}
+          style={inputStyle}
+          step={field.type === 'number' ? '0.01' : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+// === HELPERS ===
+
+function parseNumOrNull(s: string): number | null {
+  if (s == null || s === '') return null;
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      // result is like "data:application/pdf;base64,XXXX"
       const base64 = result.split(',')[1] || '';
       resolve(base64);
     };
@@ -563,7 +1348,6 @@ function DeclineModal({
         setSubmitting(false);
         return;
       }
-
       const res = await fetch(`/api/carrier/rfps/${rfpId}/decline`, {
         method: 'POST',
         headers: {
@@ -575,14 +1359,12 @@ function DeclineModal({
           reason_note: reasonNote || null,
         }),
       });
-
       const body = await res.json();
       if (!res.ok) {
         setSubmitError(body.error || 'Could not submit decline.');
         setSubmitting(false);
         return;
       }
-
       onSuccess();
     } catch (err) {
       console.error('[DeclineModal] error:', err);
@@ -641,7 +1423,7 @@ function DeclineModal({
   );
 }
 
-// === PLAN DESIGN TABS (unchanged from Push 4) ===
+// === PLAN DESIGN TABS (unchanged from earlier pushes) ===
 
 function PlanDesignTabbed({
   tabs,
@@ -901,7 +1683,6 @@ function CarrierStatusPill({ status }: { status: string }) {
   );
 }
 
-// === HELPERS ===
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -965,7 +1746,7 @@ const footerCardStyle: React.CSSProperties = { backgroundColor: '#ffffff', borde
 const footerNoteStyle: React.CSSProperties = { color: '#8a98a8', fontSize: '13px', fontStyle: 'italic' };
 const declineButtonStyle: React.CSSProperties = { padding: '10px 18px', background: 'transparent', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '14px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
 
-// === UPLOAD SECTION STYLES (NEW in Push 3) ===
+// Upload + form styles
 const uploadSectionCardStyle: React.CSSProperties = { backgroundColor: '#ffffff', borderRadius: '12px', padding: '28px', marginBottom: '20px', boxShadow: '0 2px 8px rgba(30,58,95,0.06)', border: '1px solid #f0ebe0' };
 const uploadChoiceRowStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' };
 const uploadPrimaryButtonStyle: React.CSSProperties = { padding: '20px 24px', backgroundColor: '#1e3a5f', color: '#ffffff', border: 'none', borderRadius: '10px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' };
@@ -976,21 +1757,46 @@ const parsingBoxStyle: React.CSSProperties = { display: 'flex', alignItems: 'cen
 const spinnerStyle: React.CSSProperties = { width: '24px', height: '24px', border: '3px solid #e8e2d4', borderTopColor: '#1e3a5f', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 };
 const parsingTitleStyle: React.CSSProperties = { fontSize: '15px', fontWeight: 600, color: '#1e3a5f' };
 const parsingSubtitleStyle: React.CSSProperties = { fontSize: '13px', color: '#5a6c7d', marginTop: '2px' };
-const parsedSuccessBoxStyle: React.CSSProperties = { padding: '20px 22px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px' };
-const parsedSuccessHeaderStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '10px', color: '#065f46', fontSize: '15px' };
-const parsedSuccessSubtextStyle: React.CSSProperties = { fontSize: '13px', color: '#047857', marginTop: '6px', marginLeft: '30px' };
-const detailsSummaryStyle: React.CSSProperties = { cursor: 'pointer', fontSize: '13px', color: '#5a6c7d', fontWeight: 500, marginLeft: '30px' };
-const extractedDataPreStyle: React.CSSProperties = { marginTop: '10px', padding: '14px', backgroundColor: '#ffffff', border: '1px solid #e8e2d4', borderRadius: '6px', fontSize: '12px', color: '#1e3a5f', overflow: 'auto', maxHeight: '400px', fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace' };
-const extractionWarningStyle: React.CSSProperties = { padding: '18px 22px', backgroundColor: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '10px', color: '#9a3412', fontSize: '14px' };
-const manualPlaceholderStyle: React.CSSProperties = { padding: '20px 22px', backgroundColor: '#faf7f2', border: '1px dashed #e8e2d4', borderRadius: '10px', color: '#1e3a5f', fontSize: '14px' };
 const uploadErrorBoxStyle: React.CSSProperties = { padding: '16px 20px', backgroundColor: '#fee2e2', border: '1px solid #fecaca', borderRadius: '10px', color: '#991b1b', fontSize: '14px' };
 
-// === MODAL STYLES ===
+// Review form styles
+const reviewHeaderRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' };
+const manualNoticeStyle: React.CSSProperties = { padding: '12px 16px', backgroundColor: '#fef3c7', borderRadius: '8px', color: '#92400e', fontSize: '14px', marginBottom: '20px', border: '1px solid #fde68a' };
+const formGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 16px' };
+const ratesGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px 16px' };
+const planDesignGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px 16px' };
+const inputStyle: React.CSSProperties = { width: '100%', padding: '8px 10px', fontSize: '13px', borderRadius: '6px', border: '1px solid #e8e2d4', backgroundColor: '#ffffff', color: '#1e3a5f', fontFamily: 'inherit', boxSizing: 'border-box' };
+const textareaInputStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid #e8e2d4', backgroundColor: '#ffffff', color: '#1e3a5f', fontFamily: 'inherit', resize: 'vertical', minHeight: '60px', boxSizing: 'border-box' };
+const subsectionLabelStyle: React.CSSProperties = { fontSize: '12px', fontWeight: 600, color: '#5a6c7d', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' };
+const lineCardStyle: React.CSSProperties = { backgroundColor: '#faf7f2', borderRadius: '10px', padding: '20px', border: '1px solid #f0ebe0', marginBottom: '14px' };
+const lineCardHeaderStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '14px', paddingBottom: '12px', borderBottom: '1px solid #e8e2d4' };
+const lineBenefitSelectStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '14px', fontWeight: 600, color: '#1e3a5f', backgroundColor: '#ffffff', border: '1px solid #e8e2d4', borderRadius: '6px', cursor: 'pointer', fontFamily: 'inherit' };
+const removeLineButtonStyle: React.CSSProperties = { padding: '6px 12px', background: 'transparent', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
+const addLineButtonStyle: React.CSSProperties = { padding: '12px 20px', background: 'transparent', color: '#1e3a5f', border: '2px dashed #cbd5db', borderRadius: '8px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', width: '100%', marginTop: '4px' };
+const emptyLinesStyle: React.CSSProperties = { textAlign: 'center', padding: '32px 16px', color: '#8a98a8', fontSize: '14px' };
+const submitRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '24px', paddingTop: '20px', borderTop: '1px solid #f0ebe0' };
+const submitButtonStyle: React.CSSProperties = { padding: '12px 28px', backgroundColor: '#7a9b76', color: '#ffffff', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', marginLeft: 'auto' };
+
+// Submitted view styles
+const submittedSuccessCardStyle: React.CSSProperties = { backgroundColor: '#f0fdf4', borderRadius: '12px', padding: '24px 28px', marginBottom: '20px', border: '1px solid #bbf7d0' };
+const submittedHeaderStyle: React.CSSProperties = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', marginBottom: '20px' };
+const submittedTitleStyle: React.CSSProperties = { fontFamily: '"Playfair Display", Georgia, serif', fontSize: '20px', fontWeight: 600, color: '#065f46', marginBottom: '4px' };
+const submittedSubtitleStyle: React.CSSProperties = { fontSize: '14px', color: '#047857' };
+const reviseButtonStyle: React.CSSProperties = { padding: '10px 18px', background: '#ffffff', color: '#065f46', border: '1px solid #86efac', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0 };
+const submittedTotalsRowStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', padding: '16px 20px', backgroundColor: '#ffffff', borderRadius: '8px', marginBottom: '16px', border: '1px solid #bbf7d0' };
+const submittedTotalValueStyle: React.CSSProperties = { fontFamily: '"Playfair Display", Georgia, serif', fontSize: '20px', fontWeight: 600, color: '#065f46', marginTop: '4px' };
+const submittedLinesListStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '8px' };
+const submittedLineRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #d1fae5' };
+const submittedLineTitleStyle: React.CSSProperties = { fontSize: '14px', fontWeight: 600, color: '#065f46' };
+const submittedLineMetaStyle: React.CSSProperties = { fontSize: '12px', color: '#047857', marginTop: '2px' };
+const submittedNotesStyle: React.CSSProperties = { marginTop: '14px', padding: '12px 16px', backgroundColor: '#ffffff', borderRadius: '8px', fontSize: '13px', color: '#065f46', border: '1px solid #d1fae5' };
+
+// Modal styles
 const modalBackdropStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(30, 58, 95, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', zIndex: 1000 };
 const modalContentStyle: React.CSSProperties = { backgroundColor: '#ffffff', borderRadius: '16px', padding: '32px', maxWidth: '520px', width: '100%', boxShadow: '0 12px 48px rgba(30, 58, 95, 0.25)' };
 const modalTitleStyle: React.CSSProperties = { fontFamily: '"Playfair Display", Georgia, serif', fontSize: '22px', fontWeight: 600, color: '#1e3a5f', margin: '0 0 8px 0' };
 const modalSubtitleStyle: React.CSSProperties = { fontSize: '14px', color: '#5a6c7d', margin: '0 0 20px 0', lineHeight: 1.5 };
-const fieldLabelStyle: React.CSSProperties = { display: 'block', fontSize: '13px', fontWeight: 600, color: '#1e3a5f', marginTop: '12px', marginBottom: '6px' };
+const fieldLabelStyle: React.CSSProperties = { display: 'block', fontSize: '12px', fontWeight: 600, color: '#5a6c7d', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' };
 const selectStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', fontSize: '14px', borderRadius: '8px', border: '1px solid #e8e2d4', backgroundColor: '#ffffff', color: '#1e3a5f', fontFamily: 'inherit', cursor: 'pointer' };
 const textareaStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', fontSize: '14px', borderRadius: '8px', border: '1px solid #e8e2d4', backgroundColor: '#ffffff', color: '#1e3a5f', fontFamily: 'inherit', resize: 'vertical', minHeight: '70px', boxSizing: 'border-box' };
 const charCountStyle: React.CSSProperties = { fontSize: '11px', color: '#8a98a8', textAlign: 'right', marginTop: '4px' };
