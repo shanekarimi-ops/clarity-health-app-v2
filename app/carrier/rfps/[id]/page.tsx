@@ -588,7 +588,7 @@ function lineFromExtracted(extractedLine: any): FormLine | null {
 }
 
 function lineFromExistingQuote(quoteLine: SubmittedQuote['lines'][number]): FormLine {
-  const benefitType = (ALLOWED_BENEFIT_TYPES.includes(quoteLine.benefit_type) ? quoteLine.benefit_type : 'medical') as BenefitTypeValue;
+  const benefitType = ((ALLOWED_BENEFIT_TYPES as readonly string[]).includes(quoteLine.benefit_type) ? quoteLine.benefit_type : 'medical') as BenefitTypeValue;
   const rates = quoteLine.rates || {};
   return {
     uiKey: `${quoteLine.id}-${Math.random().toString(36).slice(2, 9)}`,
