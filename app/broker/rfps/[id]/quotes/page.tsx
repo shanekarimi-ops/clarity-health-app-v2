@@ -39,6 +39,8 @@ type Rfp = {
   effective_date: string | null;
 };
 
+type ReviewTarget = 'submitted' | 'reviewed' | 'shortlisted' | 'rejected' | 'won' | 'lost';
+
 const BENEFIT_LABELS: Record<string, string> = {
   medical: 'Medical',
   dental: 'Dental',
@@ -58,18 +60,22 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
 };
 
 // Plan design field labels per benefit type (which fields to show when expanded)
+// MEDICAL fields updated in Push 7 to match actual extraction keys (rx_generic/rx_preferred_brand/etc).
 const PLAN_DESIGN_FIELDS: Record<string, { key: string; label: string; format?: 'currency' | 'percent' | 'text' }[]> = {
   medical: [
     { key: 'deductible_individual', label: 'Deductible (Ind)', format: 'currency' },
     { key: 'deductible_family', label: 'Deductible (Fam)', format: 'currency' },
     { key: 'oop_max_individual', label: 'OOP Max (Ind)', format: 'currency' },
     { key: 'oop_max_family', label: 'OOP Max (Fam)', format: 'currency' },
+    { key: 'coinsurance_pct', label: 'Coinsurance %', format: 'percent' },
     { key: 'pcp_copay', label: 'PCP Copay', format: 'currency' },
     { key: 'specialist_copay', label: 'Specialist Copay', format: 'currency' },
+    { key: 'urgent_care_copay', label: 'Urgent Care Copay', format: 'currency' },
+    { key: 'telehealth_copay', label: 'Telehealth Copay', format: 'currency' },
     { key: 'er_copay', label: 'ER Copay', format: 'currency' },
-    { key: 'rx_tier_1', label: 'Rx Tier 1', format: 'currency' },
-    { key: 'rx_tier_2', label: 'Rx Tier 2', format: 'currency' },
-    { key: 'rx_tier_3', label: 'Rx Tier 3', format: 'currency' },
+    { key: 'rx_generic', label: 'Rx Generic', format: 'currency' },
+    { key: 'rx_preferred_brand', label: 'Rx Preferred Brand', format: 'currency' },
+    { key: 'rx_non_preferred_brand', label: 'Rx Non-Preferred Brand', format: 'currency' },
     { key: 'rx_specialty', label: 'Rx Specialty', format: 'currency' },
   ],
   dental: [
@@ -128,6 +134,8 @@ export default function RfpQuotesPage() {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [errorMsg, setErrorMsg] = useState('');
+  const [reviewLoading, setReviewLoading] = useState<{ quoteId: string; target: ReviewTarget } | null>(null);
+  const [reviewError, setReviewError] = useState<string>('');
 
   useEffect(() => {
     async function load() {
@@ -279,6 +287,39 @@ export default function RfpQuotesPage() {
     return lowest ? (lowest as Best).id : null;
   }
 
+  async function handleReviewAction(quoteId: string, target: ReviewTarget) {
+    setReviewError('');
+    setReviewLoading({ quoteId, target });
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+      const res = await fetch(`/api/broker/quotes/${quoteId}/review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+        },
+        body: JSON.stringify({ status: target }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        setReviewError(result.error || 'Could not update quote status.');
+        if (result.debug) console.error('Review API debug:', result.debug);
+        setReviewLoading(null);
+        return;
+      }
+      // Optimistic local update
+      setQuotes((prev) => prev.map((q) => (q.id === quoteId ? { ...q, status: target } : q)));
+      setReviewLoading(null);
+    } catch (err: any) {
+      setReviewError('Network error: ' + (err?.message || String(err)));
+      setReviewLoading(null);
+    }
+  }
+
   if (loading) return <div style={{ padding: 40, color: '#1e3a5f' }}>Loading...</div>;
 
   const bestTotal = lowestTotalCarrierId();
@@ -331,6 +372,29 @@ export default function RfpQuotesPage() {
             </div>
           )}
 
+          {reviewError && (
+            <div style={{
+              background: '#fdecec',
+              border: '1px solid #f5c6cb',
+              color: '#9b2c2c',
+              padding: '0.75rem 1rem',
+              borderRadius: '8px',
+              marginBottom: '1.5rem',
+              fontSize: '0.9rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}>
+              <span>{reviewError}</span>
+              <button
+                onClick={() => setReviewError('')}
+                style={{ background: 'transparent', border: 'none', color: '#9b2c2c', cursor: 'pointer', fontWeight: 600, fontSize: '1rem' }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {quotes.length === 0 ? (
             <EmptyState />
           ) : (
@@ -351,8 +415,8 @@ export default function RfpQuotesPage() {
                       </span>
                     </th>
                     {quotes.map((q) => (
-                      <th key={q.id} style={{ ...thStyle, minWidth: '220px', textAlign: 'left' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.3rem' }}>
+                      <th key={q.id} style={{ ...thStyle, minWidth: '240px', textAlign: 'left' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
                           <div style={{
                             width: 32,
                             height: 32,
@@ -373,6 +437,11 @@ export default function RfpQuotesPage() {
                             <StatusPill status={q.status} />
                           </div>
                         </div>
+                        <ReviewActions
+                          quote={q}
+                          loading={reviewLoading}
+                          onAction={handleReviewAction}
+                        />
                       </th>
                     ))}
                   </tr>
@@ -568,6 +637,81 @@ export default function RfpQuotesPage() {
 }
 
 // ----- Small components -----
+
+function ReviewActions({
+  quote,
+  loading,
+  onAction,
+}: {
+  quote: Quote;
+  loading: { quoteId: string; target: ReviewTarget } | null;
+  onAction: (quoteId: string, target: ReviewTarget) => void;
+}) {
+  const isLoadingFor = (target: ReviewTarget) =>
+    loading && loading.quoteId === quote.id && loading.target === target;
+  const anyLoadingForThisQuote = loading && loading.quoteId === quote.id;
+
+  const buttons: { target: ReviewTarget; label: string; activeBg: string; activeFg: string }[] = [
+    { target: 'reviewed',    label: 'Reviewed',   activeBg: '#fff4e0', activeFg: '#8a5a00' },
+    { target: 'shortlisted', label: 'Shortlist',  activeBg: '#e6f4ea', activeFg: '#1e5631' },
+    { target: 'rejected',    label: 'Reject',     activeBg: '#fdecec', activeFg: '#9b2c2c' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+      {buttons.map((b) => {
+        const isActive = quote.status === b.target;
+        const loading_ = isLoadingFor(b.target);
+        return (
+          <button
+            key={b.target}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!anyLoadingForThisQuote) onAction(quote.id, b.target);
+            }}
+            disabled={!!anyLoadingForThisQuote}
+            style={{
+              fontSize: '0.7rem',
+              fontWeight: 600,
+              padding: '0.3rem 0.55rem',
+              borderRadius: '5px',
+              border: isActive ? `1px solid ${b.activeFg}` : '1px solid #d4cab8',
+              background: isActive ? b.activeBg : '#faf7f2',
+              color: isActive ? b.activeFg : '#3a4d68',
+              cursor: anyLoadingForThisQuote ? 'wait' : 'pointer',
+              opacity: anyLoadingForThisQuote && !loading_ ? 0.5 : 1,
+              transition: 'all 0.1s',
+            }}
+          >
+            {loading_ ? '…' : b.label}
+          </button>
+        );
+      })}
+      {quote.status !== 'submitted' && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!anyLoadingForThisQuote) onAction(quote.id, 'submitted');
+          }}
+          disabled={!!anyLoadingForThisQuote}
+          style={{
+            fontSize: '0.7rem',
+            fontWeight: 500,
+            padding: '0.3rem 0.55rem',
+            borderRadius: '5px',
+            border: '1px solid transparent',
+            background: 'transparent',
+            color: '#7a8a9b',
+            cursor: anyLoadingForThisQuote ? 'wait' : 'pointer',
+            textDecoration: 'underline',
+          }}
+        >
+          {isLoadingFor('submitted') ? '…' : 'Reset'}
+        </button>
+      )}
+    </div>
+  );
+}
 
 function StatusPill({ status }: { status: string }) {
   const s = STATUS_STYLES[status] || { bg: '#e2e3e5', fg: '#383d41', label: status };
