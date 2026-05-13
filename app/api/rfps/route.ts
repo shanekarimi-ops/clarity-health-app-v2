@@ -15,6 +15,7 @@ type SaveRfpBody = {
   rfpName: string;
   effectiveDate: string | null;
   censusSize: number | null;
+  currentAnnualCost: number | null;
   spdFilename: string | null;
   spdBase64: string | null;
   planYear: number | null;
@@ -81,6 +82,7 @@ export async function POST(request: NextRequest) {
         name: body.rfpName.trim(),
         effective_date: body.effectiveDate || null,
         employee_lives: body.censusSize,
+        current_annual_cost: body.currentAnnualCost,
         current_plan_design: planDesign,
       })
       .select('id')

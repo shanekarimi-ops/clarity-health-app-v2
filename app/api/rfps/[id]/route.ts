@@ -15,6 +15,7 @@ type UpdateRfpBody = {
   rfpName: string;
   effectiveDate: string | null;
   censusSize: number | null;
+  currentAnnualCost: number | null;
   spdFilename: string | null;
   spdBase64: string | null;
   planYear: number | null;
@@ -55,7 +56,7 @@ export async function GET(
       `
       id, agency_id, client_id, created_by_user_id, name, rfp_type,
       effective_date, status, current_plan_doc_url, current_plan_design,
-      employee_lives, created_at, updated_at,
+      employee_lives, current_annual_cost, created_at, updated_at,
       clients ( id, first_name, last_name, employer_name )
     `
     )
@@ -169,6 +170,7 @@ export async function PUT(
         name: body.rfpName.trim(),
         effective_date: body.effectiveDate || null,
         employee_lives: body.censusSize,
+        current_annual_cost: body.currentAnnualCost,
         current_plan_design: planDesign,
         updated_at: new Date().toISOString(),
       })

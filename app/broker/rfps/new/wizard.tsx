@@ -20,6 +20,7 @@ export type WizardData = {
   planYear: number;
   effectiveDate: string;
   censusSize: number | null;
+  currentAnnualCost: number | null;
   spdFilename: string | null;
   spdFile: File | null;
   spdStoragePath: string | null;
@@ -63,6 +64,7 @@ export default function RFPWizard({
     planYear: defaultPlanYear,
     effectiveDate: `${defaultPlanYear}-01-01`,
     censusSize: null,
+    currentAnnualCost: null,
     spdFilename: null,
     spdFile: null,
     spdStoragePath: null,
@@ -138,6 +140,7 @@ export default function RFPWizard({
         planYear: yearFromDesign,
         effectiveDate: effective,
         censusSize: r.employee_lives ?? null,
+        currentAnnualCost: r.current_annual_cost ?? null,
         spdFilename: filename,
         spdFile: null,
         spdStoragePath: r.current_plan_doc_url || null,
@@ -234,6 +237,16 @@ export default function RFPWizard({
       return;
     }
 
+    // Soft nudge: if no baseline cost was entered, ask the broker to confirm
+    if (data.currentAnnualCost === null) {
+      const proceed = confirm(
+        "You haven't entered the client's current annual cost. " +
+        "Without it, the 'Δ vs current' column on the quote comparison grid will be empty. " +
+        "You can add it later by editing the RFP.\n\nSave without it?"
+      );
+      if (!proceed) return;
+    }
+
     setSaving(true);
     setSaveError(null);
 
@@ -263,6 +276,7 @@ export default function RFPWizard({
           rfpName: data.rfpName,
           effectiveDate: data.effectiveDate || null,
           censusSize: data.censusSize,
+          currentAnnualCost: data.currentAnnualCost,
           spdFilename: data.spdFilename,
           spdBase64,
           planYear: data.planYear,
@@ -638,7 +652,7 @@ function Step1Basics({
         </div>
       </div>
 
-      <div>
+      <div style={{ marginBottom: 16 }}>
         <label style={labelStyle}>Census size (members)</label>
         <input
           type="number"
@@ -652,6 +666,42 @@ function Step1Basics({
         />
         <div style={{ fontSize: 12, color: '#3a4d68', marginTop: 4 }}>
           Auto-fills from the client's member count. Adjust if needed.
+        </div>
+      </div>
+
+      <div>
+        <label style={labelStyle}>Current annual benefits cost</label>
+        <div style={{ position: 'relative' }}>
+          <span
+            style={{
+              position: 'absolute',
+              left: 12,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              color: '#3a4d68',
+              fontSize: 14,
+              pointerEvents: 'none',
+            }}
+          >
+            $
+          </span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={data.currentAnnualCost ?? ''}
+            onChange={(e) =>
+              updateField(
+                'currentAnnualCost',
+                e.target.value ? Number(e.target.value) : null
+              )
+            }
+            placeholder="e.g. 720000"
+            style={{ ...inputStyle, paddingLeft: 26 }}
+          />
+        </div>
+        <div style={{ fontSize: 12, color: '#3a4d68', marginTop: 4 }}>
+          Optional — used to calculate the "Δ vs current" variance on submitted quotes.
         </div>
       </div>
     </div>
@@ -2268,6 +2318,14 @@ function Step5Review({
       <ReviewRow label="Plan year" value={String(data.planYear)} />
       <ReviewRow label="Effective date" value={data.effectiveDate} />
       <ReviewRow label="Census size" value={data.censusSize ? `${data.censusSize} members` : '—'} />
+      <ReviewRow
+        label="Current annual cost"
+        value={
+          data.currentAnnualCost != null
+            ? data.currentAnnualCost.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+            : '— (not set)'
+        }
+      />
       <ReviewRow label="SPD" value={data.spdFilename || '— (none uploaded)'} />
       <ReviewRow
         label="Plan design"
