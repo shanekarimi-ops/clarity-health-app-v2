@@ -37,6 +37,26 @@ type SubmitBody = {
   extraction_status: 'extracted' | 'manual';
 };
 
+// Compute % variance between submitted annual cost and the broker-entered baseline.
+// Returns null if either input is missing or if the baseline is zero (avoid divide-by-zero).
+function computeCostChangePct(
+  submittedAnnual: number | null,
+  currentAnnual: number | null
+): number | null {
+  if (
+    submittedAnnual == null ||
+    currentAnnual == null ||
+    typeof submittedAnnual !== 'number' ||
+    typeof currentAnnual !== 'number' ||
+    currentAnnual === 0
+  ) {
+    return null;
+  }
+  const pct = ((submittedAnnual - currentAnnual) / currentAnnual) * 100;
+  // Round to 2 decimal places to keep the DB tidy
+  return Math.round(pct * 100) / 100;
+}
+
 export async function POST(
   request: Request,
   { params }: { params: { id: string } }
@@ -143,6 +163,23 @@ export async function POST(
       });
     }
 
+    // 6.5 Look up the RFP's current_annual_cost baseline so we can compute cost_change_pct
+    const { data: rfpBaselineRow, error: rfpBaselineErr } = await supabaseAdmin
+      .from('rfps')
+      .select('current_annual_cost')
+      .eq('id', rfpCarrier.rfp_id)
+      .maybeSingle();
+
+    if (rfpBaselineErr) {
+      // Non-fatal — the quote will still save, cost_change_pct will be null.
+      console.warn('[submit-quote] could not load rfps.current_annual_cost (non-fatal):', rfpBaselineErr);
+    }
+
+    const submittedAnnual = typeof body.total_annual_cost === 'number' ? body.total_annual_cost : null;
+    const submittedMonthly = typeof body.monthly_cost === 'number' ? body.monthly_cost : null;
+    const baselineAnnual = rfpBaselineRow?.current_annual_cost ?? null;
+    const costChangePct = computeCostChangePct(submittedAnnual, baselineAnnual);
+
     // 7. Determine if this is a revision (existing quote) or first submit
     const { data: existingQuote, error: existingError } = await supabaseAdmin
       .from('quotes')
@@ -170,8 +207,9 @@ export async function POST(
           extracted_data: body.extracted_data || null,
           extraction_status: body.extraction_status === 'manual' ? 'manual' : 'extracted',
           extraction_error: null,
-          total_annual_cost: typeof body.total_annual_cost === 'number' ? body.total_annual_cost : null,
-          monthly_cost: typeof body.monthly_cost === 'number' ? body.monthly_cost : null,
+          total_annual_cost: submittedAnnual,
+          monthly_cost: submittedMonthly,
+          cost_change_pct: costChangePct,
           status: 'submitted',
           notes: body.notes || null,
           submitted_at: nowIso,
@@ -207,8 +245,9 @@ export async function POST(
           proposal_doc_url: body.proposal_doc_url || null,
           extracted_data: body.extracted_data || null,
           extraction_status: body.extraction_status === 'manual' ? 'manual' : 'extracted',
-          total_annual_cost: typeof body.total_annual_cost === 'number' ? body.total_annual_cost : null,
-          monthly_cost: typeof body.monthly_cost === 'number' ? body.monthly_cost : null,
+          total_annual_cost: submittedAnnual,
+          monthly_cost: submittedMonthly,
+          cost_change_pct: costChangePct,
           status: 'submitted',
           notes: body.notes || null,
           submitted_at: nowIso,
@@ -278,6 +317,8 @@ export async function POST(
           is_revision: isRevision,
           line_count: cleanedLines.length,
           extraction_status: body.extraction_status,
+          cost_change_pct: costChangePct,
+          baseline_annual: baselineAnnual,
         },
       });
     if (logError) {
@@ -291,6 +332,8 @@ export async function POST(
       quote_id: quoteId,
       is_revision: isRevision,
       line_count: cleanedLines.length,
+      cost_change_pct: costChangePct,
+      baseline_annual: baselineAnnual,
     });
   } catch (error: any) {
     console.error('[submit-quote] unexpected error:', error);
