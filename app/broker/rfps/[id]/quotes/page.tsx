@@ -253,28 +253,30 @@ export default function RfpQuotesPage() {
 
   // Find lowest monthly_premium across carriers for a benefit type (for highlighting "best price")
   function lowestPremiumCarrierId(benefitType: string): string | null {
-    let lowest: { id: string; val: number } | null = null;
+    type Best = { id: string; val: number };
+    let lowest: Best | null = null;
     quotes.forEach((q) => {
       const ln = getLineForCarrier(q, benefitType);
       if (ln?.monthly_premium != null) {
-        if (!lowest || ln.monthly_premium < lowest.val) {
+        if (lowest === null || ln.monthly_premium < lowest.val) {
           lowest = { id: q.carrier_id, val: ln.monthly_premium };
         }
       }
     });
-    return lowest ? lowest.id : null;
+    return lowest ? (lowest as Best).id : null;
   }
 
   function lowestTotalCarrierId(): string | null {
-    let lowest: { id: string; val: number } | null = null;
+    type Best = { id: string; val: number };
+    let lowest: Best | null = null;
     quotes.forEach((q) => {
       if (q.total_annual_cost != null) {
-        if (!lowest || q.total_annual_cost < lowest.val) {
+        if (lowest === null || q.total_annual_cost < lowest.val) {
           lowest = { id: q.carrier_id, val: q.total_annual_cost };
         }
       }
     });
-    return lowest ? lowest.id : null;
+    return lowest ? (lowest as Best).id : null;
   }
 
   if (loading) return <div style={{ padding: 40, color: '#1e3a5f' }}>Loading...</div>;
