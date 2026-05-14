@@ -51,6 +51,8 @@ type Narrative = {
 
 type ReviewTarget = 'submitted' | 'reviewed' | 'shortlisted' | 'rejected' | 'won' | 'lost';
 
+type TemplateChoice = 'standard' | 'executive' | 'detailed';
+
 const BENEFIT_LABELS: Record<string, string> = {
   medical: 'Medical',
   dental: 'Dental',
@@ -149,6 +151,11 @@ export default function RfpQuotesPage() {
   const [narrative, setNarrative] = useState<Narrative | null>(null);
   const [narrativeLoading, setNarrativeLoading] = useState(false);
   const [narrativeError, setNarrativeError] = useState<string>('');
+
+  // Presentation creation state
+  const [presentationMenuOpen, setPresentationMenuOpen] = useState(false);
+  const [presentationCreating, setPresentationCreating] = useState(false);
+  const [presentationError, setPresentationError] = useState<string>('');
 
   useEffect(() => {
     async function load() {
@@ -390,6 +397,42 @@ export default function RfpQuotesPage() {
     }
   }
 
+  async function handleCreatePresentation(template: TemplateChoice) {
+    setPresentationMenuOpen(false);
+    setPresentationError('');
+    setPresentationCreating(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+      const res = await fetch('/api/broker/presentations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+        },
+        body: JSON.stringify({
+          rfp_id: rfpId,
+          template,
+          title: rfp?.name || 'Presentation',
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        setPresentationError(result.error || 'Could not create presentation.');
+        if (result.debug) console.error('Presentation API debug:', result.debug);
+        setPresentationCreating(false);
+        return;
+      }
+      router.push(`/broker/presentations/${result.presentation.id}`);
+    } catch (err: any) {
+      setPresentationError('Network error: ' + (err?.message || String(err)));
+      setPresentationCreating(false);
+    }
+  }
+
   // Staleness detection: narrative is stale if the set of quote ids has changed since it was generated
   const narrativeIsStale = useMemo(() => {
     if (!narrative) return false;
@@ -429,16 +472,113 @@ export default function RfpQuotesPage() {
             <span>{rfp?.name || '—'}</span>
           </div>
 
-          {/* Header */}
-          <h1 style={{ fontFamily: 'Playfair Display, serif', fontSize: '2rem', color: '#1e3a5f', margin: 0, marginBottom: '0.4rem' }}>
-            Quote Comparison
-          </h1>
-          <p style={{ color: '#3a4d68', fontSize: '1rem', marginBottom: '2rem' }}>
-            {rfp?.employer_name} · {rfp?.name}
-            {rfp?.effective_date && (
-              <> · Effective {new Date(rfp.effective_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</>
+          {/* Header row with title + Create Presentation button */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+            <div>
+              <h1 style={{ fontFamily: 'Playfair Display, serif', fontSize: '2rem', color: '#1e3a5f', margin: 0, marginBottom: '0.4rem' }}>
+                Quote Comparison
+              </h1>
+              <p style={{ color: '#3a4d68', fontSize: '1rem', marginBottom: '2rem' }}>
+                {rfp?.employer_name} · {rfp?.name}
+                {rfp?.effective_date && (
+                  <> · Effective {new Date(rfp.effective_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</>
+                )}
+              </p>
+            </div>
+
+            {quotes.length > 0 && (
+              <div style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setPresentationMenuOpen((v) => !v)}
+                  disabled={presentationCreating}
+                  style={{
+                    background: '#1e3a5f',
+                    color: '#faf7f2',
+                    border: 'none',
+                    padding: '0.6rem 1.1rem',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: presentationCreating ? 'wait' : 'pointer',
+                    opacity: presentationCreating ? 0.7 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                  }}
+                >
+                  {presentationCreating ? 'Creating…' : '📑 Create Presentation'}
+                  {!presentationCreating && (
+                    <span style={{ fontSize: '0.7rem', marginLeft: '0.2rem' }}>▾</span>
+                  )}
+                </button>
+
+                {presentationMenuOpen && !presentationCreating && (
+                  <div style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 4px)',
+                    right: 0,
+                    background: 'white',
+                    border: '1px solid #e8e0d0',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(30, 58, 95, 0.1)',
+                    minWidth: '220px',
+                    zIndex: 10,
+                    overflow: 'hidden',
+                  }}>
+                    {[
+                      { value: 'standard',  label: 'Standard',         desc: 'Balanced summary + detail' },
+                      { value: 'executive', label: 'Executive Summary', desc: 'Top-level cost view' },
+                      { value: 'detailed',  label: 'Detailed',          desc: 'Full plan design tables' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => handleCreatePresentation(opt.value as TemplateChoice)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '0.7rem 1rem',
+                          background: 'transparent',
+                          border: 'none',
+                          borderBottom: '1px solid #f0eee8',
+                          cursor: 'pointer',
+                          color: '#1e3a5f',
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = '#faf7f2')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{opt.label}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#7a8a9b', marginTop: '0.1rem' }}>{opt.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
-          </p>
+          </div>
+
+          {presentationError && (
+            <div style={{
+              background: '#fdecec',
+              border: '1px solid #f5c6cb',
+              color: '#9b2c2c',
+              padding: '0.75rem 1rem',
+              borderRadius: '8px',
+              marginBottom: '1.5rem',
+              fontSize: '0.9rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}>
+              <span>{presentationError}</span>
+              <button
+                onClick={() => setPresentationError('')}
+                style={{ background: 'transparent', border: 'none', color: '#9b2c2c', cursor: 'pointer', fontWeight: 600, fontSize: '1rem' }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {errorMsg && (
             <div style={{
