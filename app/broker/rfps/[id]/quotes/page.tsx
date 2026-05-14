@@ -396,7 +396,9 @@ export default function RfpQuotesPage() {
     const cachedIds = new Set(narrative.quote_ids);
     const currentIds = new Set(quotes.map((q) => q.id));
     if (cachedIds.size !== currentIds.size) return true;
-    for (const id of cachedIds) if (!currentIds.has(id)) return true;
+    let stale = false;
+    cachedIds.forEach((id) => { if (!currentIds.has(id)) stale = true; });
+    if (stale) return true;
     return false;
   }, [narrative, quotes]);
 
