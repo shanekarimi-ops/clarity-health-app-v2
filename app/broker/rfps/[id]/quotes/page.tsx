@@ -39,6 +39,16 @@ type Rfp = {
   effective_date: string | null;
 };
 
+type Narrative = {
+  id: string;
+  bullets: string[];
+  quotes_count: number;
+  quote_ids: string[];
+  model: string | null;
+  generated_by_name: string | null;
+  created_at: string;
+};
+
 type ReviewTarget = 'submitted' | 'reviewed' | 'shortlisted' | 'rejected' | 'won' | 'lost';
 
 const BENEFIT_LABELS: Record<string, string> = {
@@ -59,8 +69,6 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   lost:        { bg: '#e2e3e5', fg: '#383d41', label: 'Lost' },
 };
 
-// Plan design field labels per benefit type (which fields to show when expanded)
-// MEDICAL fields updated in Push 7 to match actual extraction keys (rx_generic/rx_preferred_brand/etc).
 const PLAN_DESIGN_FIELDS: Record<string, { key: string; label: string; format?: 'currency' | 'percent' | 'text' }[]> = {
   medical: [
     { key: 'deductible_individual', label: 'Deductible (Ind)', format: 'currency' },
@@ -136,6 +144,11 @@ export default function RfpQuotesPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [reviewLoading, setReviewLoading] = useState<{ quoteId: string; target: ReviewTarget } | null>(null);
   const [reviewError, setReviewError] = useState<string>('');
+
+  // Narrative state
+  const [narrative, setNarrative] = useState<Narrative | null>(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
+  const [narrativeError, setNarrativeError] = useState<string>('');
 
   useEffect(() => {
     async function load() {
@@ -229,6 +242,26 @@ export default function RfpQuotesPage() {
       }));
 
       setQuotes(flat);
+
+      // Fetch cached narrative (if any)
+      const { data: narrativeRow } = await supabase
+        .from('rfp_ai_narratives')
+        .select('id, bullets, quotes_count, quote_ids, model, generated_by_name, created_at')
+        .eq('rfp_id', rfpId)
+        .maybeSingle();
+
+      if (narrativeRow) {
+        setNarrative({
+          id: narrativeRow.id,
+          bullets: narrativeRow.bullets || [],
+          quotes_count: narrativeRow.quotes_count,
+          quote_ids: narrativeRow.quote_ids || [],
+          model: narrativeRow.model,
+          generated_by_name: narrativeRow.generated_by_name,
+          created_at: narrativeRow.created_at,
+        });
+      }
+
       setLoading(false);
     }
     load();
@@ -236,10 +269,9 @@ export default function RfpQuotesPage() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.push('/login');
+    router.push('/');
   }
 
-  // Determine which benefit types to show as rows (union of all benefits across all quotes)
   const benefitRows = useMemo(() => {
     const types = new Set<string>();
     quotes.forEach((q) => q.lines.forEach((ln) => types.add(ln.benefit_type)));
@@ -259,7 +291,6 @@ export default function RfpQuotesPage() {
     });
   }
 
-  // Find lowest monthly_premium across carriers for a benefit type (for highlighting "best price")
   function lowestPremiumCarrierId(benefitType: string): string | null {
     type Best = { id: string; val: number };
     let lowest: Best | null = null;
@@ -311,7 +342,6 @@ export default function RfpQuotesPage() {
         setReviewLoading(null);
         return;
       }
-      // Optimistic local update
       setQuotes((prev) => prev.map((q) => (q.id === quoteId ? { ...q, status: target } : q)));
       setReviewLoading(null);
     } catch (err: any) {
@@ -319,6 +349,56 @@ export default function RfpQuotesPage() {
       setReviewLoading(null);
     }
   }
+
+  async function handleGenerateNarrative() {
+    setNarrativeError('');
+    setNarrativeLoading(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+      const res = await fetch(`/api/broker/rfps/${rfpId}/generate-narrative`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+        },
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        setNarrativeError(result.error || 'Could not generate narrative.');
+        if (result.debug) console.error('Narrative API debug:', result.debug);
+        setNarrativeLoading(false);
+        return;
+      }
+      const n = result.narrative;
+      setNarrative({
+        id: n.id,
+        bullets: n.bullets || [],
+        quotes_count: n.quotes_count,
+        quote_ids: n.quote_ids || [],
+        model: n.model,
+        generated_by_name: n.generated_by_name,
+        created_at: n.created_at,
+      });
+      setNarrativeLoading(false);
+    } catch (err: any) {
+      setNarrativeError('Network error: ' + (err?.message || String(err)));
+      setNarrativeLoading(false);
+    }
+  }
+
+  // Staleness detection: narrative is stale if the set of quote ids has changed since it was generated
+  const narrativeIsStale = useMemo(() => {
+    if (!narrative) return false;
+    const cachedIds = new Set(narrative.quote_ids);
+    const currentIds = new Set(quotes.map((q) => q.id));
+    if (cachedIds.size !== currentIds.size) return true;
+    for (const id of cachedIds) if (!currentIds.has(id)) return true;
+    return false;
+  }, [narrative, quotes]);
 
   if (loading) return <div style={{ padding: 40, color: '#1e3a5f' }}>Loading...</div>;
 
@@ -393,6 +473,18 @@ export default function RfpQuotesPage() {
                 ✕
               </button>
             </div>
+          )}
+
+          {/* AI Narrative panel */}
+          {quotes.length > 0 && (
+            <NarrativePanel
+              narrative={narrative}
+              isStale={narrativeIsStale}
+              loading={narrativeLoading}
+              error={narrativeError}
+              onGenerate={handleGenerateNarrative}
+              onDismissError={() => setNarrativeError('')}
+            />
           )}
 
           {quotes.length === 0 ? (
@@ -638,6 +730,127 @@ export default function RfpQuotesPage() {
 
 // ----- Small components -----
 
+function NarrativePanel({
+  narrative,
+  isStale,
+  loading,
+  error,
+  onGenerate,
+  onDismissError,
+}: {
+  narrative: Narrative | null;
+  isStale: boolean;
+  loading: boolean;
+  error: string;
+  onGenerate: () => void;
+  onDismissError: () => void;
+}) {
+  const hasNarrative = !!narrative;
+
+  return (
+    <div style={{
+      background: 'linear-gradient(135deg, #faf7f2 0%, #f5efe0 100%)',
+      border: '1px solid #e8e0d0',
+      borderRadius: '12px',
+      padding: '1.25rem 1.5rem',
+      marginBottom: '1.5rem',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', marginBottom: hasNarrative ? '1rem' : 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <div style={{
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: '#1e3a5f',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.85rem',
+            fontWeight: 600,
+            fontFamily: 'Playfair Display, serif',
+          }}>
+            ✦
+          </div>
+          <div>
+            <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#1e3a5f' }}>
+              AI Summary
+            </div>
+            {hasNarrative && (
+              <div style={{ fontSize: '0.72rem', color: '#7a8a9b', marginTop: '0.1rem' }}>
+                Generated {formatRelativeTime(narrative.created_at)}
+                {narrative.generated_by_name ? ` by ${narrative.generated_by_name}` : ''}
+                {isStale && ' · New quotes since'}
+              </div>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={onGenerate}
+          disabled={loading}
+          style={{
+            background: isStale || !hasNarrative ? '#7a9b76' : 'transparent',
+            color: isStale || !hasNarrative ? '#fff' : '#7a9b76',
+            border: isStale || !hasNarrative ? 'none' : '1px solid #7a9b76',
+            padding: '0.45rem 0.9rem',
+            borderRadius: '6px',
+            fontSize: '0.8rem',
+            fontWeight: 600,
+            cursor: loading ? 'wait' : 'pointer',
+            opacity: loading ? 0.7 : 1,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {loading ? 'Generating…' : !hasNarrative ? 'Generate AI summary' : isStale ? 'Regenerate' : 'Regenerate'}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{
+          background: '#fdecec',
+          border: '1px solid #f5c6cb',
+          color: '#9b2c2c',
+          padding: '0.6rem 0.85rem',
+          borderRadius: '6px',
+          fontSize: '0.85rem',
+          marginBottom: hasNarrative ? '0.75rem' : 0,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
+          <span>{error}</span>
+          <button
+            onClick={onDismissError}
+            style={{ background: 'transparent', border: 'none', color: '#9b2c2c', cursor: 'pointer', fontWeight: 600 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {hasNarrative && (
+        <ul style={{
+          margin: 0,
+          paddingLeft: '1.25rem',
+          color: '#3a4d68',
+          fontSize: '0.9rem',
+          lineHeight: 1.6,
+        }}>
+          {narrative.bullets.map((b, i) => (
+            <li key={i} style={{ marginBottom: '0.35rem' }}>{b}</li>
+          ))}
+        </ul>
+      )}
+
+      {!hasNarrative && !error && (
+        <div style={{ fontSize: '0.85rem', color: '#7a8a9b', marginTop: '0.4rem' }}>
+          Click "Generate AI summary" to get a quick read on how the submitted quote{narrative ? '' : 's'} compare to the current plan.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReviewActions({
   quote,
   loading,
@@ -790,6 +1003,19 @@ function formatRates(rates: Record<string, number | null> | null, structure: str
     }
   });
   return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+function formatRelativeTime(iso: string): string {
+  const date = new Date(iso);
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 // ----- Inline styles -----
