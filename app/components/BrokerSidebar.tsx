@@ -14,6 +14,7 @@ type BrokerSidebarProps = {
     | 'clients'
     | 'carriers'
     // Insights
+    | 'activity'
     | 'reports'
     // Agency
     | 'team'
@@ -103,6 +104,12 @@ export default function BrokerSidebar({
 
       {/* === INSIGHTS === */}
       <div className="dash-section-label">Insights</div>
+
+      <Link href="/broker/activity" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'activity' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">🕓</div> Activity
+        </div>
+      </Link>
 
       <Link href="/broker/reports" style={linkReset}>
         <div className={`dash-nav-item ${active === 'reports' ? 'active' : ''}`}>
