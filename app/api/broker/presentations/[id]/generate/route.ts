@@ -219,9 +219,9 @@ export async function POST(
     // ---- Render PDF ----
     let pdfBuffer: Buffer;
     try {
-      pdfBuffer = await renderToBuffer(
-        React.createElement(StandardTemplate, { data: templateData })
-      );
+        pdfBuffer = await renderToBuffer(
+            React.createElement(StandardTemplate, { data: templateData }) as any
+          );
     } catch (renderErr: any) {
       console.error('PDF render error:', renderErr);
       return NextResponse.json(
