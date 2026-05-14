@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
     // ---- Verify broker → agency match against the RFP ----
     const { data: broker, error: brokerError } = await admin
       .from('brokers')
-      .select('id, agency_id, first_name, last_name')
+      .select('id, agency_id')
       .eq('user_id', user.id)
       .maybeSingle();
 
@@ -105,7 +105,8 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- Insert draft ----
-    const brokerName = [broker.first_name, broker.last_name].filter(Boolean).join(' ').trim() || null;
+    const meta = user.user_metadata || {};
+    const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
     const { data: insert, error: insertError } = await admin
       .from('broker_presentations')
       .insert({

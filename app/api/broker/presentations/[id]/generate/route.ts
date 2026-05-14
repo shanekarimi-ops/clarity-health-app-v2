@@ -50,7 +50,7 @@ export async function POST(
     // ---- Verify broker → agency match against the presentation ----
     const { data: broker } = await admin
       .from('brokers')
-      .select('agency_id, first_name, last_name')
+      .select('agency_id')
       .eq('user_id', user.id)
       .maybeSingle();
 
@@ -321,7 +321,8 @@ export async function POST(
 
     // ---- Non-blocking activity log ----
     try {
-      const brokerName = [broker.first_name, broker.last_name].filter(Boolean).join(' ').trim() || null;
+        const meta = user.user_metadata || {};
+        const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
       await admin.from('activity_log').insert({
         agency_id: presentation.agency_id,
         client_id: presentation.client_id,
