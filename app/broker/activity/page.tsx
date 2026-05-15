@@ -15,12 +15,13 @@ type ActivityEvent = {
   created_at: string;
 };
 
-type FilterCategory = 'all' | 'rfp' | 'quote' | 'client' | 'census' | 'report' | 'other';
+type FilterCategory = 'all' | 'rfp' | 'quote' | 'presentation' | 'client' | 'census' | 'report' | 'other';
 
 // Map event_type prefixes to categories for filtering
 const EVENT_CATEGORY_MAP: Record<string, FilterCategory> = {
   rfp: 'rfp',
   quote: 'quote',
+  presentation: 'presentation',
   client: 'client',
   group: 'client',
   member: 'client',
@@ -37,13 +38,14 @@ function categorizeEvent(eventType: string): FilterCategory {
 
 // Map event_type to an icon + accent color
 const EVENT_STYLES: Record<FilterCategory, { icon: string; bg: string; fg: string; label: string }> = {
-  rfp:     { icon: '📄', bg: '#e6f0fb', fg: '#1e3a5f', label: 'RFP' },
-  quote:   { icon: '💬', bg: '#e6f4ea', fg: '#1e5631', label: 'Quote' },
-  client:  { icon: '👥', bg: '#fff4e0', fg: '#8a5a00', label: 'Client' },
-  census:  { icon: '📋', bg: '#f5efe0', fg: '#665028', label: 'Census' },
-  report:  { icon: '📈', bg: '#e8e0f5', fg: '#4b3a7a', label: 'Report' },
-  other:   { icon: '•',  bg: '#e2e3e5', fg: '#383d41', label: 'Other' },
-  all:     { icon: '',   bg: '',        fg: '',        label: 'All' },
+  rfp:          { icon: '📄', bg: '#e6f0fb', fg: '#1e3a5f', label: 'RFP' },
+  quote:        { icon: '💬', bg: '#e6f4ea', fg: '#1e5631', label: 'Quote' },
+  presentation: { icon: '📑', bg: '#eee6f5', fg: '#3a2a6a', label: 'Presentation' },
+  client:       { icon: '👥', bg: '#fff4e0', fg: '#8a5a00', label: 'Client' },
+  census:       { icon: '📋', bg: '#f5efe0', fg: '#665028', label: 'Census' },
+  report:       { icon: '📈', bg: '#e8e0f5', fg: '#4b3a7a', label: 'Report' },
+  other:        { icon: '•',  bg: '#e2e3e5', fg: '#383d41', label: 'Other' },
+  all:          { icon: '',   bg: '',        fg: '',        label: 'All' },
 };
 
 // Routes for clickable events
@@ -52,6 +54,7 @@ function getRouteForEvent(event: ActivityEvent): string | null {
   const cat = categorizeEvent(event.event_type);
   if (cat === 'rfp' && md.rfp_id) return `/broker/rfps/${md.rfp_id}`;
   if (cat === 'quote' && md.rfp_id) return `/broker/rfps/${md.rfp_id}/quotes`;
+  if (cat === 'presentation' && md.presentation_id) return `/broker/presentations/${md.presentation_id}`;
   if (cat === 'client' && md.client_id) return `/broker/clients/${md.client_id}`;
   return null;
 }
@@ -151,7 +154,7 @@ export default function ActivityPage() {
 
   // Counts per filter category
   const counts = useMemo(() => {
-    const c: Record<FilterCategory, number> = { all: events.length, rfp: 0, quote: 0, client: 0, census: 0, report: 0, other: 0 };
+    const c: Record<FilterCategory, number> = { all: events.length, rfp: 0, quote: 0, presentation: 0, client: 0, census: 0, report: 0, other: 0 };
     events.forEach((e) => {
       const cat = categorizeEvent(e.event_type);
       c[cat]++;
@@ -207,6 +210,7 @@ export default function ActivityPage() {
             <FilterPill label="All" count={counts.all} active={filter === 'all'} onClick={() => setFilter('all')} />
             <FilterPill label="RFPs" count={counts.rfp} active={filter === 'rfp'} icon="📄" onClick={() => setFilter('rfp')} />
             <FilterPill label="Quotes" count={counts.quote} active={filter === 'quote'} icon="💬" onClick={() => setFilter('quote')} />
+            <FilterPill label="Presentations" count={counts.presentation} active={filter === 'presentation'} icon="📑" onClick={() => setFilter('presentation')} />
             <FilterPill label="Clients" count={counts.client} active={filter === 'client'} icon="👥" onClick={() => setFilter('client')} />
             <FilterPill label="Census" count={counts.census} active={filter === 'census'} icon="📋" onClick={() => setFilter('census')} />
             <FilterPill label="Reports" count={counts.report} active={filter === 'report'} icon="📈" onClick={() => setFilter('report')} />
