@@ -4,6 +4,10 @@ import { renderToBuffer } from '@react-pdf/renderer';
 import React from 'react';
 import { StandardTemplate, type StandardTemplateData } from '../../../../../lib/presentations/standard-template';
 import { buildStandardExcel } from '../../../../../lib/presentations/standard-excel';
+import { ExecutiveTemplate, type ExecutiveTemplateData } from '../../../../../lib/presentations/executive-template';
+import { buildExecutiveExcel } from '../../../../../lib/presentations/executive-excel';
+import { DetailedTemplate, type DetailedTemplateData } from '../../../../../lib/presentations/detailed-template';
+import { buildDetailedExcel } from '../../../../../lib/presentations/detailed-excel';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -15,7 +19,7 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 // ============================================================================
-// POST — render PDF + Excel, upload, update row, return signed URLs
+// POST — render PDF + Excel for the selected template, upload, update row
 // ============================================================================
 export async function POST(
   req: NextRequest,
@@ -79,6 +83,15 @@ export async function POST(
       return NextResponse.json(
         { error: 'Presentation does not belong to your agency' },
         { status: 403 }
+      );
+    }
+
+    // Validate template (defensive — DB CHECK constraint should already enforce this)
+    const template = presentation.template as 'standard' | 'executive' | 'detailed';
+    if (!['standard', 'executive', 'detailed'].includes(template)) {
+      return NextResponse.json(
+        { error: 'Invalid template', debug: { template } },
+        { status: 400 }
       );
     }
 
@@ -171,8 +184,22 @@ export async function POST(
       lines = lineRows || [];
     }
 
-    // ---- Shape the data for the template ----
-    const templateData: StandardTemplateData = {
+    // 6. AI narrative (only fetched for executive + detailed templates; reusing the
+    // existing rfp_ai_narratives row produced by the broker comparison grid)
+    let narrativeBullets: string[] | undefined = undefined;
+    if (template === 'executive' || template === 'detailed') {
+      const { data: narrative } = await admin
+        .from('rfp_ai_narratives')
+        .select('bullets')
+        .eq('rfp_id', rfp.id)
+        .maybeSingle();
+      if (narrative && Array.isArray(narrative.bullets)) {
+        narrativeBullets = narrative.bullets as string[];
+      }
+    }
+
+    // ---- Shape the data for the templates ----
+    const baseTemplateData: StandardTemplateData = {
       agency: {
         name: agency.name,
         logo_url: agency.logo_url,
@@ -216,28 +243,34 @@ export async function POST(
       generated_at: new Date().toISOString(),
     };
 
-    // ---- Render PDF ----
+    // ---- Render PDF + Excel for the chosen template ----
     let pdfBuffer: Buffer;
-    try {
-        pdfBuffer = await renderToBuffer(
-            React.createElement(StandardTemplate, { data: templateData }) as any
-          );
-    } catch (renderErr: any) {
-      console.error('PDF render error:', renderErr);
-      return NextResponse.json(
-        { error: 'PDF rendering failed', debug: { message: renderErr?.message } },
-        { status: 500 }
-      );
-    }
-
-    // ---- Render Excel ----
     let excelBuffer: Buffer;
+
     try {
-      excelBuffer = await buildStandardExcel(templateData);
-    } catch (excelErr: any) {
-      console.error('Excel render error:', excelErr);
+      if (template === 'executive') {
+        const execData: ExecutiveTemplateData = { ...baseTemplateData, narrative_bullets: narrativeBullets };
+        pdfBuffer = await renderToBuffer(
+          React.createElement(ExecutiveTemplate, { data: execData }) as any
+        );
+        excelBuffer = await buildExecutiveExcel(execData);
+      } else if (template === 'detailed') {
+        const detailedData: DetailedTemplateData = { ...baseTemplateData, narrative_bullets: narrativeBullets };
+        pdfBuffer = await renderToBuffer(
+          React.createElement(DetailedTemplate, { data: detailedData }) as any
+        );
+        excelBuffer = await buildDetailedExcel(detailedData);
+      } else {
+        // standard
+        pdfBuffer = await renderToBuffer(
+          React.createElement(StandardTemplate, { data: baseTemplateData }) as any
+        );
+        excelBuffer = await buildStandardExcel(baseTemplateData);
+      }
+    } catch (renderErr: any) {
+      console.error(`Render error for template "${template}":`, renderErr);
       return NextResponse.json(
-        { error: 'Excel rendering failed', debug: { message: excelErr?.message } },
+        { error: 'Rendering failed', debug: { template, message: renderErr?.message } },
         { status: 500 }
       );
     }
@@ -321,22 +354,23 @@ export async function POST(
 
     // ---- Non-blocking activity log ----
     try {
-        const meta = user.user_metadata || {};
-        const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
+      const meta = user.user_metadata || {};
+      const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
       await admin.from('activity_log').insert({
         agency_id: presentation.agency_id,
         client_id: presentation.client_id,
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'presentation_generated',
-        event_summary: `Generated ${presentation.template} presentation "${presentation.title}"`,
+        event_summary: `Generated ${template} presentation "${presentation.title}"`,
         metadata: {
           presentation_id: presentationId,
           rfp_id: rfp.id,
-          template: presentation.template,
-          quote_count: templateData.quotes.length,
+          template,
+          quote_count: baseTemplateData.quotes.length,
           pdf_size_bytes: pdfBuffer.length,
           excel_size_bytes: excelBuffer.length,
+          narrative_used: narrativeBullets !== undefined,
         },
       });
     } catch (logErr) {
@@ -349,7 +383,8 @@ export async function POST(
         presentation: updated,
         pdf_signed_url: pdfSigned?.signedUrl,
         excel_signed_url: excelSigned?.signedUrl,
-        quote_count: templateData.quotes.length,
+        quote_count: baseTemplateData.quotes.length,
+        template,
       },
       { status: 200 }
     );
