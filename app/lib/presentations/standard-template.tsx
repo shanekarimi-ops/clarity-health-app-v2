@@ -45,8 +45,11 @@ export type StandardTemplateData = {
   }>;
   generated_by_name: string | null;
   generated_at: string;
-  // ---- custom_sections overrides (Commit 1 wiring) ----
-  // takeaways override narrative_bullets in Exec/Detailed templates only
+  // ---- custom_sections overrides (Commit 1 wiring + Commit 2 takeaways block) ----
+  // takeaways: in Standard PDF, renders as a Key Takeaways block between summary
+  // stats and Carrier Quotes. Standard does NOT fall back to narrative_bullets —
+  // the block only appears when the broker has explicitly written takeaways.
+  // (Executive + Detailed inherit this type and merge with narrative_bullets.)
   custom_takeaways?: string[];
   // recommendation appears under the recommended carrier in Exec hero (Exec only)
   custom_recommendation?: string;
@@ -180,6 +183,34 @@ const makeStyles = (primaryColor: string, accentColor: string) => StyleSheet.cre
     fontSize: 9,
     color: '#888888',
     marginTop: 2,
+  },
+  // Key Takeaways block (Commit 2)
+  takeawaysBlock: {
+    backgroundColor: '#fafafa',
+    borderLeftWidth: 3,
+    borderLeftColor: primaryColor,
+    borderLeftStyle: 'solid',
+    padding: 14,
+    marginBottom: 24,
+    borderRadius: 4,
+  },
+  takeawayRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+    alignItems: 'flex-start',
+  },
+  takeawayBullet: {
+    width: 12,
+    fontSize: 10,
+    color: primaryColor,
+    fontFamily: 'Helvetica-Bold',
+    lineHeight: 1.4,
+  },
+  takeawayText: {
+    flex: 1,
+    fontSize: 10,
+    color: '#1a1a1a',
+    lineHeight: 1.4,
   },
   // Carrier card
   carrierCard: {
@@ -327,6 +358,14 @@ export const StandardTemplate: React.FC<{ data: StandardTemplateData }> = ({ dat
     ? data.custom_footer_note.trim()
     : null;
 
+  // Standard PDF takeaways: ONLY from custom_takeaways (no narrative fallback).
+  // The Key Takeaways block renders if and only if the broker has written
+  // custom takeaways for this presentation.
+  const takeaways = Array.isArray(data.custom_takeaways)
+    ? data.custom_takeaways.filter(t => typeof t === 'string' && t.trim().length > 0)
+    : [];
+  const hasTakeaways = takeaways.length > 0;
+
   return (
     <Document
       title={`${data.client.employer_name} - ${data.rfp.name}`}
@@ -381,6 +420,21 @@ export const StandardTemplate: React.FC<{ data: StandardTemplateData }> = ({ dat
             <Text style={styles.statValue}>{fmtMoney(data.rfp.current_annual_cost)}</Text>
           </View>
         </View>
+
+        {/* Key Takeaways (only if broker has written custom takeaways) */}
+        {hasTakeaways && (
+          <View style={styles.section} wrap={false}>
+            <Text style={styles.sectionTitle}>Key Takeaways</Text>
+            <View style={styles.takeawaysBlock}>
+              {takeaways.map((t, idx) => (
+                <View key={idx} style={styles.takeawayRow}>
+                  <Text style={styles.takeawayBullet}>•</Text>
+                  <Text style={styles.takeawayText}>{t}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
 
         {/* Carrier cards */}
         <View style={styles.section}>

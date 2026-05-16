@@ -34,6 +34,15 @@ export async function buildStandardExcel(data: StandardTemplateData): Promise<Bu
   const primaryArgb = hexToArgb(data.agency.primary_color, '1A1919');
   const accentArgb = hexToArgb(data.agency.accent_color, '4C58AE');
 
+  // Normalize custom_sections inputs (Commit 2)
+  const takeaways = Array.isArray(data.custom_takeaways)
+    ? data.custom_takeaways.filter(t => typeof t === 'string' && t.trim().length > 0).map(t => t.trim())
+    : [];
+  const hasTakeaways = takeaways.length > 0;
+  const footerNote = data.custom_footer_note && data.custom_footer_note.trim()
+    ? data.custom_footer_note.trim()
+    : null;
+
   // ==========================================================================
   // SHEET 1: Summary
   // ==========================================================================
@@ -139,6 +148,48 @@ export async function buildStandardExcel(data: StandardTemplateData): Promise<Bu
     }
     row.height = 20;
   });
+
+  // ----- Key Takeaways block (Commit 2) -----
+  // Renders only when broker has written custom_takeaways. No narrative fallback
+  // in Standard — matches the Standard PDF behavior.
+  if (hasTakeaways) {
+    summary.addRow([]);
+    summary.addRow([]);
+
+    // Section header band (matches the title styling for visual consistency)
+    const takeawaysHeaderRow = summary.addRow(['KEY TAKEAWAYS', '', '', '']);
+    summary.mergeCells(`A${takeawaysHeaderRow.number}:D${takeawaysHeaderRow.number}`);
+    const takeawaysHeaderCell = summary.getCell(`A${takeawaysHeaderRow.number}`);
+    takeawaysHeaderCell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
+    takeawaysHeaderCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: primaryArgb } };
+    takeawaysHeaderCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+    takeawaysHeaderRow.height = 22;
+
+    // One row per bullet: column A = bullet char, B:D merged = text
+    takeaways.forEach((t) => {
+      const row = summary.addRow(['•', t, '', '']);
+      summary.mergeCells(`B${row.number}:D${row.number}`);
+      row.getCell(1).font = { bold: true, size: 11, color: { argb: primaryArgb } };
+      row.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
+      row.getCell(2).font = { size: 10, color: { argb: 'FF1A1A1A' } };
+      row.getCell(2).alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
+      row.height = 28;
+    });
+  }
+
+  // ----- Footer note (Commit 2) -----
+  // Italic gray note at the bottom of Summary sheet. Excel files have no
+  // page-footer concept, so we anchor it to the cover sheet only.
+  if (footerNote) {
+    summary.addRow([]);
+    summary.addRow([]);
+    const footerRow = summary.addRow([footerNote, '', '', '']);
+    summary.mergeCells(`A${footerRow.number}:D${footerRow.number}`);
+    const footerCell = summary.getCell(`A${footerRow.number}`);
+    footerCell.font = { italic: true, size: 9, color: { argb: 'FF999999' } };
+    footerCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
+    footerRow.height = 28;
+  }
 
   // ==========================================================================
   // SHEET 2: Cost Modeling (editable)

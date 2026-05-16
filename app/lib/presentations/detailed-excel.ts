@@ -111,6 +111,21 @@ export async function buildDetailedExcel(data: DetailedTemplateData): Promise<Bu
   const primaryArgb = hexToArgb(data.agency.primary_color, '1A1919');
   const accentArgb = hexToArgb(data.agency.accent_color, '4C58AE');
 
+  // Normalize custom_sections inputs (Commit 2)
+  // effectiveBullets: custom_takeaways replaces narrative_bullets when present.
+  // Matches the Commit 1 pattern used in executive-template.tsx /
+  // detailed-template.tsx / executive-excel.ts.
+  const customTakeaways = Array.isArray(data.custom_takeaways)
+    ? data.custom_takeaways.filter(t => typeof t === 'string' && t.trim().length > 0).map(t => t.trim())
+    : null;
+  const effectiveBullets = (customTakeaways && customTakeaways.length > 0)
+    ? customTakeaways
+    : (Array.isArray(data.narrative_bullets) ? data.narrative_bullets : null);
+
+  const footerNote = data.custom_footer_note && data.custom_footer_note.trim()
+    ? data.custom_footer_note.trim()
+    : null;
+
   // ==========================================================================
   // SHEET 1: Summary (primary tab color)
   // ==========================================================================
@@ -190,9 +205,9 @@ export async function buildDetailedExcel(data: DetailedTemplateData): Promise<Bu
 
   summary.addRow([]);
 
-  // Narrative bullets
-  const bullets = data.narrative_bullets && data.narrative_bullets.length > 0
-    ? data.narrative_bullets
+  // Key Takeaways — uses effectiveBullets (custom_takeaways overrides narrative_bullets)
+  const bullets = effectiveBullets && effectiveBullets.length > 0
+    ? effectiveBullets
     : null;
 
   if (bullets) {
@@ -249,6 +264,20 @@ export async function buildDetailedExcel(data: DetailedTemplateData): Promise<Bu
     }
     row.height = 22;
   });
+
+  // ----- Footer note (Commit 2) -----
+  // Italic gray note at the bottom of the Summary sheet. Excel files have no
+  // page-footer concept, so we anchor it to the cover/Summary sheet only.
+  if (footerNote) {
+    summary.addRow([]);
+    summary.addRow([]);
+    const footerRow = summary.addRow([footerNote, '', '', '']);
+    summary.mergeCells(`A${footerRow.number}:D${footerRow.number}`);
+    const footerCell = summary.getCell(`A${footerRow.number}`);
+    footerCell.font = { italic: true, size: 9, color: { argb: 'FF999999' } };
+    footerCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
+    footerRow.height = 28;
+  }
 
   // ==========================================================================
   // PER-CARRIER SHEETS (one per quote, primary tab color)

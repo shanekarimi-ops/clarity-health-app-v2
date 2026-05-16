@@ -28,6 +28,14 @@ export async function buildExecutiveExcel(data: ExecutiveTemplateData): Promise<
     ? data.custom_recommendation.trim()
     : null;
 
+  // Custom footer note (Commit 2). Italic gray note appended at the bottom
+  // of the Executive Summary sheet. Excel has no page-footer concept, so we
+  // anchor it to the single sheet — same pattern as standard-excel and
+  // detailed-excel's Summary sheet.
+  const footerNote = data.custom_footer_note && data.custom_footer_note.trim()
+    ? data.custom_footer_note.trim()
+    : null;
+
   // ==========================================================================
   // SINGLE SHEET: Executive Summary
   // Tab color: accent (vs primary for Standard, primary for Detailed)
@@ -209,6 +217,19 @@ export async function buildExecutiveExcel(data: ExecutiveTemplateData): Promise<
     cell.font = { size: 10, italic: true, color: { argb: 'FF888888' } };
     cell.alignment = { vertical: 'top', horizontal: 'left', indent: 1, wrapText: true };
     placeholderRow.height = 36;
+  }
+
+  // ---- Footer note (Commit 2) ----
+  // Italic gray note appended at the bottom of the sheet, after Key Takeaways.
+  if (footerNote) {
+    sheet.addRow([]);
+    sheet.addRow([]);
+    const footerRow = sheet.addRow([footerNote, '', '', '']);
+    sheet.mergeCells(`A${footerRow.number}:D${footerRow.number}`);
+    const footerCell = sheet.getCell(`A${footerRow.number}`);
+    footerCell.font = { italic: true, size: 9, color: { argb: 'FF999999' } };
+    footerCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
+    footerRow.height = 28;
   }
 
   // ---- Return as Buffer ----
