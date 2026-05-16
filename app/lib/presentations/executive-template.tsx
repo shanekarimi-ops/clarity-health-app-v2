@@ -4,6 +4,8 @@ import type { StandardTemplateData } from './standard-template';
 
 // Executive template uses the same data shape as Standard,
 // but also accepts optional AI narrative bullets.
+// custom_sections fields (custom_takeaways, custom_recommendation, custom_footer_note)
+// are inherited from StandardTemplateData.
 export type ExecutiveTemplateData = StandardTemplateData & {
   narrative_bullets?: string[];
 };
@@ -133,6 +135,20 @@ const makeStyles = (primaryColor: string, accentColor: string) => StyleSheet.cre
     color: '#666666',
     marginTop: 8,
   },
+  // Custom recommendation note (custom_sections.recommendation)
+  heroCustomRec: {
+    fontSize: 11,
+    color: '#1a1a1a',
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 0.5,
+    borderTopColor: '#cccccc',
+    borderTopStyle: 'solid',
+    textAlign: 'center',
+    lineHeight: 1.5,
+    maxWidth: '90%',
+    fontStyle: 'italic',
+  },
   // Comparison row (if multiple carriers)
   comparisonRow: {
     flexDirection: 'row',
@@ -214,14 +230,23 @@ const makeStyles = (primaryColor: string, accentColor: string) => StyleSheet.cre
     bottom: 30,
     left: 50,
     right: 50,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingTop: 12,
     borderTopWidth: 0.5,
     borderTopColor: '#cccccc',
     borderTopStyle: 'solid',
+  },
+  footerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     fontSize: 8,
     color: '#888888',
+  },
+  footerCustomNote: {
+    fontSize: 7,
+    color: '#999999',
+    fontStyle: 'italic',
+    marginTop: 4,
+    lineHeight: 1.4,
   },
 });
 
@@ -242,8 +267,19 @@ export const ExecutiveTemplate: React.FC<{ data: ExecutiveTemplateData }> = ({ d
     ? data.quotes.filter(q => q.quote_id !== lowestQuote.quote_id)
     : data.quotes;
 
-  const bullets = data.narrative_bullets && data.narrative_bullets.length > 0
-    ? data.narrative_bullets
+  // Merge: custom_takeaways override narrative_bullets if non-empty
+  const effectiveBullets = (data.custom_takeaways && data.custom_takeaways.length > 0)
+    ? data.custom_takeaways
+    : (data.narrative_bullets && data.narrative_bullets.length > 0)
+      ? data.narrative_bullets
+      : null;
+
+  const customRecommendation = data.custom_recommendation && data.custom_recommendation.trim()
+    ? data.custom_recommendation.trim()
+    : null;
+
+  const customFooterNote = data.custom_footer_note && data.custom_footer_note.trim()
+    ? data.custom_footer_note.trim()
     : null;
 
   return (
@@ -301,6 +337,9 @@ export const ExecutiveTemplate: React.FC<{ data: ExecutiveTemplateData }> = ({ d
                 {fmtPct(lowestQuote.cost_change_pct)} vs current annual cost
               </Text>
             )}
+            {customRecommendation && (
+              <Text style={styles.heroCustomRec}>{customRecommendation}</Text>
+            )}
           </View>
         ) : (
           <View style={styles.heroBlock}>
@@ -330,8 +369,8 @@ export const ExecutiveTemplate: React.FC<{ data: ExecutiveTemplateData }> = ({ d
         {/* Narrative bullets */}
         <View style={styles.narrativeSection}>
           <Text style={styles.narrativeTitle}>Key Takeaways</Text>
-          {bullets ? (
-            bullets.map((b, i) => (
+          {effectiveBullets ? (
+            effectiveBullets.map((b, i) => (
               <View key={i} style={styles.narrativeBullet}>
                 <View style={styles.bulletDot} />
                 <Text style={styles.bulletText}>{b}</Text>
@@ -348,8 +387,13 @@ export const ExecutiveTemplate: React.FC<{ data: ExecutiveTemplateData }> = ({ d
 
         {/* Footer */}
         <View style={styles.footer} fixed>
-          <Text>{data.agency.name} · Confidential</Text>
-          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+          <View style={styles.footerRow}>
+            <Text>{data.agency.name} · Confidential</Text>
+            <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+          </View>
+          {customFooterNote && (
+            <Text style={styles.footerCustomNote}>{customFooterNote}</Text>
+          )}
         </View>
 
       </Page>

@@ -45,6 +45,13 @@ export type StandardTemplateData = {
   }>;
   generated_by_name: string | null;
   generated_at: string;
+  // ---- custom_sections overrides (Commit 1 wiring) ----
+  // takeaways override narrative_bullets in Exec/Detailed templates only
+  custom_takeaways?: string[];
+  // recommendation appears under the recommended carrier in Exec hero (Exec only)
+  custom_recommendation?: string;
+  // footer_note appended below the footer line in all templates
+  custom_footer_note?: string;
 };
 
 // ============================================================================
@@ -272,14 +279,23 @@ const makeStyles = (primaryColor: string, accentColor: string) => StyleSheet.cre
     bottom: 20,
     left: 40,
     right: 40,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingTop: 10,
     borderTopWidth: 0.5,
     borderTopColor: '#cccccc',
     borderTopStyle: 'solid',
+  },
+  footerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     fontSize: 8,
     color: '#888888',
+  },
+  footerCustomNote: {
+    fontSize: 7,
+    color: '#999999',
+    fontStyle: 'italic',
+    marginTop: 4,
+    lineHeight: 1.4,
   },
 });
 
@@ -305,6 +321,10 @@ export const StandardTemplate: React.FC<{ data: StandardTemplateData }> = ({ dat
   const validQuotes = data.quotes.filter(q => q.total_annual_cost !== null);
   const lowestCost = validQuotes.length > 0
     ? Math.min(...validQuotes.map(q => q.total_annual_cost!))
+    : null;
+
+  const customFooterNote = data.custom_footer_note && data.custom_footer_note.trim()
+    ? data.custom_footer_note.trim()
     : null;
 
   return (
@@ -438,8 +458,13 @@ export const StandardTemplate: React.FC<{ data: StandardTemplateData }> = ({ dat
 
         {/* Footer */}
         <View style={styles.footer} fixed>
-          <Text>{data.agency.name} · Confidential</Text>
-          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+          <View style={styles.footerRow}>
+            <Text>{data.agency.name} · Confidential</Text>
+            <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+          </View>
+          {customFooterNote && (
+            <Text style={styles.footerCustomNote}>{customFooterNote}</Text>
+          )}
         </View>
 
       </Page>

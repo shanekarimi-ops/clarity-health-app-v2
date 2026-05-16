@@ -19,6 +19,43 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 // ============================================================================
+// Helper: extract validated custom_sections slots from the presentation row.
+// All slots are optional. Empty/null/blank values are normalized to undefined.
+// ============================================================================
+type CustomSectionsExtracted = {
+  custom_takeaways?: string[];
+  custom_recommendation?: string;
+  custom_footer_note?: string;
+};
+
+function extractCustomSections(raw: any): CustomSectionsExtracted {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: CustomSectionsExtracted = {};
+
+  // takeaways must be a non-empty array of non-empty strings
+  if (Array.isArray(raw.takeaways)) {
+    const cleaned = raw.takeaways
+      .filter((b: any): b is string => typeof b === 'string' && b.trim().length > 0)
+      .map((b: string) => b.trim());
+    if (cleaned.length > 0) {
+      out.custom_takeaways = cleaned;
+    }
+  }
+
+  // recommendation must be a non-empty string
+  if (typeof raw.recommendation === 'string' && raw.recommendation.trim().length > 0) {
+    out.custom_recommendation = raw.recommendation.trim();
+  }
+
+  // footer_note must be a non-empty string
+  if (typeof raw.footer_note === 'string' && raw.footer_note.trim().length > 0) {
+    out.custom_footer_note = raw.footer_note.trim();
+  }
+
+  return out;
+}
+
+// ============================================================================
 // POST — render PDF + Excel for the selected template, upload, update row
 // ============================================================================
 export async function POST(
@@ -65,7 +102,7 @@ export async function POST(
       );
     }
 
-    // ---- Load the presentation record ----
+    // ---- Load the presentation record (includes custom_sections jsonb) ----
     const { data: presentation, error: presError } = await admin
       .from('broker_presentations')
       .select('*')
@@ -94,6 +131,9 @@ export async function POST(
         { status: 400 }
       );
     }
+
+    // Extract custom_sections overrides (all optional; safe to skip if column is null)
+    const customSections = extractCustomSections(presentation.custom_sections);
 
     // ---- Assemble the full data graph ----
     // 1. Agency (branding)
@@ -199,6 +239,8 @@ export async function POST(
     }
 
     // ---- Shape the data for the templates ----
+    // custom_sections fields are passed through unchanged; merge logic with
+    // narrative_bullets is handled inside each template via effectiveBullets.
     const baseTemplateData: StandardTemplateData = {
       agency: {
         name: agency.name,
@@ -241,6 +283,8 @@ export async function POST(
       })),
       generated_by_name: presentation.generated_by_name,
       generated_at: new Date().toISOString(),
+      // custom_sections overrides — all optional
+      ...customSections,
     };
 
     // ---- Render PDF + Excel for the chosen template ----
@@ -371,6 +415,11 @@ export async function POST(
           pdf_size_bytes: pdfBuffer.length,
           excel_size_bytes: excelBuffer.length,
           narrative_used: narrativeBullets !== undefined,
+          custom_sections_applied: {
+            takeaways: !!customSections.custom_takeaways,
+            recommendation: !!customSections.custom_recommendation,
+            footer_note: !!customSections.custom_footer_note,
+          },
         },
       });
     } catch (logErr) {

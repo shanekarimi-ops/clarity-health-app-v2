@@ -2,6 +2,10 @@ import React from 'react';
 import { Document, Page, Text, View, StyleSheet, Image } from '@react-pdf/renderer';
 import type { StandardTemplateData } from './standard-template';
 
+// Detailed template uses the same data shape as Standard,
+// but also accepts optional AI narrative bullets.
+// custom_sections fields (custom_takeaways, custom_recommendation, custom_footer_note)
+// are inherited from StandardTemplateData.
 export type DetailedTemplateData = StandardTemplateData & {
   narrative_bullets?: string[];
 };
@@ -473,14 +477,23 @@ const makeStyles = (primaryColor: string, accentColor: string) => StyleSheet.cre
     bottom: 20,
     left: 40,
     right: 40,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingTop: 10,
     borderTopWidth: 0.5,
     borderTopColor: '#cccccc',
     borderTopStyle: 'solid',
+  },
+  footerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     fontSize: 8,
     color: '#888888',
+  },
+  footerCustomNote: {
+    fontSize: 7,
+    color: '#999999',
+    fontStyle: 'italic',
+    marginTop: 4,
+    lineHeight: 1.4,
   },
 });
 
@@ -498,8 +511,15 @@ export const DetailedTemplate: React.FC<{ data: DetailedTemplateData }> = ({ dat
     ? Math.min(...validQuotes.map(q => q.total_annual_cost!))
     : null;
 
-  const bullets = data.narrative_bullets && data.narrative_bullets.length > 0
-    ? data.narrative_bullets
+  // Merge: custom_takeaways override narrative_bullets if non-empty
+  const effectiveBullets = (data.custom_takeaways && data.custom_takeaways.length > 0)
+    ? data.custom_takeaways
+    : (data.narrative_bullets && data.narrative_bullets.length > 0)
+      ? data.narrative_bullets
+      : null;
+
+  const customFooterNote = data.custom_footer_note && data.custom_footer_note.trim()
+    ? data.custom_footer_note.trim()
     : null;
 
   return (
@@ -561,10 +581,10 @@ export const DetailedTemplate: React.FC<{ data: DetailedTemplateData }> = ({ dat
         </View>
 
         {/* Narrative bullets */}
-        {bullets && (
+        {effectiveBullets && (
           <View style={styles.narrativeBlock}>
             <Text style={styles.narrativeTitle}>Key Takeaways</Text>
-            {bullets.map((b, i) => (
+            {effectiveBullets.map((b, i) => (
               <View key={i} style={styles.narrativeBullet}>
                 <View style={styles.bulletDot} />
                 <Text style={styles.bulletText}>{b}</Text>
@@ -606,8 +626,13 @@ export const DetailedTemplate: React.FC<{ data: DetailedTemplateData }> = ({ dat
         </View>
 
         <View style={styles.footer} fixed>
-          <Text>{data.agency.name} · Confidential</Text>
-          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+          <View style={styles.footerRow}>
+            <Text>{data.agency.name} · Confidential</Text>
+            <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+          </View>
+          {customFooterNote && (
+            <Text style={styles.footerCustomNote}>{customFooterNote}</Text>
+          )}
         </View>
       </Page>
 
@@ -716,8 +741,13 @@ export const DetailedTemplate: React.FC<{ data: DetailedTemplateData }> = ({ dat
           )}
 
           <View style={styles.footer} fixed>
-            <Text>{data.agency.name} · Confidential</Text>
-            <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+            <View style={styles.footerRow}>
+              <Text>{data.agency.name} · Confidential</Text>
+              <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+            </View>
+            {customFooterNote && (
+              <Text style={styles.footerCustomNote}>{customFooterNote}</Text>
+            )}
           </View>
         </Page>
       ))}

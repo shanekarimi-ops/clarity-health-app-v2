@@ -17,6 +17,17 @@ export async function buildExecutiveExcel(data: ExecutiveTemplateData): Promise<
   const primaryArgb = hexToArgb(data.agency.primary_color, '1A1919');
   const accentArgb = hexToArgb(data.agency.accent_color, '4C58AE');
 
+  // Merge: custom_takeaways override narrative_bullets if non-empty
+  const effectiveBullets = (data.custom_takeaways && data.custom_takeaways.length > 0)
+    ? data.custom_takeaways
+    : (data.narrative_bullets && data.narrative_bullets.length > 0)
+      ? data.narrative_bullets
+      : null;
+
+  const customRecommendation = data.custom_recommendation && data.custom_recommendation.trim()
+    ? data.custom_recommendation.trim()
+    : null;
+
   // ==========================================================================
   // SINGLE SHEET: Executive Summary
   // Tab color: accent (vs primary for Standard, primary for Detailed)
@@ -117,6 +128,19 @@ export async function buildExecutiveExcel(data: ExecutiveTemplateData): Promise<
     heroSubtext.alignment = { vertical: 'middle', horizontal: 'center' };
     heroSubtext.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
     sheet.getRow(8).height = 22;
+
+    // ---- Custom recommendation (custom_sections.recommendation) ----
+    // Sits below the hero subtext, inside the same gray block.
+    if (customRecommendation) {
+      sheet.mergeCells('A9:D9');
+      const heroCustomRec = sheet.getCell('A9');
+      heroCustomRec.value = customRecommendation;
+      heroCustomRec.font = { size: 10, italic: true, color: { argb: 'FF1A1A1A' } };
+      heroCustomRec.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      heroCustomRec.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
+      // Grow row roughly with text length
+      sheet.getRow(9).height = Math.max(28, Math.min(80, Math.ceil(customRecommendation.length / 80) * 22));
+    }
   } else {
     sheet.mergeCells('A5:D5');
     const noQuote = sheet.getCell('A5');
@@ -160,11 +184,7 @@ export async function buildExecutiveExcel(data: ExecutiveTemplateData): Promise<
     sheet.addRow([]);
   }
 
-  // ---- KEY TAKEAWAYS (narrative bullets) ----
-  const bullets = data.narrative_bullets && data.narrative_bullets.length > 0
-    ? data.narrative_bullets
-    : null;
-
+  // ---- KEY TAKEAWAYS (effective bullets — custom override or AI default) ----
   const takeawaysHeaderRow = sheet.addRow(['Key Takeaways']);
   sheet.mergeCells(`A${takeawaysHeaderRow.number}:D${takeawaysHeaderRow.number}`);
   const takeawaysHeader = sheet.getCell(`A${takeawaysHeaderRow.number}`);
@@ -172,8 +192,8 @@ export async function buildExecutiveExcel(data: ExecutiveTemplateData): Promise<
   takeawaysHeader.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
   takeawaysHeaderRow.height = 26;
 
-  if (bullets) {
-    bullets.forEach((bullet) => {
+  if (effectiveBullets) {
+    effectiveBullets.forEach((bullet) => {
       const bulletRow = sheet.addRow([`•  ${bullet}`]);
       sheet.mergeCells(`A${bulletRow.number}:D${bulletRow.number}`);
       const cell = sheet.getCell(`A${bulletRow.number}`);
