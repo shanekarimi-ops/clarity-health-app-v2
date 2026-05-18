@@ -15,10 +15,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 // ============================================================================
-// Helper: recompute the package's cost snapshot
-// ============================================================================
-// Same shape as the helper in lines/route.ts. Extracting to a shared module
-// is the right move eventually; for now we duplicate to keep the diff scoped.
+// Snapshot recompute helper (shared by DELETE and PATCH)
 // ============================================================================
 async function recomputePackageSnapshot(admin: any, packageId: string) {
   const { data: pkg, error: pkgError } = await admin
@@ -73,8 +70,6 @@ async function recomputePackageSnapshot(admin: any, packageId: string) {
 
   const result = calculatePackageCosts(calcInput);
 
-  // If there are no lines left, the calculator returns zeros — which is correct,
-  // and the persisted snapshot reflects an empty package. No special handling needed.
   const { error: updateError } = await admin
     .from('packages')
     .update({
@@ -95,12 +90,207 @@ async function recomputePackageSnapshot(admin: any, packageId: string) {
 }
 
 // ============================================================================
-// DELETE — remove a line from a package
+// Shared auth + ownership check
+// ============================================================================
+async function authAndVerify(req: NextRequest, packageId: string, lineId: string) {
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { error: NextResponse.json({ error: 'Missing Authorization header' }, { status: 401 }) };
+  }
+  const accessToken = authHeader.slice(7);
+
+  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+  const { data: { user }, error: userError } = await userClient.auth.getUser();
+  if (userError || !user) {
+    return { error: NextResponse.json({ error: 'Invalid session', debug: { error: userError?.message } }, { status: 401 }) };
+  }
+
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+  const { data: broker } = await admin
+    .from('brokers')
+    .select('id, agency_id')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!broker) {
+    return { error: NextResponse.json({ error: 'No broker profile found for this user' }, { status: 403 }) };
+  }
+
+  const { data: pkg, error: pkgError } = await admin
+    .from('packages')
+    .select('id, agency_id')
+    .eq('id', packageId)
+    .maybeSingle();
+
+  if (pkgError || !pkg) {
+    return { error: NextResponse.json({ error: 'Package not found', debug: { package_id: packageId, error: pkgError?.message } }, { status: 404 }) };
+  }
+
+  if (pkg.agency_id !== broker.agency_id) {
+    return { error: NextResponse.json({ error: 'Package does not belong to your agency' }, { status: 403 }) };
+  }
+
+  const { data: line, error: lineError } = await admin
+    .from('package_lines')
+    .select('id, package_id, benefit_type, contribution_split, quote_line:quote_lines(plan_name)')
+    .eq('id', lineId)
+    .maybeSingle();
+
+  if (lineError || !line) {
+    return { error: NextResponse.json({ error: 'Line not found', debug: { line_id: lineId, error: lineError?.message } }, { status: 404 }) };
+  }
+
+  if (line.package_id !== packageId) {
+    return { error: NextResponse.json({ error: 'Line does not belong to this package' }, { status: 404 }) };
+  }
+
+  return { admin, broker, user, pkg, line };
+}
+
+// ============================================================================
+// Validation: ensure a ContributionSplit object is shaped correctly
+// ============================================================================
+function validateContributionSplit(split: any): string | null {
+  if (!split || typeof split !== 'object') return 'contribution_split must be an object';
+  if (split.split_mode !== 'uniform' && split.split_mode !== 'per_tier') {
+    return "contribution_split.split_mode must be 'uniform' or 'per_tier'";
+  }
+
+  if (split.split_mode === 'uniform') {
+    if (!split.uniform || typeof split.uniform !== 'object') {
+      return 'contribution_split.uniform must be an object when split_mode is "uniform"';
+    }
+    const { employer_pct, employee_pct } = split.uniform;
+    if (typeof employer_pct !== 'number' || employer_pct < 0 || employer_pct > 100) {
+      return 'employer_pct must be a number between 0 and 100';
+    }
+    if (typeof employee_pct !== 'number' || employee_pct < 0 || employee_pct > 100) {
+      return 'employee_pct must be a number between 0 and 100';
+    }
+    if (Math.abs(employer_pct + employee_pct - 100) > 0.01) {
+      return 'employer_pct + employee_pct must sum to 100';
+    }
+  }
+
+  if (split.split_mode === 'per_tier') {
+    if (!split.per_tier || typeof split.per_tier !== 'object') {
+      return 'contribution_split.per_tier must be an object when split_mode is "per_tier"';
+    }
+    const tiers = ['employee_only', 'employee_spouse', 'employee_children', 'family'];
+    for (const t of tiers) {
+      const v = split.per_tier[t];
+      if (v) {
+        if (typeof v.employer_pct !== 'number' || v.employer_pct < 0 || v.employer_pct > 100) {
+          return `per_tier.${t}.employer_pct must be a number between 0 and 100`;
+        }
+        if (typeof v.employee_pct !== 'number' || v.employee_pct < 0 || v.employee_pct > 100) {
+          return `per_tier.${t}.employee_pct must be a number between 0 and 100`;
+        }
+        if (Math.abs(v.employer_pct + v.employee_pct - 100) > 0.01) {
+          return `per_tier.${t} percentages must sum to 100`;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// PATCH — update contribution_split on a line, then recompute snapshot
 // ============================================================================
 // URL: /api/broker/packages/[id]/lines/[line_id]
-// No body.
-// Returns: 200 with { success: true, snapshot: <calc result>, removed_line: { id, benefit_type } }
-// Errors: 401/403, 404
+// Body: { contribution_split: { split_mode, uniform?, per_tier? } }
+// Returns: 200 with { success, line, snapshot }
+// ============================================================================
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string; line_id: string } }
+) {
+  const packageId = params.id;
+  const lineId = params.line_id;
+
+  try {
+    const auth = await authAndVerify(req, packageId, lineId);
+    if ('error' in auth) return auth.error;
+    const { admin, broker, user, line } = auth;
+
+    const body = await req.json();
+    const newSplit = body?.contribution_split;
+    const validationError = validateContributionSplit(newSplit);
+    if (validationError) {
+      return NextResponse.json(
+        { error: validationError, debug: { received: newSplit } },
+        { status: 400 }
+      );
+    }
+
+    const { data: updated, error: updateError } = await admin
+      .from('package_lines')
+      .update({ contribution_split: newSplit })
+      .eq('id', lineId)
+      .select('*')
+      .single();
+
+    if (updateError || !updated) {
+      return NextResponse.json(
+        { error: 'Failed to update line', debug: { error: updateError?.message, code: updateError?.code } },
+        { status: 500 }
+      );
+    }
+
+    let snapshot;
+    try {
+      snapshot = await recomputePackageSnapshot(admin, packageId);
+    } catch (recalcErr: any) {
+      console.error(`Snapshot recompute failed for package ${packageId} after line edit:`, recalcErr);
+      return NextResponse.json(
+        {
+          success: true,
+          line: updated,
+          snapshot: null,
+          snapshot_error: recalcErr?.message || 'Snapshot recompute failed',
+        },
+        { status: 200 }
+      );
+    }
+
+    try {
+      const meta = user.user_metadata || {};
+      const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
+      const planName = (line as any).quote_line?.plan_name || 'Unnamed plan';
+      await admin.from('activity_log').insert({
+        agency_id: broker.agency_id,
+        actor_user_id: user.id,
+        actor_name: brokerName,
+        event_type: 'package_line_edited',
+        event_summary: `Updated contribution on ${line.benefit_type} line "${planName}"`,
+        metadata: {
+          package_id: packageId,
+          package_line_id: lineId,
+          benefit_type: line.benefit_type,
+          new_split: newSplit,
+        },
+      });
+    } catch (logErr) {
+      console.warn('activity_log insert failed (non-blocking):', logErr);
+    }
+
+    return NextResponse.json({ success: true, line: updated, snapshot }, { status: 200 });
+  } catch (err: any) {
+    console.error('PATCH /api/broker/packages/[id]/lines/[line_id] error:', err);
+    return NextResponse.json(
+      { error: 'Internal server error', debug: { message: err?.message } },
+      { status: 500 }
+    );
+  }
+}
+
+// ============================================================================
+// DELETE — remove a line, recompute snapshot
 // ============================================================================
 export async function DELETE(
   req: NextRequest,
@@ -110,86 +300,10 @@ export async function DELETE(
   const lineId = params.line_id;
 
   try {
-    // ---- Auth ----
-    const authHeader = req.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Missing Authorization header' },
-        { status: 401 }
-      );
-    }
-    const accessToken = authHeader.slice(7);
+    const auth = await authAndVerify(req, packageId, lineId);
+    if ('error' in auth) return auth.error;
+    const { admin, broker, user, line } = auth;
 
-    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
-    });
-    const { data: { user }, error: userError } = await userClient.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json(
-        { error: 'Invalid session', debug: { error: userError?.message } },
-        { status: 401 }
-      );
-    }
-
-    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-    // ---- Verify broker → agency ----
-    const { data: broker } = await admin
-      .from('brokers')
-      .select('id, agency_id')
-      .eq('user_id', user.id)
-      .maybeSingle();
-
-    if (!broker) {
-      return NextResponse.json(
-        { error: 'No broker profile found for this user' },
-        { status: 403 }
-      );
-    }
-
-    // ---- Load package and verify ownership ----
-    const { data: pkg, error: pkgError } = await admin
-      .from('packages')
-      .select('id, agency_id')
-      .eq('id', packageId)
-      .maybeSingle();
-
-    if (pkgError || !pkg) {
-      return NextResponse.json(
-        { error: 'Package not found', debug: { package_id: packageId, error: pkgError?.message } },
-        { status: 404 }
-      );
-    }
-
-    if (pkg.agency_id !== broker.agency_id) {
-      return NextResponse.json(
-        { error: 'Package does not belong to your agency' },
-        { status: 403 }
-      );
-    }
-
-    // ---- Load the line and verify it belongs to this package ----
-    const { data: line, error: lineError } = await admin
-      .from('package_lines')
-      .select('id, package_id, benefit_type, quote_line:quote_lines(plan_name)')
-      .eq('id', lineId)
-      .maybeSingle();
-
-    if (lineError || !line) {
-      return NextResponse.json(
-        { error: 'Line not found', debug: { line_id: lineId, error: lineError?.message } },
-        { status: 404 }
-      );
-    }
-
-    if (line.package_id !== packageId) {
-      return NextResponse.json(
-        { error: 'Line does not belong to this package' },
-        { status: 404 }
-      );
-    }
-
-    // ---- Delete the line ----
     const { error: deleteError } = await admin
       .from('package_lines')
       .delete()
@@ -202,7 +316,6 @@ export async function DELETE(
       );
     }
 
-    // ---- Recompute snapshot ----
     let snapshot;
     try {
       snapshot = await recomputePackageSnapshot(admin, packageId);
@@ -219,7 +332,6 @@ export async function DELETE(
       );
     }
 
-    // ---- Non-blocking activity log ----
     try {
       const meta = user.user_metadata || {};
       const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;

@@ -137,6 +137,13 @@ const summarizeSplit = (split: ContributionSplit | null): string => {
   return 'Custom';
 };
 
+const currentEmployerPct = (split: ContributionSplit | null): number => {
+  if (split?.split_mode === 'uniform' && split.uniform) {
+    return split.uniform.employer_pct;
+  }
+  return 80;
+};
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -160,13 +167,19 @@ export default function PackageDetailPage() {
   // Add Line modal state
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedQuoteLineId, setSelectedQuoteLineId] = useState('');
-  const [employerPct, setEmployerPct] = useState('80');
+  const [addEmployerPct, setAddEmployerPct] = useState('80');
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
   // Per-line delete state
   const [deletingLineId, setDeletingLineId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Edit Line modal state
+  const [editingLine, setEditingLine] = useState<PackageLine | null>(null);
+  const [editEmployerPct, setEditEmployerPct] = useState('80');
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // Recommend toggle state
   const [recommendBusy, setRecommendBusy] = useState(false);
@@ -242,18 +255,15 @@ export default function PackageDetailPage() {
 
   async function handleAddLine() {
     setAddError(null);
-
     if (!selectedQuoteLineId) {
       setAddError('Please select a carrier line to add.');
       return;
     }
-
-    const pct = parseFloat(employerPct);
+    const pct = parseFloat(addEmployerPct);
     if (isNaN(pct) || pct < 0 || pct > 100) {
       setAddError('Employer contribution must be a number between 0 and 100.');
       return;
     }
-
     setAddSubmitting(true);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -261,7 +271,6 @@ export default function PackageDetailPage() {
         router.push('/login');
         return;
       }
-
       const res = await fetch(`/api/broker/packages/${packageId}/lines`, {
         method: 'POST',
         headers: {
@@ -277,17 +286,15 @@ export default function PackageDetailPage() {
           },
         }),
       });
-
       const json = await res.json();
       if (!res.ok) {
         setAddError(json.error || 'Failed to add line');
         setAddSubmitting(false);
         return;
       }
-
       setShowAddModal(false);
       setSelectedQuoteLineId('');
-      setEmployerPct('80');
+      setAddEmployerPct('80');
       setAddSubmitting(false);
       loadPackage();
     } catch (e: any) {
@@ -299,7 +306,6 @@ export default function PackageDetailPage() {
   async function handleRemoveLine(lineId: string, benefitType: string, planName: string | null) {
     const label = planName || benefitType;
     if (!confirm(`Remove the "${label}" line from this package?`)) return;
-
     setDeletingLineId(lineId);
     setDeleteError(null);
     try {
@@ -308,7 +314,6 @@ export default function PackageDetailPage() {
         router.push('/login');
         return;
       }
-
       const res = await fetch(`/api/broker/packages/${packageId}/lines/${lineId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${sessionData.session.access_token}` },
@@ -319,7 +324,6 @@ export default function PackageDetailPage() {
         setDeletingLineId(null);
         return;
       }
-
       setDeletingLineId(null);
       loadPackage();
     } catch (e: any) {
@@ -328,17 +332,66 @@ export default function PackageDetailPage() {
     }
   }
 
+  function openEditModal(line: PackageLine) {
+    setEditingLine(line);
+    setEditEmployerPct(String(currentEmployerPct(line.contribution_split)));
+    setEditError(null);
+  }
+
+  async function handleEditLine() {
+    if (!editingLine) return;
+    setEditError(null);
+
+    const pct = parseFloat(editEmployerPct);
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      setEditError('Employer contribution must be a number between 0 and 100.');
+      return;
+    }
+
+    setEditSubmitting(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+      const res = await fetch(`/api/broker/packages/${packageId}/lines/${editingLine.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contribution_split: {
+            split_mode: 'uniform',
+            uniform: { employer_pct: pct, employee_pct: 100 - pct },
+          },
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setEditError(json.error || 'Failed to update line');
+        setEditSubmitting(false);
+        return;
+      }
+      setEditSubmitting(false);
+      setEditingLine(null);
+      loadPackage();
+    } catch (e: any) {
+      setEditError(e?.message || 'Failed to update line');
+      setEditSubmitting(false);
+    }
+  }
+
   // ---- Recommend toggle ----
 
   async function handleRecommendClick() {
     setRecommendError(null);
     if (!pkg) return;
-
     if (pkg.is_recommended) {
       setRecommendConfirm({ action: 'unset' });
       return;
     }
-
     try {
       const { data: existing } = await supabase
         .from('packages')
@@ -347,7 +400,6 @@ export default function PackageDetailPage() {
         .eq('is_recommended', true)
         .neq('id', pkg.id)
         .maybeSingle();
-
       if (existing) {
         setRecommendConfirm({ action: 'set', willUnflagName: existing.name });
       } else {
@@ -368,7 +420,6 @@ export default function PackageDetailPage() {
         router.push('/login');
         return;
       }
-
       const res = await fetch(`/api/broker/packages/${packageId}/recommend`, {
         method: 'POST',
         headers: {
@@ -377,14 +428,12 @@ export default function PackageDetailPage() {
         },
         body: JSON.stringify({ recommended: newValue }),
       });
-
       const json = await res.json();
       if (!res.ok) {
         setRecommendError(json.error || 'Failed to update recommended flag');
         setRecommendBusy(false);
         return;
       }
-
       setRecommendBusy(false);
       loadPackage();
     } catch (e: any) {
@@ -415,13 +464,7 @@ export default function PackageDetailPage() {
   if (error) {
     return (
       <div className="dash-layout">
-        <BrokerSidebar
-          active="packages"
-          firstName={firstName}
-          lastName={lastName}
-          agencyName={agencyName}
-          onLogout={handleLogout}
-        />
+        <BrokerSidebar active="packages" firstName={firstName} lastName={lastName} agencyName={agencyName} onLogout={handleLogout} />
         <main className="dash-main">
           <div style={{ padding: 40 }}>
             <a href="/broker/packages" style={backLinkStyle}>← All Packages</a>
@@ -437,13 +480,7 @@ export default function PackageDetailPage() {
   if (!pkg) {
     return (
       <div className="dash-layout">
-        <BrokerSidebar
-          active="packages"
-          firstName={firstName}
-          lastName={lastName}
-          agencyName={agencyName}
-          onLogout={handleLogout}
-        />
+        <BrokerSidebar active="packages" firstName={firstName} lastName={lastName} agencyName={agencyName} onLogout={handleLogout} />
         <main className="dash-main">
           <div style={{ padding: 40 }}>
             <a href="/broker/packages" style={backLinkStyle}>← All Packages</a>
@@ -466,13 +503,7 @@ export default function PackageDetailPage() {
 
   return (
     <div className="dash-layout">
-      <BrokerSidebar
-        active="packages"
-        firstName={firstName}
-        lastName={lastName}
-        agencyName={agencyName}
-        onLogout={handleLogout}
-      />
+      <BrokerSidebar active="packages" firstName={firstName} lastName={lastName} agencyName={agencyName} onLogout={handleLogout} />
       <main className="dash-main">
         <div style={{ padding: '2rem 2.5rem', maxWidth: 1100 }}>
           <a href="/broker/packages" style={backLinkStyle}>← All Packages</a>
@@ -493,7 +524,6 @@ export default function PackageDetailPage() {
               </div>
             </div>
 
-            {/* Recommend toggle — only shown for non-current-plan packages */}
             {!pkg.is_current_plan && (
               <button
                 onClick={handleRecommendClick}
@@ -547,19 +577,9 @@ export default function PackageDetailPage() {
           {/* Cost Snapshot */}
           <SectionCard title="Cost Snapshot">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-              <CostBlock
-                label="Total Annual"
-                value={fmtMoney(pkg.total_annual_cost)}
-                primary
-              />
-              <CostBlock
-                label="Employer Annual"
-                value={fmtMoney(pkg.employer_annual_cost)}
-              />
-              <CostBlock
-                label="Employee Annual"
-                value={fmtMoney(pkg.employee_annual_cost)}
-              />
+              <CostBlock label="Total Annual" value={fmtMoney(pkg.total_annual_cost)} primary />
+              <CostBlock label="Employer Annual" value={fmtMoney(pkg.employer_annual_cost)} />
+              <CostBlock label="Employee Annual" value={fmtMoney(pkg.employee_annual_cost)} />
               <CostBlock
                 label="vs Current"
                 value={fmtPct(pkg.cost_change_vs_current_pct)}
@@ -589,7 +609,7 @@ export default function PackageDetailPage() {
               <button
                 onClick={() => {
                   setSelectedQuoteLineId('');
-                  setEmployerPct('80');
+                  setAddEmployerPct('80');
                   setAddError(null);
                   setShowAddModal(true);
                 }}
@@ -641,6 +661,7 @@ export default function PackageDetailPage() {
                     const carrier = ql?.quote?.carrier;
                     const brandColor = carrier?.brand_color || '#1e3a5f';
                     const initials = (carrier?.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+                    const isDeleting = deletingLineId === line.id;
 
                     return (
                       <div
@@ -707,31 +728,62 @@ export default function PackageDetailPage() {
                         )}
 
                         <button
+                          onClick={() => openEditModal(line)}
+                          disabled={isDeleting}
+                          title="Edit contribution split"
+                          style={{
+                            background: 'transparent',
+                            border: '1px solid #e8e0d0',
+                            color: '#3a4d68',
+                            fontSize: 12,
+                            cursor: isDeleting ? 'not-allowed' : 'pointer',
+                            padding: '4px 10px',
+                            borderRadius: 4,
+                            flexShrink: 0,
+                            fontWeight: 500,
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!isDeleting) {
+                              e.currentTarget.style.background = '#eef2f7';
+                              e.currentTarget.style.borderColor = '#1e3a5f';
+                              e.currentTarget.style.color = '#1e3a5f';
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'transparent';
+                            e.currentTarget.style.borderColor = '#e8e0d0';
+                            e.currentTarget.style.color = '#3a4d68';
+                          }}
+                        >
+                          Edit
+                        </button>
+
+                        <button
                           onClick={() => handleRemoveLine(line.id, line.benefit_type, ql?.plan_name || null)}
-                          disabled={deletingLineId === line.id}
+                          disabled={isDeleting}
                           title="Remove this line"
                           style={{
                             background: 'transparent',
                             border: 'none',
-                            color: deletingLineId === line.id ? '#9aaabe' : '#7a8a9b',
+                            color: isDeleting ? '#9aaabe' : '#7a8a9b',
                             fontSize: 18,
-                            cursor: deletingLineId === line.id ? 'wait' : 'pointer',
+                            cursor: isDeleting ? 'wait' : 'pointer',
                             padding: '4px 8px',
                             borderRadius: 4,
                             flexShrink: 0,
                           }}
                           onMouseEnter={(e) => {
-                            if (deletingLineId !== line.id) {
+                            if (!isDeleting) {
                               e.currentTarget.style.background = '#fdf3f3';
                               e.currentTarget.style.color = '#b91c1c';
                             }
                           }}
                           onMouseLeave={(e) => {
                             e.currentTarget.style.background = 'transparent';
-                            e.currentTarget.style.color = deletingLineId === line.id ? '#9aaabe' : '#7a8a9b';
+                            e.currentTarget.style.color = isDeleting ? '#9aaabe' : '#7a8a9b';
                           }}
                         >
-                          {deletingLineId === line.id ? '…' : '×'}
+                          {isDeleting ? '…' : '×'}
                         </button>
                       </div>
                     );
@@ -741,7 +793,6 @@ export default function PackageDetailPage() {
             )}
           </SectionCard>
 
-          {/* Notes */}
           {pkg.notes && (
             <SectionCard title="Notes">
               <div style={{ fontSize: 13, color: '#3a4d68', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
@@ -750,7 +801,6 @@ export default function PackageDetailPage() {
             </SectionCard>
           )}
 
-          {/* Footer meta */}
           <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 16, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             <span>Created {new Date(pkg.created_at).toLocaleString()}</span>
             {pkg.updated_at !== pkg.created_at && (
@@ -794,8 +844,8 @@ export default function PackageDetailPage() {
             <label style={labelStyle}>Employer Contribution %</label>
             <input
               type="number"
-              value={employerPct}
-              onChange={(e) => setEmployerPct(e.target.value)}
+              value={addEmployerPct}
+              onChange={(e) => setAddEmployerPct(e.target.value)}
               placeholder="80"
               min="0"
               max="100"
@@ -803,7 +853,7 @@ export default function PackageDetailPage() {
               style={inputStyle}
             />
             <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 4 }}>
-              Employee will be charged the remaining {Math.max(0, Math.min(100, 100 - parseFloat(employerPct || '0'))).toFixed(0)}%.
+              Employee will be charged the remaining {Math.max(0, Math.min(100, 100 - parseFloat(addEmployerPct || '0'))).toFixed(0)}%.
             </div>
 
             {addError && (
@@ -813,11 +863,7 @@ export default function PackageDetailPage() {
             )}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button
-                onClick={() => setShowAddModal(false)}
-                disabled={addSubmitting}
-                style={btnSecondaryStyle}
-              >
+              <button onClick={() => setShowAddModal(false)} disabled={addSubmitting} style={btnSecondaryStyle}>
                 Cancel
               </button>
               <button
@@ -836,12 +882,71 @@ export default function PackageDetailPage() {
         </div>
       )}
 
-      {/* Recommend Confirmation Modal */}
-      {recommendConfirm && pkg && (
+      {/* Edit Line Modal */}
+      {editingLine && (
         <div
-          onClick={() => !recommendBusy && setRecommendConfirm(null)}
+          onClick={() => !editSubmitting && setEditingLine(null)}
           style={modalOverlayStyle}
         >
+          <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
+            <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 8 }}>
+              Edit Contribution
+            </h2>
+            <p style={{ color: '#3a4d68', fontSize: 13, marginBottom: 20 }}>
+              <strong style={{ color: '#1e3a5f' }}>
+                {BENEFIT_LABELS[editingLine.benefit_type] || editingLine.benefit_type}
+                {editingLine.quote_line?.plan_name && ` · ${editingLine.quote_line.plan_name}`}
+              </strong>
+              <br />
+              <span style={{ fontSize: 12, color: '#7a8a9b' }}>
+                Current: {summarizeSplit(editingLine.contribution_split)}
+              </span>
+            </p>
+
+            <label style={labelStyle}>Employer Contribution %</label>
+            <input
+              type="number"
+              value={editEmployerPct}
+              onChange={(e) => setEditEmployerPct(e.target.value)}
+              placeholder="80"
+              min="0"
+              max="100"
+              disabled={editSubmitting}
+              style={inputStyle}
+            />
+            <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 4 }}>
+              Employee will be charged the remaining {Math.max(0, Math.min(100, 100 - parseFloat(editEmployerPct || '0'))).toFixed(0)}%.
+            </div>
+
+            {editError && (
+              <div style={{ padding: 12, background: '#fdf3f3', color: '#7a2a2a', borderRadius: 6, marginTop: 16, marginBottom: 8, border: '1px solid #f3d4d4', fontSize: 13 }}>
+                {editError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button onClick={() => setEditingLine(null)} disabled={editSubmitting} style={btnSecondaryStyle}>
+                Cancel
+              </button>
+              <button
+                onClick={handleEditLine}
+                disabled={editSubmitting}
+                style={{
+                  ...btnPrimaryStyle,
+                  background: editSubmitting ? '#9aaabe' : '#1e3a5f',
+                  cursor: editSubmitting ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {editSubmitting ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recommend Confirmation Modal */}
+      {recommendConfirm && pkg && (
+        <div onClick={() => !recommendBusy && setRecommendConfirm(null)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={{ ...modalCardStyle, maxWidth: 460 }}>
             <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 12 }}>
               {recommendConfirm.action === 'set'
@@ -859,13 +964,8 @@ export default function PackageDetailPage() {
                 </>
               )}
             </p>
-
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setRecommendConfirm(null)}
-                disabled={recommendBusy}
-                style={btnSecondaryStyle}
-              >
+              <button onClick={() => setRecommendConfirm(null)} disabled={recommendBusy} style={btnSecondaryStyle}>
                 Cancel
               </button>
               <button
