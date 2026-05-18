@@ -6,7 +6,7 @@ import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 
 // ----------------------------------------------------------------------------
-// Types — match the shape returned by /api/broker/packages/[id]
+// Types
 // ----------------------------------------------------------------------------
 
 type Package = {
@@ -164,6 +164,10 @@ export default function PackageDetailPage() {
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  // Per-line delete state
+  const [deletingLineId, setDeletingLineId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   // Recommend toggle state
   const [recommendBusy, setRecommendBusy] = useState(false);
   const [recommendError, setRecommendError] = useState<string | null>(null);
@@ -292,20 +296,49 @@ export default function PackageDetailPage() {
     }
   }
 
+  async function handleRemoveLine(lineId: string, benefitType: string, planName: string | null) {
+    const label = planName || benefitType;
+    if (!confirm(`Remove the "${label}" line from this package?`)) return;
+
+    setDeletingLineId(lineId);
+    setDeleteError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+
+      const res = await fetch(`/api/broker/packages/${packageId}/lines/${lineId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${sessionData.session.access_token}` },
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setDeleteError(json.error || 'Failed to remove line');
+        setDeletingLineId(null);
+        return;
+      }
+
+      setDeletingLineId(null);
+      loadPackage();
+    } catch (e: any) {
+      setDeleteError(e?.message || 'Failed to remove line');
+      setDeletingLineId(null);
+    }
+  }
+
   // ---- Recommend toggle ----
 
-  // Step 1: user clicks the button. We decide whether to confirm or fire immediately.
   async function handleRecommendClick() {
     setRecommendError(null);
     if (!pkg) return;
 
     if (pkg.is_recommended) {
-      // Already recommended → confirm before unsetting
       setRecommendConfirm({ action: 'unset' });
       return;
     }
 
-    // Not recommended → check if another package on this RFP already is
     try {
       const { data: existing } = await supabase
         .from('packages')
@@ -318,7 +351,6 @@ export default function PackageDetailPage() {
       if (existing) {
         setRecommendConfirm({ action: 'set', willUnflagName: existing.name });
       } else {
-        // No conflict, fire immediately
         await performRecommendToggle(true);
       }
     } catch (e: any) {
@@ -461,7 +493,7 @@ export default function PackageDetailPage() {
               </div>
             </div>
 
-            {/* Recommend toggle button — only shown for non-current-plan packages */}
+            {/* Recommend toggle — only shown for non-current-plan packages */}
             {!pkg.is_current_plan && (
               <button
                 onClick={handleRecommendClick}
@@ -597,80 +629,115 @@ export default function PackageDetailPage() {
                 </div>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {lines.map(line => {
-                  const ql = line.quote_line;
-                  const carrier = ql?.quote?.carrier;
-                  const brandColor = carrier?.brand_color || '#1e3a5f';
-                  const initials = (carrier?.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+              <>
+                {deleteError && (
+                  <div style={{ padding: 12, background: '#fdf3f3', color: '#7a2a2a', borderRadius: 6, marginBottom: 12, border: '1px solid #f3d4d4', fontSize: 13 }}>
+                    {deleteError}
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {lines.map(line => {
+                    const ql = line.quote_line;
+                    const carrier = ql?.quote?.carrier;
+                    const brandColor = carrier?.brand_color || '#1e3a5f';
+                    const initials = (carrier?.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
-                  return (
-                    <div
-                      key={line.id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 14,
-                        padding: '12px 14px',
-                        border: '1px solid #eef1f4',
-                        borderRadius: 8,
-                        background: 'white',
-                      }}
-                    >
+                    return (
                       <div
+                        key={line.id}
                         style={{
-                          width: 38,
-                          height: 38,
-                          borderRadius: 8,
-                          background: brandColor,
-                          color: 'white',
                           display: 'flex',
                           alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: 12,
-                          fontWeight: 700,
-                          flexShrink: 0,
+                          gap: 14,
+                          padding: '12px 14px',
+                          border: '1px solid #eef1f4',
+                          borderRadius: 8,
+                          background: 'white',
                         }}
                       >
-                        {initials}
-                      </div>
+                        <div
+                          style={{
+                            width: 38,
+                            height: 38,
+                            borderRadius: 8,
+                            background: brandColor,
+                            color: 'white',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 12,
+                            fontWeight: 700,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {initials}
+                        </div>
 
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span style={pillStyle('#eef2f7', '#1e3a5f')}>
-                            {BENEFIT_LABELS[line.benefit_type] || line.benefit_type}
-                          </span>
-                          <span style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
-                            {carrier?.name || 'Unknown carrier'}
-                          </span>
-                          {ql?.plan_name && (
-                            <span style={{ fontSize: 13, color: '#3a4d68' }}>
-                              · {ql.plan_name}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={pillStyle('#eef2f7', '#1e3a5f')}>
+                              {BENEFIT_LABELS[line.benefit_type] || line.benefit_type}
                             </span>
-                          )}
+                            <span style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
+                              {carrier?.name || 'Unknown carrier'}
+                            </span>
+                            {ql?.plan_name && (
+                              <span style={{ fontSize: 13, color: '#3a4d68' }}>
+                                · {ql.plan_name}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 4 }}>
+                            {summarizeSplit(line.contribution_split)}
+                            {ql?.monthly_premium && (
+                              <> · {fmtMoneyDecimal(ql.monthly_premium)}/mo composite</>
+                            )}
+                          </div>
                         </div>
-                        <div style={{ fontSize: 12, color: '#7a8a9b', marginTop: 4 }}>
-                          {summarizeSplit(line.contribution_split)}
-                          {ql?.monthly_premium && (
-                            <> · {fmtMoneyDecimal(ql.monthly_premium)}/mo composite</>
-                          )}
-                        </div>
-                      </div>
 
-                      {ql?.annual_cost !== null && ql?.annual_cost !== undefined && (
-                        <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                          <div style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
-                            {fmtMoney(ql.annual_cost)}
+                        {ql?.annual_cost !== null && ql?.annual_cost !== undefined && (
+                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
+                              {fmtMoney(ql.annual_cost)}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#7a8a9b' }}>
+                              quote annual
+                            </div>
                           </div>
-                          <div style={{ fontSize: 11, color: '#7a8a9b' }}>
-                            quote annual
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                        )}
+
+                        <button
+                          onClick={() => handleRemoveLine(line.id, line.benefit_type, ql?.plan_name || null)}
+                          disabled={deletingLineId === line.id}
+                          title="Remove this line"
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: deletingLineId === line.id ? '#9aaabe' : '#7a8a9b',
+                            fontSize: 18,
+                            cursor: deletingLineId === line.id ? 'wait' : 'pointer',
+                            padding: '4px 8px',
+                            borderRadius: 4,
+                            flexShrink: 0,
+                          }}
+                          onMouseEnter={(e) => {
+                            if (deletingLineId !== line.id) {
+                              e.currentTarget.style.background = '#fdf3f3';
+                              e.currentTarget.style.color = '#b91c1c';
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'transparent';
+                            e.currentTarget.style.color = deletingLineId === line.id ? '#9aaabe' : '#7a8a9b';
+                          }}
+                        >
+                          {deletingLineId === line.id ? '…' : '×'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </SectionCard>
 
