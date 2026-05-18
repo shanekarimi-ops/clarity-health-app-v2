@@ -9,6 +9,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 const VALID_STATUSES = ['draft', 'locked'] as const;
+const ALLOWED_TIERS = ['employee_only', 'employee_spouse', 'employee_children', 'family'] as const;
 
 // ============================================================================
 // POST — create a new draft package on an RFP
@@ -18,11 +19,14 @@ const VALID_STATUSES = ['draft', 'locked'] as const;
 //     rfp_id: string (required),
 //     name: string (optional, defaults to "Untitled package"),
 //     description?: string,
+//     notes?: string,
+//     is_current_plan?: boolean (default false),
 //     member_count_assumption?: number,
-//     tier_breakdown?: { employee_only?, employee_spouse?, employee_children?, family? },
-//     notes?: string
+//     tier_breakdown?: { employee_only?, employee_spouse?, employee_children?, family? }
 //   }
 // Returns: 201 with { success: true, package: <row> }
+// Note: is_recommended is NEVER settable via this endpoint — that goes through
+// a dedicated endpoint (built later) that handles the unflag-previous transaction.
 // ============================================================================
 export async function POST(req: NextRequest) {
   try {
@@ -53,9 +57,10 @@ export async function POST(req: NextRequest) {
       rfp_id,
       name,
       description,
+      notes,
+      is_current_plan,
       member_count_assumption,
       tier_breakdown,
-      notes,
     } = body || {};
 
     if (!rfp_id) {
@@ -66,6 +71,13 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- Validate optional fields ----
+    if (is_current_plan !== undefined && typeof is_current_plan !== 'boolean') {
+      return NextResponse.json(
+        { error: 'is_current_plan must be a boolean', debug: { received: is_current_plan } },
+        { status: 400 }
+      );
+    }
+
     if (member_count_assumption !== undefined && member_count_assumption !== null) {
       if (typeof member_count_assumption !== 'number' || member_count_assumption < 0 || !Number.isFinite(member_count_assumption)) {
         return NextResponse.json(
@@ -82,9 +94,8 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      const ALLOWED_TIERS = ['employee_only', 'employee_spouse', 'employee_children', 'family'];
       for (const [k, v] of Object.entries(tier_breakdown)) {
-        if (!ALLOWED_TIERS.includes(k)) {
+        if (!(ALLOWED_TIERS as readonly string[]).includes(k)) {
           return NextResponse.json(
             { error: `Unknown tier key: ${k}`, debug: { allowed: ALLOWED_TIERS } },
             { status: 400 }
@@ -144,11 +155,12 @@ export async function POST(req: NextRequest) {
       rfp_id: rfp.id,
       name: finalName,
       description: description ?? null,
+      notes: notes ?? null,
       is_recommended: false,
+      is_current_plan: is_current_plan === true,
       status: 'draft',
       member_count_assumption: member_count_assumption ?? null,
       tier_breakdown: tier_breakdown ?? null,
-      notes: notes ?? null,
       created_by_user_id: user.id,
     };
 
@@ -159,6 +171,17 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (insertError || !insert) {
+      // Distinguish the "already has a current plan" unique-violation case so the
+      // UI can show a useful message instead of a generic 500.
+      if (insertError?.code === '23505' && insertError?.message?.includes('one_current_plan_per_rfp')) {
+        return NextResponse.json(
+          {
+            error: 'This RFP already has a current plan package',
+            debug: { code: insertError.code, hint: 'Unflag the existing current plan package before creating a new one' }
+          },
+          { status: 409 }
+        );
+      }
       return NextResponse.json(
         { error: 'Failed to create package', debug: { error: insertError?.message, code: insertError?.code } },
         { status: 500 }
@@ -175,10 +198,11 @@ export async function POST(req: NextRequest) {
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'package_created',
-        event_summary: `Created package "${finalName}"`,
+        event_summary: `Created ${insert.is_current_plan ? 'current plan ' : ''}package "${finalName}"`,
         metadata: {
           package_id: insert.id,
           rfp_id: rfp.id,
+          is_current_plan: insert.is_current_plan,
         },
       });
     } catch (logErr) {
@@ -200,7 +224,7 @@ export async function POST(req: NextRequest) {
 // ============================================================================
 // Query params:
 //   ?rfp_id=<uuid>  (optional) — filter to a single RFP
-// Returns: { packages: [<row with joined rfp + client>] }
+// Returns: { packages: [<row with joined rfp + line_count>] }
 // Sorted by created_at desc, limit 200.
 // ============================================================================
 export async function GET(req: NextRequest) {
@@ -231,7 +255,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ packages: [] }, { status: 200 });
     }
 
-    // Optional rfp_id filter from query string
     const url = new URL(req.url);
     const rfpIdFilter = url.searchParams.get('rfp_id');
 
@@ -259,8 +282,6 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Flatten the line_count aggregate from Postgrest's [{ count: N }] shape
-    // to a plain integer on each row for cleaner UI consumption.
     const packages = (rows || []).map((r: any) => ({
       ...r,
       line_count: Array.isArray(r.line_count) && r.line_count.length > 0
