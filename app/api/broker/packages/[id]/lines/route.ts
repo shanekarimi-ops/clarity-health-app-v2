@@ -268,7 +268,7 @@ export async function POST(
       .from('quote_lines')
       .select(`
         id, benefit_type, plan_name,
-        quote:quotes(id, rfp_id, agency_id)
+        quote:quotes(id, rfp_id)
       `)
       .eq('id', quote_line_id)
       .maybeSingle();
