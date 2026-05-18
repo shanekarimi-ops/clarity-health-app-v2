@@ -20,7 +20,6 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 // ============================================================================
 // Helper: extract validated custom_sections slots from the presentation row.
-// All slots are optional. Empty/null/blank values are normalized to undefined.
 // ============================================================================
 type CustomSectionsExtracted = {
   custom_takeaways?: string[];
@@ -32,7 +31,6 @@ function extractCustomSections(raw: any): CustomSectionsExtracted {
   if (!raw || typeof raw !== 'object') return {};
   const out: CustomSectionsExtracted = {};
 
-  // takeaways must be a non-empty array of non-empty strings
   if (Array.isArray(raw.takeaways)) {
     const cleaned = raw.takeaways
       .filter((b: any): b is string => typeof b === 'string' && b.trim().length > 0)
@@ -42,12 +40,10 @@ function extractCustomSections(raw: any): CustomSectionsExtracted {
     }
   }
 
-  // recommendation must be a non-empty string
   if (typeof raw.recommendation === 'string' && raw.recommendation.trim().length > 0) {
     out.custom_recommendation = raw.recommendation.trim();
   }
 
-  // footer_note must be a non-empty string
   if (typeof raw.footer_note === 'string' && raw.footer_note.trim().length > 0) {
     out.custom_footer_note = raw.footer_note.trim();
   }
@@ -102,7 +98,7 @@ export async function POST(
       );
     }
 
-    // ---- Load the presentation record (includes custom_sections jsonb) ----
+    // ---- Load the presentation record ----
     const { data: presentation, error: presError } = await admin
       .from('broker_presentations')
       .select('*')
@@ -123,7 +119,6 @@ export async function POST(
       );
     }
 
-    // Validate template (defensive — DB CHECK constraint should already enforce this)
     const template = presentation.template as 'standard' | 'executive' | 'detailed';
     if (!['standard', 'executive', 'detailed'].includes(template)) {
       return NextResponse.json(
@@ -132,7 +127,6 @@ export async function POST(
       );
     }
 
-    // Extract custom_sections overrides (all optional; safe to skip if column is null)
     const customSections = extractCustomSections(presentation.custom_sections);
 
     // ---- Assemble the full data graph ----
@@ -178,6 +172,32 @@ export async function POST(
       );
     }
 
+    // 3.5. If package-sourced, load the package's line filter (set of allowed quote_line_ids)
+    // We use this to filter quote_lines AFTER loading, so the PDF shows only the lines
+    // the broker selected in the package — not every line on the quotes those lines came from.
+    let allowedQuoteLineIds: Set<string> | null = null;
+    if (presentation.package_id) {
+      const { data: pkgLines, error: pkgLinesError } = await admin
+        .from('package_lines')
+        .select('quote_line_id')
+        .eq('package_id', presentation.package_id);
+
+      if (pkgLinesError) {
+        return NextResponse.json(
+          { error: 'Failed to load package lines', debug: { error: pkgLinesError.message } },
+          { status: 500 }
+        );
+      }
+      allowedQuoteLineIds = new Set((pkgLines || []).map((pl: any) => pl.quote_line_id).filter(Boolean));
+
+      if (allowedQuoteLineIds.size === 0) {
+        return NextResponse.json(
+          { error: 'Package has no lines. Add at least one line before generating.', debug: { package_id: presentation.package_id } },
+          { status: 400 }
+        );
+      }
+    }
+
     // 4. Quotes (filtered by included_quote_ids if any, else all submitted+ for the RFP)
     const includedIds: string[] = Array.isArray(presentation.included_quote_ids)
       ? presentation.included_quote_ids
@@ -206,7 +226,7 @@ export async function POST(
       );
     }
 
-    // 5. Quote lines (one query for all quotes)
+    // 5. Quote lines (one query for all quotes, then filter to package selection if applicable)
     const quoteIds = (quotes || []).map((q: any) => q.id);
     let lines: any[] = [];
     if (quoteIds.length > 0) {
@@ -222,10 +242,16 @@ export async function POST(
         );
       }
       lines = lineRows || [];
+
+      // If package-sourced, narrow lines to only those the broker selected in the package.
+      // This is what makes a package presentation show "UHC Medical only" instead of
+      // "every line UHC ever quoted" when the broker built a Medical-only package.
+      if (allowedQuoteLineIds) {
+        lines = lines.filter((l: any) => allowedQuoteLineIds!.has(l.id));
+      }
     }
 
-    // 6. AI narrative (only fetched for executive + detailed templates; reusing the
-    // existing rfp_ai_narratives row produced by the broker comparison grid)
+    // 6. AI narrative (only for executive + detailed templates)
     let narrativeBullets: string[] | undefined = undefined;
     if (template === 'executive' || template === 'detailed') {
       const { data: narrative } = await admin
@@ -239,8 +265,6 @@ export async function POST(
     }
 
     // ---- Shape the data for the templates ----
-    // custom_sections fields are passed through unchanged; merge logic with
-    // narrative_bullets is handled inside each template via effectiveBullets.
     const baseTemplateData: StandardTemplateData = {
       agency: {
         name: agency.name,
@@ -259,31 +283,34 @@ export async function POST(
         effective_date: rfp.effective_date,
         current_annual_cost: rfp.current_annual_cost,
       },
-      quotes: (quotes || []).map((q: any) => ({
-        quote_id: q.id,
-        carrier_name: q.carrier?.name || 'Unknown Carrier',
-        carrier_logo_url: q.carrier?.logo_url || null,
-        carrier_brand_color: q.carrier?.brand_color || null,
-        total_annual_cost: q.total_annual_cost,
-        monthly_cost: q.monthly_cost,
-        cost_change_pct: q.cost_change_pct,
-        status: q.status,
-        notes: q.notes,
-        lines: lines
-          .filter((l: any) => l.quote_id === q.id)
-          .map((l: any) => ({
-            id: l.id,
-            benefit_type: l.benefit_type,
-            plan_name: l.plan_name,
-            monthly_premium: l.monthly_premium,
-            annual_cost: l.annual_cost,
-            plan_design: l.plan_design,
-            tier_rates: l.tier_rates,
-          })),
-      })),
+      quotes: (quotes || [])
+        .map((q: any) => ({
+          quote_id: q.id,
+          carrier_name: q.carrier?.name || 'Unknown Carrier',
+          carrier_logo_url: q.carrier?.logo_url || null,
+          carrier_brand_color: q.carrier?.brand_color || null,
+          total_annual_cost: q.total_annual_cost,
+          monthly_cost: q.monthly_cost,
+          cost_change_pct: q.cost_change_pct,
+          status: q.status,
+          notes: q.notes,
+          lines: lines
+            .filter((l: any) => l.quote_id === q.id)
+            .map((l: any) => ({
+              id: l.id,
+              benefit_type: l.benefit_type,
+              plan_name: l.plan_name,
+              monthly_premium: l.monthly_premium,
+              annual_cost: l.annual_cost,
+              plan_design: l.plan_design,
+              tier_rates: l.tier_rates,
+            })),
+        }))
+        // For package-sourced: drop any quote that ended up with zero lines after filtering
+        // (would happen if its only line wasn't in the package selection)
+        .filter((q: any) => !allowedQuoteLineIds || q.lines.length > 0),
       generated_by_name: presentation.generated_by_name,
       generated_at: new Date().toISOString(),
-      // custom_sections overrides — all optional
       ...customSections,
     };
 
@@ -305,7 +332,6 @@ export async function POST(
         );
         excelBuffer = await buildDetailedExcel(detailedData);
       } else {
-        // standard
         pdfBuffer = await renderToBuffer(
           React.createElement(StandardTemplate, { data: baseTemplateData }) as any
         );
@@ -406,7 +432,7 @@ export async function POST(
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'presentation_generated',
-        event_summary: `Generated ${template} presentation "${presentation.title}"`,
+        event_summary: `Generated ${template} presentation "${presentation.title}"${presentation.package_id ? ' from package' : ''}`,
         metadata: {
           presentation_id: presentationId,
           rfp_id: rfp.id,
@@ -415,6 +441,8 @@ export async function POST(
           pdf_size_bytes: pdfBuffer.length,
           excel_size_bytes: excelBuffer.length,
           narrative_used: narrativeBullets !== undefined,
+          package_id: presentation.package_id || null,
+          is_package_sourced: !!presentation.package_id,
           custom_sections_applied: {
             takeaways: !!customSections.custom_takeaways,
             recommendation: !!customSections.custom_recommendation,

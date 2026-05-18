@@ -210,6 +210,13 @@ export default function PackageDetailPage() {
     willUnflagName?: string;
   } | null>(null);
 
+  // Create Presentation modal state
+  const [showPresentationModal, setShowPresentationModal] = useState(false);
+  const [presTemplate, setPresTemplate] = useState<'standard' | 'executive' | 'detailed'>('standard');
+  const [presTitle, setPresTitle] = useState('');
+  const [presSubmitting, setPresSubmitting] = useState(false);
+  const [presError, setPresError] = useState<string | null>(null);
+
   useEffect(() => {
     bootstrap();
   }, []);
@@ -548,6 +555,57 @@ export default function PackageDetailPage() {
     }
   }
 
+  // ---- Create Presentation from Package ----
+
+  function openPresentationModal() {
+    if (!pkg) return;
+    setPresTemplate('standard');
+    setPresTitle(`${pkg.name} — ${pkg.rfp?.name || 'Presentation'}`);
+    setPresError(null);
+    setShowPresentationModal(true);
+  }
+
+  async function handleCreatePresentation() {
+    setPresError(null);
+    if (!pkg) return;
+    if (lines.length === 0) {
+      setPresError('Add at least one line to this package before creating a presentation.');
+      return;
+    }
+    setPresSubmitting(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+      const res = await fetch(`/api/broker/presentations`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          rfp_id: pkg.rfp_id,
+          template: presTemplate,
+          title: presTitle.trim() || undefined,
+          package_id: pkg.id,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setPresError(json.error || 'Failed to create presentation');
+        setPresSubmitting(false);
+        return;
+      }
+      // Navigate to the presentation detail page where the broker can hit "Generate"
+      router.push(`/broker/presentations/${json.presentation.id}`);
+    } catch (e: any) {
+      setPresError(e?.message || 'Failed to create presentation');
+      setPresSubmitting(false);
+    }
+  }
+
   // ---------- Loading / error / not-found ----------
 
   if (bootLoading || dataLoading) {
@@ -651,6 +709,27 @@ export default function PackageDetailPage() {
                   : 'Set as Recommended'}
               </button>
             )}
+          </div>
+
+          {/* Create Presentation action row */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+            <button
+              onClick={openPresentationModal}
+              disabled={lines.length === 0}
+              title={lines.length === 0 ? 'Add at least one line before creating a presentation' : 'Create a client presentation from this package'}
+              style={{
+                background: lines.length === 0 ? '#9aaabe' : '#1e3a5f',
+                color: '#faf7f2',
+                border: 'none',
+                padding: '0.55rem 1.1rem',
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: lines.length === 0 ? 'not-allowed' : 'pointer',
+              }}
+            >
+              📄 Create Presentation from Package
+            </button>
           </div>
 
           {recommendError && (
@@ -1135,6 +1214,79 @@ export default function PackageDetailPage() {
                   : recommendConfirm.action === 'set'
                   ? 'Yes, replace'
                   : 'Yes, remove flag'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Presentation Modal */}
+      {showPresentationModal && pkg && (
+        <div onClick={() => !presSubmitting && setShowPresentationModal(false)} style={modalOverlayStyle}>
+          <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
+            <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 8 }}>
+              Create Presentation from Package
+            </h2>
+            <p style={{ color: '#3a4d68', fontSize: 13, marginBottom: 20 }}>
+              This will create a draft presentation sourced from the lines in <strong style={{ color: '#1e3a5f' }}>"{pkg.name}"</strong>. You'll be taken to the presentation page to render the PDF and Excel.
+            </p>
+
+            <label style={labelStyle}>Template</label>
+            <select
+              value={presTemplate}
+              onChange={(e) => setPresTemplate(e.target.value as 'standard' | 'executive' | 'detailed')}
+              disabled={presSubmitting}
+              style={inputStyle}
+            >
+              <option value="standard">Standard — full carrier comparison</option>
+              <option value="executive">Executive — high-level summary with narrative</option>
+              <option value="detailed">Detailed — line-by-line plan design breakdown</option>
+            </select>
+
+            <label style={labelStyle}>Title</label>
+            <input
+              type="text"
+              value={presTitle}
+              onChange={(e) => setPresTitle(e.target.value)}
+              placeholder={`${pkg.name} — ${pkg.rfp?.name || 'Presentation'}`}
+              disabled={presSubmitting}
+              style={inputStyle}
+            />
+            <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 4 }}>
+              Shown on the cover page. Leave blank to use the default.
+            </div>
+
+            <div style={{
+              marginTop: 16,
+              padding: '10px 14px',
+              background: '#faf7f2',
+              border: '1px solid #e8e0d0',
+              borderRadius: 6,
+              fontSize: 12,
+              color: '#3a4d68',
+              lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#1e3a5f' }}>Sourcing from package:</strong> {lines.length} line{lines.length === 1 ? '' : 's'} across {new Set(lines.map(l => l.quote_line?.quote?.carrier?.id).filter(Boolean)).size} carrier{new Set(lines.map(l => l.quote_line?.quote?.carrier?.id).filter(Boolean)).size === 1 ? '' : 's'}.
+            </div>
+
+            {presError && (
+              <div style={{ padding: 12, background: '#fdf3f3', color: '#7a2a2a', borderRadius: 6, marginTop: 16, marginBottom: 8, border: '1px solid #f3d4d4', fontSize: 13 }}>
+                {presError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button onClick={() => setShowPresentationModal(false)} disabled={presSubmitting} style={btnSecondaryStyle}>Cancel</button>
+              <button
+                onClick={handleCreatePresentation}
+                disabled={presSubmitting}
+                style={{
+                  ...btnPrimaryStyle,
+                  background: presSubmitting ? '#9aaabe' : '#1e3a5f',
+                  cursor: presSubmitting ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {presSubmitting ? 'Creating...' : 'Create Draft'}
               </button>
             </div>
           </div>

@@ -12,6 +12,8 @@ const VALID_TEMPLATES = ['standard', 'executive', 'detailed'] as const;
 
 // ============================================================================
 // POST — create a new draft presentation
+// Accepts optional package_id; when set, sources included_quote_ids from
+// the package's lines and flags the row as package-sourced.
 // ============================================================================
 export async function POST(req: NextRequest) {
   try {
@@ -38,7 +40,7 @@ export async function POST(req: NextRequest) {
 
     // ---- Body ----
     const body = await req.json();
-    const { rfp_id, template = 'standard', title, included_quote_ids } = body || {};
+    const { rfp_id, template = 'standard', title, included_quote_ids, package_id } = body || {};
 
     if (!rfp_id) {
       return NextResponse.json(
@@ -93,9 +95,84 @@ export async function POST(req: NextRequest) {
     // ---- Default the title if not supplied ----
     const finalTitle = (title && title.trim()) || rfp.name;
 
-    // ---- Default included_quote_ids: all submitted quotes for this RFP ----
-    let quoteIds: string[] = Array.isArray(included_quote_ids) ? included_quote_ids : [];
-    if (quoteIds.length === 0) {
+    // ---- Resolve included_quote_ids ----
+    // Priority:
+    //  1. If package_id provided, derive from package's lines (verify package belongs to RFP)
+    //  2. Else if included_quote_ids provided, use as-is
+    //  3. Else default to all submitted/reviewed/shortlisted quotes for the RFP
+    let quoteIds: string[] = [];
+    let resolvedPackageId: string | null = null;
+
+    if (package_id) {
+      // Verify the package belongs to this RFP and agency (via the RFP we already verified)
+      const { data: pkg, error: pkgError } = await admin
+        .from('packages')
+        .select('id, rfp_id, agency_id')
+        .eq('id', package_id)
+        .maybeSingle();
+
+      if (pkgError || !pkg) {
+        return NextResponse.json(
+          { error: 'Package not found', debug: { package_id, error: pkgError?.message } },
+          { status: 404 }
+        );
+      }
+      if (pkg.rfp_id !== rfp.id) {
+        return NextResponse.json(
+          { error: 'Package does not belong to this RFP', debug: { package_rfp: pkg.rfp_id, expected_rfp: rfp.id } },
+          { status: 400 }
+        );
+      }
+      if (pkg.agency_id !== broker.agency_id) {
+        return NextResponse.json(
+          { error: 'Package does not belong to your agency' },
+          { status: 403 }
+        );
+      }
+
+      // Walk package_lines → quote_lines → unique quote_ids
+      const { data: pkgLines, error: pkgLinesError } = await admin
+        .from('package_lines')
+        .select('quote_line_id')
+        .eq('package_id', package_id);
+
+      if (pkgLinesError) {
+        return NextResponse.json(
+          { error: 'Failed to load package lines', debug: { error: pkgLinesError.message } },
+          { status: 500 }
+        );
+      }
+      if (!pkgLines || pkgLines.length === 0) {
+        return NextResponse.json(
+          { error: 'Package has no lines. Add at least one line before creating a presentation.', debug: { package_id } },
+          { status: 400 }
+        );
+      }
+
+      const quoteLineIds = pkgLines.map((pl: any) => pl.quote_line_id).filter(Boolean);
+      const { data: quoteLines, error: qlError } = await admin
+        .from('quote_lines')
+        .select('quote_id')
+        .in('id', quoteLineIds);
+
+      if (qlError) {
+        return NextResponse.json(
+          { error: 'Failed to resolve quote lines', debug: { error: qlError.message } },
+          { status: 500 }
+        );
+      }
+
+      quoteIds = Array.from(new Set((quoteLines || []).map((ql: any) => ql.quote_id).filter(Boolean)));
+      if (quoteIds.length === 0) {
+        return NextResponse.json(
+          { error: 'Package lines have no associated quotes', debug: { package_id } },
+          { status: 500 }
+        );
+      }
+      resolvedPackageId = package_id;
+    } else if (Array.isArray(included_quote_ids) && included_quote_ids.length > 0) {
+      quoteIds = included_quote_ids;
+    } else {
       const { data: quotes } = await admin
         .from('quotes')
         .select('id')
@@ -117,6 +194,8 @@ export async function POST(req: NextRequest) {
         status: 'draft',
         title: finalTitle,
         included_quote_ids: quoteIds,
+        package_id: resolvedPackageId,
+        is_package_sourced: resolvedPackageId !== null,
         generated_by_user_id: user.id,
         generated_by_name: brokerName,
       })
@@ -138,12 +217,13 @@ export async function POST(req: NextRequest) {
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'presentation_created',
-        event_summary: `Created ${template} presentation "${finalTitle}"`,
+        event_summary: `Created ${template} presentation "${finalTitle}"${resolvedPackageId ? ' from package' : ''}`,
         metadata: {
           presentation_id: insert.id,
           rfp_id: rfp.id,
           template,
           quote_count: quoteIds.length,
+          package_id: resolvedPackageId,
         },
       });
     } catch (logErr) {
