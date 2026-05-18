@@ -70,8 +70,7 @@ export async function GET(
       .from('packages')
       .select(`
         *,
-        rfp:rfps(id, name, effective_date, current_annual_cost, client_id),
-        client:clients(id, employer_name)
+        rfp:rfps(id, name, effective_date, current_annual_cost, client_id)
       `)
       .eq('id', packageId)
       .maybeSingle();
