@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   calculatePackageCosts,
   type CalculatorInput,
@@ -17,7 +17,7 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 // ============================================================================
 // Snapshot recompute helper (shared by DELETE and PATCH)
 // ============================================================================
-async function recomputePackageSnapshot(admin: any, packageId: string) {
+async function recomputePackageSnapshot(admin: SupabaseClient, packageId: string) {
   const { data: pkg, error: pkgError } = await admin
     .from('packages')
     .select('id, rfp_id, member_count_assumption, tier_breakdown')
@@ -91,11 +91,30 @@ async function recomputePackageSnapshot(admin: any, packageId: string) {
 
 // ============================================================================
 // Shared auth + ownership check
+// Uses a discriminated union so TypeScript can narrow correctly in handlers.
 // ============================================================================
-async function authAndVerify(req: NextRequest, packageId: string, lineId: string) {
+type AuthSuccess = {
+  ok: true;
+  admin: SupabaseClient;
+  broker: { id: string; agency_id: string };
+  user: any;
+  pkg: { id: string; agency_id: string };
+  line: any;
+};
+
+type AuthFailure = {
+  ok: false;
+  response: NextResponse;
+};
+
+async function authAndVerify(
+  req: NextRequest,
+  packageId: string,
+  lineId: string
+): Promise<AuthSuccess | AuthFailure> {
   const authHeader = req.headers.get('authorization');
   if (!authHeader?.startsWith('Bearer ')) {
-    return { error: NextResponse.json({ error: 'Missing Authorization header' }, { status: 401 }) };
+    return { ok: false, response: NextResponse.json({ error: 'Missing Authorization header' }, { status: 401 }) };
   }
   const accessToken = authHeader.slice(7);
 
@@ -104,7 +123,10 @@ async function authAndVerify(req: NextRequest, packageId: string, lineId: string
   });
   const { data: { user }, error: userError } = await userClient.auth.getUser();
   if (userError || !user) {
-    return { error: NextResponse.json({ error: 'Invalid session', debug: { error: userError?.message } }, { status: 401 }) };
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'Invalid session', debug: { error: userError?.message } }, { status: 401 }),
+    };
   }
 
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -116,7 +138,10 @@ async function authAndVerify(req: NextRequest, packageId: string, lineId: string
     .maybeSingle();
 
   if (!broker) {
-    return { error: NextResponse.json({ error: 'No broker profile found for this user' }, { status: 403 }) };
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'No broker profile found for this user' }, { status: 403 }),
+    };
   }
 
   const { data: pkg, error: pkgError } = await admin
@@ -126,11 +151,20 @@ async function authAndVerify(req: NextRequest, packageId: string, lineId: string
     .maybeSingle();
 
   if (pkgError || !pkg) {
-    return { error: NextResponse.json({ error: 'Package not found', debug: { package_id: packageId, error: pkgError?.message } }, { status: 404 }) };
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: 'Package not found', debug: { package_id: packageId, error: pkgError?.message } },
+        { status: 404 }
+      ),
+    };
   }
 
   if (pkg.agency_id !== broker.agency_id) {
-    return { error: NextResponse.json({ error: 'Package does not belong to your agency' }, { status: 403 }) };
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'Package does not belong to your agency' }, { status: 403 }),
+    };
   }
 
   const { data: line, error: lineError } = await admin
@@ -140,14 +174,23 @@ async function authAndVerify(req: NextRequest, packageId: string, lineId: string
     .maybeSingle();
 
   if (lineError || !line) {
-    return { error: NextResponse.json({ error: 'Line not found', debug: { line_id: lineId, error: lineError?.message } }, { status: 404 }) };
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: 'Line not found', debug: { line_id: lineId, error: lineError?.message } },
+        { status: 404 }
+      ),
+    };
   }
 
   if (line.package_id !== packageId) {
-    return { error: NextResponse.json({ error: 'Line does not belong to this package' }, { status: 404 }) };
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'Line does not belong to this package' }, { status: 404 }),
+    };
   }
 
-  return { admin, broker, user, pkg, line };
+  return { ok: true, admin, broker, user, pkg, line };
 }
 
 // ============================================================================
@@ -202,10 +245,6 @@ function validateContributionSplit(split: any): string | null {
 // ============================================================================
 // PATCH — update contribution_split on a line, then recompute snapshot
 // ============================================================================
-// URL: /api/broker/packages/[id]/lines/[line_id]
-// Body: { contribution_split: { split_mode, uniform?, per_tier? } }
-// Returns: 200 with { success, line, snapshot }
-// ============================================================================
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string; line_id: string } }
@@ -215,7 +254,7 @@ export async function PATCH(
 
   try {
     const auth = await authAndVerify(req, packageId, lineId);
-    if ('error' in auth) return auth.error;
+    if (!auth.ok) return auth.response;
     const { admin, broker, user, line } = auth;
 
     const body = await req.json();
@@ -301,7 +340,7 @@ export async function DELETE(
 
   try {
     const auth = await authAndVerify(req, packageId, lineId);
-    if ('error' in auth) return auth.error;
+    if (!auth.ok) return auth.response;
     const { admin, broker, user, line } = auth;
 
     const { error: deleteError } = await admin
