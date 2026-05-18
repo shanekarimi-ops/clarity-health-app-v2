@@ -164,6 +164,14 @@ export default function PackageDetailPage() {
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  // Recommend toggle state
+  const [recommendBusy, setRecommendBusy] = useState(false);
+  const [recommendError, setRecommendError] = useState<string | null>(null);
+  const [recommendConfirm, setRecommendConfirm] = useState<{
+    action: 'set' | 'unset';
+    willUnflagName?: string;
+  } | null>(null);
+
   useEffect(() => {
     bootstrap();
   }, []);
@@ -273,7 +281,6 @@ export default function PackageDetailPage() {
         return;
       }
 
-      // Success — reload everything
       setShowAddModal(false);
       setSelectedQuoteLineId('');
       setEmployerPct('80');
@@ -282,6 +289,75 @@ export default function PackageDetailPage() {
     } catch (e: any) {
       setAddError(e?.message || 'Failed to add line');
       setAddSubmitting(false);
+    }
+  }
+
+  // ---- Recommend toggle ----
+
+  // Step 1: user clicks the button. We decide whether to confirm or fire immediately.
+  async function handleRecommendClick() {
+    setRecommendError(null);
+    if (!pkg) return;
+
+    if (pkg.is_recommended) {
+      // Already recommended → confirm before unsetting
+      setRecommendConfirm({ action: 'unset' });
+      return;
+    }
+
+    // Not recommended → check if another package on this RFP already is
+    try {
+      const { data: existing } = await supabase
+        .from('packages')
+        .select('id, name')
+        .eq('rfp_id', pkg.rfp_id)
+        .eq('is_recommended', true)
+        .neq('id', pkg.id)
+        .maybeSingle();
+
+      if (existing) {
+        setRecommendConfirm({ action: 'set', willUnflagName: existing.name });
+      } else {
+        // No conflict, fire immediately
+        await performRecommendToggle(true);
+      }
+    } catch (e: any) {
+      setRecommendError(e?.message || 'Failed to check existing recommended package');
+    }
+  }
+
+  async function performRecommendToggle(newValue: boolean) {
+    setRecommendBusy(true);
+    setRecommendError(null);
+    setRecommendConfirm(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+
+      const res = await fetch(`/api/broker/packages/${packageId}/recommend`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ recommended: newValue }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) {
+        setRecommendError(json.error || 'Failed to update recommended flag');
+        setRecommendBusy(false);
+        return;
+      }
+
+      setRecommendBusy(false);
+      loadPackage();
+    } catch (e: any) {
+      setRecommendError(e?.message || 'Failed to update recommended flag');
+      setRecommendBusy(false);
     }
   }
 
@@ -384,7 +460,39 @@ export default function PackageDetailPage() {
                 </span>
               </div>
             </div>
+
+            {/* Recommend toggle button — only shown for non-current-plan packages */}
+            {!pkg.is_current_plan && (
+              <button
+                onClick={handleRecommendClick}
+                disabled={recommendBusy}
+                style={{
+                  background: pkg.is_recommended ? '#dcead4' : 'white',
+                  color: pkg.is_recommended ? '#2d5016' : '#1e3a5f',
+                  border: pkg.is_recommended ? '1px solid #b8d4a8' : '1px solid #1e3a5f',
+                  padding: '0.55rem 1.1rem',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: recommendBusy ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}
+              >
+                {recommendBusy
+                  ? 'Updating...'
+                  : pkg.is_recommended
+                  ? '✓ Recommended (click to remove)'
+                  : 'Set as Recommended'}
+              </button>
+            )}
           </div>
+
+          {recommendError && (
+            <div style={{ padding: 12, background: '#fdf3f3', color: '#7a2a2a', borderRadius: 6, marginTop: 12, border: '1px solid #f3d4d4', fontSize: 13 }}>
+              {recommendError}
+            </div>
+          )}
 
           {pkg.description && (
             <p style={{ color: '#3a4d68', fontSize: 14, marginBottom: 20, marginTop: 12 }}>
@@ -509,7 +617,6 @@ export default function PackageDetailPage() {
                         background: 'white',
                       }}
                     >
-                      {/* Carrier badge */}
                       <div
                         style={{
                           width: 38,
@@ -528,7 +635,6 @@ export default function PackageDetailPage() {
                         {initials}
                       </div>
 
-                      {/* Main info */}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           <span style={pillStyle('#eef2f7', '#1e3a5f')}>
@@ -551,7 +657,6 @@ export default function PackageDetailPage() {
                         </div>
                       </div>
 
-                      {/* Annual cost on the right */}
                       {ql?.annual_cost !== null && ql?.annual_cost !== undefined && (
                         <div style={{ textAlign: 'right', flexShrink: 0 }}>
                           <div style={{ fontSize: 14, fontWeight: 600, color: '#1e3a5f' }}>
@@ -658,6 +763,58 @@ export default function PackageDetailPage() {
                 }}
               >
                 {addSubmitting ? 'Adding...' : 'Add Line'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recommend Confirmation Modal */}
+      {recommendConfirm && pkg && (
+        <div
+          onClick={() => !recommendBusy && setRecommendConfirm(null)}
+          style={modalOverlayStyle}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ ...modalCardStyle, maxWidth: 460 }}>
+            <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 12 }}>
+              {recommendConfirm.action === 'set'
+                ? 'Replace recommended package?'
+                : 'Remove recommended flag?'}
+            </h2>
+            <p style={{ color: '#3a4d68', fontSize: 14, lineHeight: 1.5, marginBottom: 20 }}>
+              {recommendConfirm.action === 'set' && recommendConfirm.willUnflagName ? (
+                <>
+                  <strong style={{ color: '#1e3a5f' }}>"{recommendConfirm.willUnflagName}"</strong> is currently the recommended package for this RFP. Setting <strong style={{ color: '#1e3a5f' }}>"{pkg.name}"</strong> as recommended will unflag the previous one. Continue?
+                </>
+              ) : (
+                <>
+                  This will remove the recommended flag from <strong style={{ color: '#1e3a5f' }}>"{pkg.name}"</strong>. The RFP will have no recommended package until you set one.
+                </>
+              )}
+            </p>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setRecommendConfirm(null)}
+                disabled={recommendBusy}
+                style={btnSecondaryStyle}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => performRecommendToggle(recommendConfirm.action === 'set')}
+                disabled={recommendBusy}
+                style={{
+                  ...btnPrimaryStyle,
+                  background: recommendBusy ? '#9aaabe' : '#1e3a5f',
+                  cursor: recommendBusy ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {recommendBusy
+                  ? 'Updating...'
+                  : recommendConfirm.action === 'set'
+                  ? 'Yes, replace'
+                  : 'Yes, remove flag'}
               </button>
             </div>
           </div>
