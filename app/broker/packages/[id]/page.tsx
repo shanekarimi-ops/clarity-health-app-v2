@@ -97,6 +97,16 @@ const BENEFIT_LABELS: Record<string, string> = {
   ltd: 'Long-Term Disability',
 };
 
+const TIER_LABELS: Record<string, string> = {
+  employee_only: 'Employee Only',
+  employee_spouse: 'Employee + Spouse',
+  employee_children: 'Employee + Child(ren)',
+  family: 'Family',
+};
+
+const TIER_KEYS = ['employee_only', 'employee_spouse', 'employee_children', 'family'] as const;
+type TierKey = typeof TIER_KEYS[number];
+
 // ----------------------------------------------------------------------------
 // Formatters
 // ----------------------------------------------------------------------------
@@ -180,6 +190,17 @@ export default function PackageDetailPage() {
   const [editEmployerPct, setEditEmployerPct] = useState('80');
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+
+  // Edit Tiers modal state
+  const [showTiersModal, setShowTiersModal] = useState(false);
+  const [tierInputs, setTierInputs] = useState<Record<TierKey, string>>({
+    employee_only: '',
+    employee_spouse: '',
+    employee_children: '',
+    family: '',
+  });
+  const [tiersSubmitting, setTiersSubmitting] = useState(false);
+  const [tiersError, setTiersError] = useState<string | null>(null);
 
   // Recommend toggle state
   const [recommendBusy, setRecommendBusy] = useState(false);
@@ -383,6 +404,91 @@ export default function PackageDetailPage() {
     }
   }
 
+  // ---- Edit Tiers ----
+
+  function openTiersModal() {
+    if (!pkg) return;
+    const tb = pkg.tier_breakdown || {};
+    setTierInputs({
+      employee_only: tb.employee_only !== undefined ? String(tb.employee_only) : '',
+      employee_spouse: tb.employee_spouse !== undefined ? String(tb.employee_spouse) : '',
+      employee_children: tb.employee_children !== undefined ? String(tb.employee_children) : '',
+      family: tb.family !== undefined ? String(tb.family) : '',
+    });
+    setTiersError(null);
+    setShowTiersModal(true);
+  }
+
+  function updateTierInput(key: TierKey, value: string) {
+    setTierInputs(prev => ({ ...prev, [key]: value }));
+  }
+
+  function parseTierInputs(): { tier_breakdown: Record<TierKey, number>; total: number } | { error: string } {
+    const tb: Record<TierKey, number> = {} as any;
+    for (const key of TIER_KEYS) {
+      const raw = tierInputs[key].trim();
+      if (raw === '') {
+        tb[key] = 0;
+        continue;
+      }
+      const n = parseFloat(raw);
+      if (isNaN(n)) {
+        return { error: `${TIER_LABELS[key]} must be a number.` };
+      }
+      if (!Number.isInteger(n)) {
+        return { error: `${TIER_LABELS[key]} must be a whole number.` };
+      }
+      if (n < 0) {
+        return { error: `${TIER_LABELS[key]} cannot be negative.` };
+      }
+      tb[key] = n;
+    }
+    const total = TIER_KEYS.reduce((acc, k) => acc + tb[k], 0);
+    return { tier_breakdown: tb, total };
+  }
+
+  async function handleSaveTiers() {
+    setTiersError(null);
+    const parsed = parseTierInputs();
+    if ('error' in parsed) {
+      setTiersError(parsed.error);
+      return;
+    }
+    if (parsed.total === 0) {
+      setTiersError('At least one tier must have members.');
+      return;
+    }
+
+    setTiersSubmitting(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        router.push('/login');
+        return;
+      }
+      const res = await fetch(`/api/broker/packages/${packageId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ tier_breakdown: parsed.tier_breakdown }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setTiersError(json.error || 'Failed to update tier breakdown');
+        setTiersSubmitting(false);
+        return;
+      }
+      setTiersSubmitting(false);
+      setShowTiersModal(false);
+      loadPackage();
+    } catch (e: any) {
+      setTiersError(e?.message || 'Failed to update tier breakdown');
+      setTiersSubmitting(false);
+    }
+  }
+
   // ---- Recommend toggle ----
 
   async function handleRecommendClick() {
@@ -447,13 +553,7 @@ export default function PackageDetailPage() {
   if (bootLoading || dataLoading) {
     return (
       <div className="dash-layout">
-        <BrokerSidebar
-          active="packages"
-          firstName={firstName}
-          lastName={lastName}
-          agencyName={agencyName}
-          onLogout={handleLogout}
-        />
+        <BrokerSidebar active="packages" firstName={firstName} lastName={lastName} agencyName={agencyName} onLogout={handleLogout} />
         <main className="dash-main">
           <div style={{ padding: 40, color: '#1e3a5f' }}>Loading...</div>
         </main>
@@ -496,10 +596,13 @@ export default function PackageDetailPage() {
   // ---------- Main render ----------
 
   const tierBreakdown = pkg.tier_breakdown || {};
-  const tierBreakdownSummary = ['employee_only', 'employee_spouse', 'employee_children', 'family']
+  const tierBreakdownSummary = TIER_KEYS
     .map(t => tierBreakdown[t])
     .filter(n => typeof n === 'number')
     .reduce((sum: number, n: any) => sum + n, 0);
+
+  const parsedTiers = parseTierInputs();
+  const liveTierTotal = 'tier_breakdown' in parsedTiers ? parsedTiers.total : null;
 
   return (
     <div className="dash-layout">
@@ -566,10 +669,11 @@ export default function PackageDetailPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 20, marginBottom: 24 }}>
             <FactCard label="RFP" value={pkg.rfp?.name || '—'} />
             <FactCard label="Effective" value={fmtDate(pkg.rfp?.effective_date)} />
-            <FactCard
+            <ClickableFactCard
               label="Member count"
               value={pkg.member_count_assumption !== null ? `${pkg.member_count_assumption}` : '—'}
-              sub={tierBreakdownSummary > 0 ? `Tiers sum to ${tierBreakdownSummary}` : undefined}
+              sub={tierBreakdownSummary > 0 ? `Tiers sum to ${tierBreakdownSummary}` : 'Click to set tier breakdown'}
+              onClick={openTiersModal}
             />
             <FactCard label="Lines" value={`${lines.length}`} />
           </div>
@@ -813,10 +917,7 @@ export default function PackageDetailPage() {
 
       {/* Add Line Modal */}
       {showAddModal && (
-        <div
-          onClick={() => !addSubmitting && setShowAddModal(false)}
-          style={modalOverlayStyle}
-        >
+        <div onClick={() => !addSubmitting && setShowAddModal(false)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
             <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 8 }}>
               Add Carrier Line
@@ -826,12 +927,7 @@ export default function PackageDetailPage() {
             </p>
 
             <label style={labelStyle}>Carrier Line</label>
-            <select
-              value={selectedQuoteLineId}
-              onChange={(e) => setSelectedQuoteLineId(e.target.value)}
-              disabled={addSubmitting}
-              style={inputStyle}
-            >
+            <select value={selectedQuoteLineId} onChange={(e) => setSelectedQuoteLineId(e.target.value)} disabled={addSubmitting} style={inputStyle}>
               <option value="">Select a line...</option>
               {availableLines.map(ql => (
                 <option key={ql.quote_line_id} value={ql.quote_line_id}>
@@ -863,9 +959,7 @@ export default function PackageDetailPage() {
             )}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button onClick={() => setShowAddModal(false)} disabled={addSubmitting} style={btnSecondaryStyle}>
-                Cancel
-              </button>
+              <button onClick={() => setShowAddModal(false)} disabled={addSubmitting} style={btnSecondaryStyle}>Cancel</button>
               <button
                 onClick={handleAddLine}
                 disabled={addSubmitting || !selectedQuoteLineId}
@@ -884,10 +978,7 @@ export default function PackageDetailPage() {
 
       {/* Edit Line Modal */}
       {editingLine && (
-        <div
-          onClick={() => !editSubmitting && setEditingLine(null)}
-          style={modalOverlayStyle}
-        >
+        <div onClick={() => !editSubmitting && setEditingLine(null)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
             <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 8 }}>
               Edit Contribution
@@ -925,9 +1016,7 @@ export default function PackageDetailPage() {
             )}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button onClick={() => setEditingLine(null)} disabled={editSubmitting} style={btnSecondaryStyle}>
-                Cancel
-              </button>
+              <button onClick={() => setEditingLine(null)} disabled={editSubmitting} style={btnSecondaryStyle}>Cancel</button>
               <button
                 onClick={handleEditLine}
                 disabled={editSubmitting}
@@ -938,6 +1027,72 @@ export default function PackageDetailPage() {
                 }}
               >
                 {editSubmitting ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Tiers Modal */}
+      {showTiersModal && pkg && (
+        <div onClick={() => !tiersSubmitting && setShowTiersModal(false)} style={modalOverlayStyle}>
+          <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
+            <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.5rem', color: '#1e3a5f', margin: 0, marginBottom: 8 }}>
+              Edit Tier Breakdown
+            </h2>
+            <p style={{ color: '#3a4d68', fontSize: 13, marginBottom: 20 }}>
+              Set how many employees fall into each enrollment tier. Costs will recalculate automatically.
+            </p>
+
+            {TIER_KEYS.map(key => (
+              <div key={key} style={{ marginBottom: 12 }}>
+                <label style={{ ...labelStyle, marginTop: 0 }}>{TIER_LABELS[key]}</label>
+                <input
+                  type="number"
+                  value={tierInputs[key]}
+                  onChange={(e) => updateTierInput(key, e.target.value)}
+                  placeholder="0"
+                  min="0"
+                  disabled={tiersSubmitting}
+                  style={inputStyle}
+                />
+              </div>
+            ))}
+
+            <div style={{
+              marginTop: 16,
+              padding: '10px 14px',
+              background: '#faf7f2',
+              border: '1px solid #e8e0d0',
+              borderRadius: 6,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}>
+              <span style={{ fontSize: 13, color: '#3a4d68', fontWeight: 600 }}>Total employees</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: '#1e3a5f', fontFamily: 'Playfair Display, serif' }}>
+                {liveTierTotal ?? 0}
+              </span>
+            </div>
+
+            {tiersError && (
+              <div style={{ padding: 12, background: '#fdf3f3', color: '#7a2a2a', borderRadius: 6, marginTop: 16, marginBottom: 8, border: '1px solid #f3d4d4', fontSize: 13 }}>
+                {tiersError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button onClick={() => setShowTiersModal(false)} disabled={tiersSubmitting} style={btnSecondaryStyle}>Cancel</button>
+              <button
+                onClick={handleSaveTiers}
+                disabled={tiersSubmitting}
+                style={{
+                  ...btnPrimaryStyle,
+                  background: tiersSubmitting ? '#9aaabe' : '#1e3a5f',
+                  cursor: tiersSubmitting ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {tiersSubmitting ? 'Saving...' : 'Save Tiers'}
               </button>
             </div>
           </div>
@@ -965,9 +1120,7 @@ export default function PackageDetailPage() {
               )}
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setRecommendConfirm(null)} disabled={recommendBusy} style={btnSecondaryStyle}>
-                Cancel
-              </button>
+              <button onClick={() => setRecommendConfirm(null)} disabled={recommendBusy} style={btnSecondaryStyle}>Cancel</button>
               <button
                 onClick={() => performRecommendToggle(recommendConfirm.action === 'set')}
                 disabled={recommendBusy}
@@ -1004,6 +1157,40 @@ function FactCard({ label, value, sub }: { label: string; value: string; sub?: s
       <div style={{ fontSize: 15, color: '#1e3a5f', fontWeight: 600 }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 4 }}>{sub}</div>}
     </div>
+  );
+}
+
+function ClickableFactCard({ label, value, sub, onClick }: { label: string; value: string; sub?: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: 'white',
+        border: '1px solid #eef1f4',
+        borderRadius: 10,
+        padding: '14px 16px',
+        textAlign: 'left',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        width: '100%',
+        transition: 'border-color 0.12s, background 0.12s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = '#1e3a5f';
+        e.currentTarget.style.background = '#fdfcf9';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = '#eef1f4';
+        e.currentTarget.style.background = 'white';
+      }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#3a4d68', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>{label}</span>
+        <span style={{ fontSize: 10, color: '#7a8a9b', fontWeight: 500, textTransform: 'none', letterSpacing: 0 }}>edit ✎</span>
+      </div>
+      <div style={{ fontSize: 15, color: '#1e3a5f', fontWeight: 600 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: '#7a8a9b', marginTop: 4 }}>{sub}</div>}
+    </button>
   );
 }
 
