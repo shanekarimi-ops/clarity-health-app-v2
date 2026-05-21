@@ -34,7 +34,9 @@ type Package = {
     effective_date: string | null;
     current_annual_cost: number | null;
   } | null;
-  client: { id: string; employer_name: string } | null;
+  // CHANGED S42: backend may return either `group` (new) or `client` (old). Accept both.
+  group?: { id: string; name: string } | null;
+  client?: { id: string; employer_name: string } | null;
 };
 
 type ContributionSplit = {
@@ -154,6 +156,12 @@ const currentEmployerPct = (split: ContributionSplit | null): number => {
   return 80;
 };
 
+// CHANGED S42: helper that pulls the display label from either new (group.name) or old (client.employer_name) shape
+const groupLabelOf = (pkg: Package | null): string => {
+  if (!pkg) return '—';
+  return pkg.group?.name || pkg.client?.employer_name || pkg.rfp?.name || '—';
+};
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -174,24 +182,20 @@ export default function PackageDetailPage() {
   const [dataLoading, setDataLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Add Line modal state
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedQuoteLineId, setSelectedQuoteLineId] = useState('');
   const [addEmployerPct, setAddEmployerPct] = useState('80');
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
-  // Per-line delete state
   const [deletingLineId, setDeletingLineId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  // Edit Line modal state
   const [editingLine, setEditingLine] = useState<PackageLine | null>(null);
   const [editEmployerPct, setEditEmployerPct] = useState('80');
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
-  // Edit Tiers modal state
   const [showTiersModal, setShowTiersModal] = useState(false);
   const [tierInputs, setTierInputs] = useState<Record<TierKey, string>>({
     employee_only: '',
@@ -202,7 +206,6 @@ export default function PackageDetailPage() {
   const [tiersSubmitting, setTiersSubmitting] = useState(false);
   const [tiersError, setTiersError] = useState<string | null>(null);
 
-  // Recommend toggle state
   const [recommendBusy, setRecommendBusy] = useState(false);
   const [recommendError, setRecommendError] = useState<string | null>(null);
   const [recommendConfirm, setRecommendConfirm] = useState<{
@@ -210,7 +213,6 @@ export default function PackageDetailPage() {
     willUnflagName?: string;
   } | null>(null);
 
-  // Create Presentation modal state
   const [showPresentationModal, setShowPresentationModal] = useState(false);
   const [presTemplate, setPresTemplate] = useState<'standard' | 'executive' | 'detailed'>('standard');
   const [presTitle, setPresTitle] = useState('');
@@ -411,8 +413,6 @@ export default function PackageDetailPage() {
     }
   }
 
-  // ---- Edit Tiers ----
-
   function openTiersModal() {
     if (!pkg) return;
     const tb = pkg.tier_breakdown || {};
@@ -496,8 +496,6 @@ export default function PackageDetailPage() {
     }
   }
 
-  // ---- Recommend toggle ----
-
   async function handleRecommendClick() {
     setRecommendError(null);
     if (!pkg) return;
@@ -555,8 +553,6 @@ export default function PackageDetailPage() {
     }
   }
 
-  // ---- Create Presentation from Package ----
-
   function openPresentationModal() {
     if (!pkg) return;
     setPresTemplate('standard');
@@ -598,15 +594,12 @@ export default function PackageDetailPage() {
         setPresSubmitting(false);
         return;
       }
-      // Navigate to the presentation detail page where the broker can hit "Generate"
       router.push(`/broker/presentations/${json.presentation.id}`);
     } catch (e: any) {
       setPresError(e?.message || 'Failed to create presentation');
       setPresSubmitting(false);
     }
   }
-
-  // ---------- Loading / error / not-found ----------
 
   if (bootLoading || dataLoading) {
     return (
@@ -651,8 +644,6 @@ export default function PackageDetailPage() {
     );
   }
 
-  // ---------- Main render ----------
-
   const tierBreakdown = pkg.tier_breakdown || {};
   const tierBreakdownSummary = TIER_KEYS
     .map(t => tierBreakdown[t])
@@ -669,7 +660,6 @@ export default function PackageDetailPage() {
         <div style={{ padding: '2rem 2.5rem', maxWidth: 1100 }}>
           <a href="/broker/packages" style={backLinkStyle}>← All Packages</a>
 
-          {/* Header */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 8 }}>
             <div style={{ flex: 1 }}>
               <h1 style={{ fontFamily: 'Playfair Display, serif', fontSize: 36, color: '#1e3a5f', margin: '0 0 8px 0' }}>
@@ -680,7 +670,7 @@ export default function PackageDetailPage() {
                 {pkg.is_recommended && <span style={pillStyle('#dcead4', '#2d5016')}>Recommended</span>}
                 <span style={pillStyle('#f0eee8', '#3a4d68')}>{pkg.status === 'locked' ? 'Locked' : 'Draft'}</span>
                 <span style={{ fontSize: 13, color: '#3a4d68' }}>
-                  For <strong style={{ color: '#1e3a5f' }}>{pkg.client?.employer_name || pkg.rfp?.name || '—'}</strong>
+                  For <strong style={{ color: '#1e3a5f' }}>{groupLabelOf(pkg)}</strong>
                 </span>
               </div>
             </div>
@@ -711,7 +701,6 @@ export default function PackageDetailPage() {
             )}
           </div>
 
-          {/* Create Presentation action row */}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
             <button
               onClick={openPresentationModal}
@@ -744,7 +733,6 @@ export default function PackageDetailPage() {
             </p>
           )}
 
-          {/* Fact cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 20, marginBottom: 24 }}>
             <FactCard label="RFP" value={pkg.rfp?.name || '—'} />
             <FactCard label="Effective" value={fmtDate(pkg.rfp?.effective_date)} />
@@ -757,7 +745,6 @@ export default function PackageDetailPage() {
             <FactCard label="Lines" value={`${lines.length}`} />
           </div>
 
-          {/* Cost Snapshot */}
           <SectionCard title="Cost Snapshot">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
               <CostBlock label="Total Annual" value={fmtMoney(pkg.total_annual_cost)} primary />
@@ -785,7 +772,6 @@ export default function PackageDetailPage() {
             )}
           </SectionCard>
 
-          {/* Lines */}
           <SectionCard
             title="Package Lines"
             action={
@@ -994,7 +980,6 @@ export default function PackageDetailPage() {
         </div>
       </main>
 
-      {/* Add Line Modal */}
       {showAddModal && (
         <div onClick={() => !addSubmitting && setShowAddModal(false)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
@@ -1055,7 +1040,6 @@ export default function PackageDetailPage() {
         </div>
       )}
 
-      {/* Edit Line Modal */}
       {editingLine && (
         <div onClick={() => !editSubmitting && setEditingLine(null)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
@@ -1112,7 +1096,6 @@ export default function PackageDetailPage() {
         </div>
       )}
 
-      {/* Edit Tiers Modal */}
       {showTiersModal && pkg && (
         <div onClick={() => !tiersSubmitting && setShowTiersModal(false)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
@@ -1178,7 +1161,6 @@ export default function PackageDetailPage() {
         </div>
       )}
 
-      {/* Recommend Confirmation Modal */}
       {recommendConfirm && pkg && (
         <div onClick={() => !recommendBusy && setRecommendConfirm(null)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={{ ...modalCardStyle, maxWidth: 460 }}>
@@ -1220,7 +1202,6 @@ export default function PackageDetailPage() {
         </div>
       )}
 
-      {/* Create Presentation Modal */}
       {showPresentationModal && pkg && (
         <div onClick={() => !presSubmitting && setShowPresentationModal(false)} style={modalOverlayStyle}>
           <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>

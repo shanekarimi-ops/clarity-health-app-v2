@@ -10,7 +10,7 @@ import { BENEFIT_LINES, BENEFIT_LINE_LABELS, BenefitLineValue, filterValidBenefi
 type Rfp = {
   id: string;
   agency_id: string;
-  client_id: string;
+  group_id: string;
   created_by_user_id: string;
   name: string;
   rfp_type: string;
@@ -21,11 +21,13 @@ type Rfp = {
   employee_lives: number | null;
   created_at: string;
   updated_at: string;
-  clients?: {
+  // CHANGED S42: clients(...) join → groups(...) join
+  groups?: {
     id: string;
-    first_name: string | null;
-    last_name: string | null;
-    employer_name: string | null;
+    name: string | null;
+    industry: string | null;
+    location: string | null;
+    member_count: number | null;
   } | null;
 };
 
@@ -242,10 +244,8 @@ export default function RFPDetailPage() {
   const planYear = planDesign.planYear;
   const extractedData = planDesign.extractedData;
 
-  const clientLabel =
-    rfp?.clients?.employer_name ||
-    [rfp?.clients?.first_name, rfp?.clients?.last_name].filter(Boolean).join(' ') ||
-    'Unknown client';
+  // CHANGED S42: clients → groups, no more first/last_name fallback
+  const clientLabel = rfp?.groups?.name || 'Unknown client';
 
   const spdFilename = rfp?.current_plan_doc_url
     ? rfp.current_plan_doc_url.split('/').pop()

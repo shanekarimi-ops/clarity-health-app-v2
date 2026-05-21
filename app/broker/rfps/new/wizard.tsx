@@ -6,11 +6,10 @@ import { supabase } from '../../../supabase';
 
 type StartMode = 'from-spd' | 'from-scratch';
 
-type Client = {
+// CHANGED S42: Client → Group (rfps now FK to groups, not clients)
+type Group = {
   id: string;
-  first_name: string;
-  last_name: string;
-  employer_name: string | null;
+  name: string | null;
   member_count: number | null;
 };
 
@@ -76,13 +75,13 @@ export default function RFPWizard({
     life: null,
   });
 
-  const [clients, setClients] = useState<Client[]>([]);
-  const [clientsLoading, setClientsLoading] = useState(true);
+  // CHANGED S42: clients → groups
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
 
   const [loadingExisting, setLoadingExisting] = useState(isEditMode);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // In edit mode, track whether the broker wants to replace the existing SPD
   const [replaceSpd, setReplaceSpd] = useState(false);
 
   const [saving, setSaving] = useState(false);
@@ -90,7 +89,7 @@ export default function RFPWizard({
 
   useEffect(() => {
     if (!agencyId) return;
-    loadClients();
+    loadGroups();
   }, [agencyId]);
 
   useEffect(() => {
@@ -98,15 +97,16 @@ export default function RFPWizard({
     loadExistingRfp(editingRfpId);
   }, [editingRfpId]);
 
-  async function loadClients() {
-    setClientsLoading(true);
+  // CHANGED S42: query groups table instead of clients
+  async function loadGroups() {
+    setGroupsLoading(true);
     const { data: rows } = await supabase
-      .from('clients')
-      .select('id, first_name, last_name, employer_name, member_count')
+      .from('groups')
+      .select('id, name, member_count')
       .eq('agency_id', agencyId)
-      .order('employer_name', { ascending: true, nullsFirst: false });
-    setClients(rows || []);
-    setClientsLoading(false);
+      .order('name', { ascending: true, nullsFirst: false });
+    setGroups(rows || []);
+    setGroupsLoading(false);
   }
 
   async function loadExistingRfp(rfpId: string) {
@@ -135,7 +135,8 @@ export default function RFPWizard({
         : defaultPlanYear;
 
       setData({
-        clientId: r.client_id,
+        // CHANGED S42: rfps.client_id → rfps.group_id (UI field name kept as clientId)
+        clientId: r.group_id,
         rfpName: r.name || '',
         planYear: yearFromDesign,
         effectiveDate: effective,
@@ -164,18 +165,19 @@ export default function RFPWizard({
     setData((prev) => ({ ...prev, [key]: value }));
   }
 
+  // CHANGED S42: clients → groups (simpler name field, no first/last fallback)
   function handleClientChange(clientId: string) {
-    const client = clients.find((c) => c.id === clientId);
+    const group = groups.find((g) => g.id === clientId);
     setData((prev) => ({
       ...prev,
       clientId,
       rfpName:
-        prev.rfpName === '' && client
-          ? `${client.employer_name || `${client.first_name} ${client.last_name}`} ${prev.planYear} Renewal`
+        prev.rfpName === '' && group
+          ? `${group.name || 'Group'} ${prev.planYear} Renewal`
           : prev.rfpName,
       censusSize:
-        prev.censusSize === null && client?.member_count
-          ? client.member_count
+        prev.censusSize === null && group?.member_count
+          ? group.member_count
           : prev.censusSize,
     }));
   }
@@ -233,14 +235,13 @@ export default function RFPWizard({
       return;
     }
     if (!data.clientId || !data.rfpName.trim()) {
-      setSaveError('Client and RFP name are required.');
+      setSaveError('Group and RFP name are required.');
       return;
     }
 
-    // Soft nudge: if no baseline cost was entered, ask the broker to confirm
     if (data.currentAnnualCost === null) {
       const proceed = confirm(
-        "You haven't entered the client's current annual cost. " +
+        "You haven't entered the group's current annual cost. " +
         "Without it, the 'Δ vs current' column on the quote comparison grid will be empty. " +
         "You can add it later by editing the RFP.\n\nSave without it?"
       );
@@ -272,7 +273,7 @@ export default function RFPWizard({
           agencyId,
           userId: user.id,
           userName,
-          clientId: data.clientId,
+          clientId: data.clientId, // API accepts this as group_id post-S42
           rfpName: data.rfpName,
           effectiveDate: data.effectiveDate || null,
           censusSize: data.censusSize,
@@ -387,8 +388,8 @@ export default function RFPWizard({
         {step === 1 && (
           <Step1Basics
             data={data}
-            clients={clients}
-            clientsLoading={clientsLoading}
+            groups={groups}
+            groupsLoading={groupsLoading}
             updateField={updateField}
             onClientChange={handleClientChange}
             onPlanYearChange={handlePlanYearChange}
@@ -536,15 +537,15 @@ function Stepper({ currentStep }: { currentStep: number }) {
 
 function Step1Basics({
   data,
-  clients,
-  clientsLoading,
+  groups,
+  groupsLoading,
   updateField,
   onClientChange,
   onPlanYearChange,
 }: {
   data: WizardData;
-  clients: Client[];
-  clientsLoading: boolean;
+  groups: Group[];
+  groupsLoading: boolean;
   updateField: <K extends keyof WizardData>(k: K, v: WizardData[K]) => void;
   onClientChange: (clientId: string) => void;
   onPlanYearChange: (year: number) => void;
@@ -565,14 +566,14 @@ function Step1Basics({
         Basics
       </h2>
       <p style={{ color: '#3a4d68', fontSize: 14, marginTop: 0, marginBottom: 24 }}>
-        Tell us which client this RFP is for and when it's effective.
+        Tell us which group this RFP is for and when it's effective.
       </p>
 
       <div style={{ marginBottom: 16 }}>
-        <label style={labelStyle}>Client *</label>
-        {clientsLoading ? (
-          <div style={{ color: '#3a4d68', fontSize: 14 }}>Loading clients...</div>
-        ) : clients.length === 0 ? (
+        <label style={labelStyle}>Group *</label>
+        {groupsLoading ? (
+          <div style={{ color: '#3a4d68', fontSize: 14 }}>Loading groups...</div>
+        ) : groups.length === 0 ? (
           <div
             style={{
               padding: 14,
@@ -583,13 +584,8 @@ function Step1Basics({
               color: '#3a4d68',
             }}
           >
-            No clients in your agency yet.{' '}
-            <a
-              href="/broker/clients"
-              style={{ color: '#1e3a5f', fontWeight: 600 }}
-            >
-              Add a client first.
-            </a>
+            No groups in your agency yet. Create one in Supabase, or use the
+            groups page if it's wired up.
           </div>
         ) : (
           <select
@@ -597,11 +593,11 @@ function Step1Basics({
             onChange={(e) => onClientChange(e.target.value)}
             style={inputStyle}
           >
-            <option value="">— Select a client —</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.employer_name || `${c.first_name} ${c.last_name}`}
-                {c.member_count ? ` (${c.member_count} members)` : ''}
+            <option value="">— Select a group —</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name || '(unnamed group)'}
+                {g.member_count ? ` (${g.member_count} members)` : ''}
               </option>
             ))}
           </select>
@@ -665,7 +661,7 @@ function Step1Basics({
           style={inputStyle}
         />
         <div style={{ fontSize: 12, color: '#3a4d68', marginTop: 4 }}>
-          Auto-fills from the client's member count. Adjust if needed.
+          Auto-fills from the group's member count. Adjust if needed.
         </div>
       </div>
 
@@ -731,10 +727,7 @@ function Step2UploadSPD({
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
-  // In edit mode, "hasExisting" means the RFP already has a SPD on file (filename) and the user hasn't asked to replace it
   const hasExisting = isEditMode && !!data.spdFilename && !data.spdFile && !replaceSpd;
-
-  // "hasExtracted" means an extraction just ran in this session
   const hasExtracted = !!data.extractedData && !!data.spdFile;
 
   async function handleFile(file: File) {
@@ -839,7 +832,7 @@ function Step2UploadSPD({
         {isEditMode
           ? "The current SPD is shown below. Replace it if you've received an updated version."
           : startMode === 'from-spd'
-          ? "Upload the client's Summary Plan Description. We'll extract the plan design with AI."
+          ? "Upload the group's Summary Plan Description. We'll extract the plan design with AI."
           : 'Optional: drop in an SPD if you have one. Otherwise click Next to enter the plan design manually.'}
       </p>
 

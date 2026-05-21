@@ -147,12 +147,10 @@ export default function RfpQuotesPage() {
   const [reviewLoading, setReviewLoading] = useState<{ quoteId: string; target: ReviewTarget } | null>(null);
   const [reviewError, setReviewError] = useState<string>('');
 
-  // Narrative state
   const [narrative, setNarrative] = useState<Narrative | null>(null);
   const [narrativeLoading, setNarrativeLoading] = useState(false);
   const [narrativeError, setNarrativeError] = useState<string>('');
 
-  // Presentation creation state
   const [presentationMenuOpen, setPresentationMenuOpen] = useState(false);
   const [presentationCreating, setPresentationCreating] = useState(false);
   const [presentationError, setPresentationError] = useState<string>('');
@@ -177,10 +175,10 @@ export default function RfpQuotesPage() {
         setAgencyName((brokerRow.agencies as any).name || '');
       }
 
-      // Fetch RFP
+      // CHANGED S42: rfps.client_id → rfps.group_id, clients(employer_name) → groups(name)
       const { data: rfpRow, error: rfpErr } = await supabase
         .from('rfps')
-        .select('id, name, client_id, current_plan_design, effective_date, clients(employer_name)')
+        .select('id, name, group_id, current_plan_design, effective_date, groups(name)')
         .eq('id', rfpId)
         .maybeSingle();
 
@@ -193,12 +191,14 @@ export default function RfpQuotesPage() {
       setRfp({
         id: rfpRow.id,
         name: rfpRow.name,
-        employer_name: (rfpRow.clients as any)?.employer_name || '—',
+        // CHANGED S42: read from groups(name) instead of clients(employer_name).
+        // We keep the field name "employer_name" on our local Rfp type so the
+        // rest of this file doesn't need to be touched.
+        employer_name: (rfpRow.groups as any)?.name || '—',
         current_plan_design: rfpRow.current_plan_design,
         effective_date: rfpRow.effective_date,
       });
 
-      // Fetch quotes for this RFP with lines
       const { data: quoteRows, error: quotesErr } = await supabase
         .from('quotes')
         .select(`
@@ -250,7 +250,6 @@ export default function RfpQuotesPage() {
 
       setQuotes(flat);
 
-      // Fetch cached narrative (if any)
       const { data: narrativeRow } = await supabase
         .from('rfp_ai_narratives')
         .select('id, bullets, quotes_count, quote_ids, model, generated_by_name, created_at')
@@ -433,7 +432,6 @@ export default function RfpQuotesPage() {
     }
   }
 
-  // Staleness detection: narrative is stale if the set of quote ids has changed since it was generated
   const narrativeIsStale = useMemo(() => {
     if (!narrative) return false;
     const cachedIds = new Set(narrative.quote_ids);
@@ -460,7 +458,6 @@ export default function RfpQuotesPage() {
       />
       <main className="dash-main">
         <div style={{ padding: '2rem 2.5rem', maxWidth: '1600px' }}>
-          {/* Breadcrumb */}
           <div style={{ fontSize: '0.85rem', color: '#7a8a9b', marginBottom: '0.5rem' }}>
             <span
               onClick={() => router.push('/broker/quotes')}
@@ -472,7 +469,6 @@ export default function RfpQuotesPage() {
             <span>{rfp?.name || '—'}</span>
           </div>
 
-          {/* Header row with title + Create Presentation button */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
             <div>
               <h1 style={{ fontFamily: 'Playfair Display, serif', fontSize: '2rem', color: '#1e3a5f', margin: 0, marginBottom: '0.4rem' }}>
@@ -617,7 +613,6 @@ export default function RfpQuotesPage() {
             </div>
           )}
 
-          {/* AI Narrative panel */}
           {quotes.length > 0 && (
             <NarrativePanel
               narrative={narrative}
@@ -640,7 +635,6 @@ export default function RfpQuotesPage() {
               overflowX: 'auto',
             }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem', minWidth: '720px' }}>
-                {/* Carrier header row */}
                 <thead>
                   <tr style={{ background: '#f0ebe0', borderBottom: '2px solid #d4cab8' }}>
                     <th style={{ ...thStyle, width: '200px', minWidth: '200px' }}>
@@ -682,7 +676,6 @@ export default function RfpQuotesPage() {
                 </thead>
 
                 <tbody>
-                  {/* TOP TOTALS ROW */}
                   <tr style={{ background: '#fef9ed', borderBottom: '2px solid #d4cab8' }}>
                     <td style={{ ...tdStyle, fontWeight: 600, color: '#1e3a5f', fontSize: '0.95rem' }}>
                       <div>Total Annual Cost</div>
@@ -730,7 +723,6 @@ export default function RfpQuotesPage() {
                     })}
                   </tr>
 
-                  {/* BENEFIT ROWS */}
                   {benefitRows.map((bt) => {
                     const isExpanded = expandedRows.has(bt);
                     const bestPremiumCarrier = lowestPremiumCarrierId(bt);
@@ -804,7 +796,6 @@ export default function RfpQuotesPage() {
                           })}
                         </tr>
 
-                        {/* EXPANDED PLAN DESIGN DETAIL */}
                         {isExpanded && (
                           <tr style={{ background: '#fafaf6', borderBottom: '1px solid #e8e0d0' }}>
                             <td style={{ ...tdStyle, paddingLeft: '2.5rem', verticalAlign: 'top' }}>
@@ -849,7 +840,6 @@ export default function RfpQuotesPage() {
                     );
                   })}
 
-                  {/* NOTES ROW (only if any carrier has notes) */}
                   {quotes.some((q) => q.notes) && (
                     <tr style={{ background: '#fef9ed' }}>
                       <td style={{ ...tdStyle, fontWeight: 500, color: '#1e3a5f' }}>Carrier Notes</td>
@@ -869,8 +859,6 @@ export default function RfpQuotesPage() {
     </div>
   );
 }
-
-// ----- Small components -----
 
 function NarrativePanel({
   narrative,
@@ -1106,8 +1094,6 @@ function EmptyState() {
   );
 }
 
-// ----- Formatting helpers -----
-
 function formatCurrency(n: number | null | undefined): string {
   if (n == null) return '—';
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -1159,8 +1145,6 @@ function formatRelativeTime(iso: string): string {
   if (diffDay < 7) return `${diffDay}d ago`;
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
-
-// ----- Inline styles -----
 
 const thStyle: React.CSSProperties = {
   padding: '1rem',

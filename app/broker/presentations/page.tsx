@@ -15,7 +15,8 @@ type Presentation = {
   created_at: string;
   generated_by_name: string | null;
   rfp: { id: string; name: string; effective_date: string | null } | null;
-  client: { id: string; employer_name: string } | null;
+  // CHANGED S42: API returns group:groups(id, name), not client envelope
+  group: { id: string; name: string } | null;
 };
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
@@ -129,7 +130,6 @@ export default function PresentationsPage() {
             Branded client deliverables in PDF and Excel.
           </p>
 
-          {/* Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
             {[
               { label: 'Total', value: stats.total, color: '#1e3a5f' },
@@ -149,7 +149,6 @@ export default function PresentationsPage() {
             ))}
           </div>
 
-          {/* Filters */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
             <select
               value={statusFilter}
@@ -219,7 +218,7 @@ export default function PresentationsPage() {
                 <thead>
                   <tr style={{ background: '#faf7f2', borderBottom: '1px solid #e8e0d0' }}>
                     <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Title</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Client</th>
+                    <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Group</th>
                     <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Template</th>
                     <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Status</th>
                     <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Created</th>
@@ -238,7 +237,7 @@ export default function PresentationsPage() {
                         onMouseLeave={(e) => (e.currentTarget.style.background = 'white')}
                       >
                         <td style={{ padding: '14px 16px', fontWeight: 500, color: '#1e3a5f' }}>{p.title}</td>
-                        <td style={{ padding: '14px 16px', color: '#3a4d68' }}>{p.client?.employer_name || '—'}</td>
+                        <td style={{ padding: '14px 16px', color: '#3a4d68' }}>{p.group?.name || '—'}</td>
                         <td style={{ padding: '14px 16px', color: '#3a4d68' }}>{TEMPLATE_LABELS[p.template]}</td>
                         <td style={{ padding: '14px 16px' }}>
                           <span style={{

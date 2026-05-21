@@ -5,11 +5,12 @@ import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 
+// CHANGED S42: client_id → group_id throughout; client envelope → group envelope
 type Presentation = {
   id: string;
   agency_id: string;
   rfp_id: string;
-  client_id: string;
+  group_id: string;
   title: string;
   template: 'standard' | 'executive' | 'detailed';
   status: 'draft' | 'finalized' | 'sent';
@@ -22,7 +23,7 @@ type Presentation = {
   created_at: string;
   updated_at: string;
   rfp?: { id: string; name: string; effective_date: string | null } | null;
-  client?: { id: string; employer_name: string } | null;
+  group?: { id: string; name: string } | null;
 };
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
@@ -82,13 +83,13 @@ export default function PresentationDetailPage() {
         setAgencyName((brokerRow.agencies as any).name || '');
       }
 
-      // Fetch the presentation directly via Supabase (RLS handles agency scoping)
+      // CHANGED S42: client:clients(id, employer_name) → group:groups(id, name)
       const { data: pres, error: presError } = await supabase
         .from('broker_presentations')
         .select(`
           *,
           rfp:rfps(id, name, effective_date),
-          client:clients(id, employer_name)
+          group:groups(id, name)
         `)
         .eq('id', presentationId)
         .maybeSingle();
@@ -101,7 +102,6 @@ export default function PresentationDetailPage() {
 
       setPresentation(pres as Presentation);
 
-      // If pdf_url / excel_url are storage paths, get signed URLs for download
       if (pres.pdf_url || pres.excel_url) {
         await refreshSignedUrls(pres.pdf_url, pres.excel_url);
       }
@@ -224,12 +224,10 @@ export default function PresentationDetailPage() {
       <main className="dash-main">
         <div style={{ padding: '2rem 2.5rem', maxWidth: 1100 }}>
 
-          {/* Breadcrumb */}
           <div style={{ fontSize: 13, color: '#7a8a9b', marginBottom: 16 }}>
             <a href="/broker/presentations" style={{ color: '#1e3a5f', textDecoration: 'none' }}>← Presentations</a>
           </div>
 
-          {/* Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 16, flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 280 }}>
               <div style={{ fontSize: '0.8rem', color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
@@ -239,7 +237,7 @@ export default function PresentationDetailPage() {
                 {presentation.title}
               </h1>
               <div style={{ color: '#3a4d68', fontSize: 14 }}>
-                {presentation.client?.employer_name && <>For {presentation.client.employer_name} · </>}
+                {presentation.group?.name && <>For {presentation.group.name} · </>}
                 {presentation.rfp?.name && <>{presentation.rfp.name} · </>}
                 Created {fmtDate(presentation.created_at)}
               </div>
@@ -265,7 +263,6 @@ export default function PresentationDetailPage() {
             </div>
           )}
 
-          {/* Action card */}
           <div style={{
             background: '#faf7f2',
             border: '1px solid #e8e0d0',
@@ -303,7 +300,7 @@ export default function PresentationDetailPage() {
 
               {pdfSignedUrl && (
                 <a
-                  href={pdfSignedUrl}
+                href={pdfSignedUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{
@@ -366,7 +363,6 @@ export default function PresentationDetailPage() {
             </div>
           </div>
 
-          {/* Metadata */}
           <div style={{ marginTop: 32, background: 'white', border: '1px solid #e8e0d0', borderRadius: 8, padding: '1.25rem 1.5rem' }}>
             <h3 style={{ fontSize: 14, color: '#7a8a9b', textTransform: 'uppercase', letterSpacing: 0.5, margin: 0, marginBottom: 12, fontWeight: 600 }}>
               Details

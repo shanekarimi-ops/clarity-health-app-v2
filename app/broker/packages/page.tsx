@@ -23,10 +23,11 @@ type Package = {
   rfp: { id: string; name: string; effective_date: string | null; current_annual_cost: number | null } | null;
 };
 
+// CHANGED S42: client_id → group_id
 type Rfp = {
   id: string;
   name: string;
-  client_id: string;
+  group_id: string;
   effective_date: string | null;
   current_annual_cost: number | null;
 };
@@ -62,7 +63,6 @@ export default function PackagesPage() {
   const [rfpFilter, setRfpFilter] = useState<string>('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
 
-  // Create modal state
   const [createRfpId, setCreateRfpId] = useState('');
   const [createName, setCreateName] = useState('');
   const [createIsCurrentPlan, setCreateIsCurrentPlan] = useState(false);
@@ -95,11 +95,10 @@ export default function PackagesPage() {
           fetch('/api/broker/packages', {
             headers: { Authorization: `Bearer ${sessionData.session.access_token}` },
           }),
-          // Load RFPs for the create-package dropdown.
-          // Using Supabase client directly here since there isn't a dedicated GET endpoint we need.
+          // CHANGED S42: client_id → group_id in select
           supabase
             .from('rfps')
-            .select('id, name, client_id, effective_date, current_annual_cost')
+            .select('id, name, group_id, effective_date, current_annual_cost')
             .order('created_at', { ascending: false })
             .limit(200),
         ]);
@@ -172,7 +171,6 @@ export default function PackagesPage() {
         return;
       }
 
-      // Success — navigate to the new package's detail page
       router.push(`/broker/packages/${json.package.id}`);
     } catch (e: any) {
       setCreateError(e?.message || 'Failed to create package');
@@ -242,7 +240,6 @@ export default function PackagesPage() {
             Build what-if benefit packages and model real-time costs across carriers.
           </p>
 
-          {/* Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
             {[
               { label: 'Total Packages', value: stats.total, color: '#1e3a5f' },
@@ -262,7 +259,6 @@ export default function PackagesPage() {
             ))}
           </div>
 
-          {/* Filters */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
             <select
               value={rfpFilter}
@@ -378,7 +374,6 @@ export default function PackagesPage() {
         </div>
       </main>
 
-      {/* Create Package Modal */}
       {showCreateModal && (
         <div
           onClick={() => !createSubmitting && setShowCreateModal(false)}
@@ -481,8 +476,6 @@ export default function PackagesPage() {
     </div>
   );
 }
-
-// ---------- Style helpers (kept inline for readability) ----------
 
 const thStyle: React.CSSProperties = {
   padding: '12px 16px',
