@@ -62,9 +62,10 @@ export async function POST(
     const agencyId = brokerRow.agency_id;
 
     // --- Fetch RFP + current plan baseline ---
+    // CHANGED S42: clients(employer_name) → groups(name) since rfps now FK to groups
     const { data: rfp, error: rfpErr } = await admin
       .from('rfps')
-      .select('id, name, agency_id, current_annual_cost, current_plan_design, effective_date, clients(employer_name)')
+      .select('id, name, agency_id, current_annual_cost, current_plan_design, effective_date, groups(name)')
       .eq('id', rfpId)
       .maybeSingle();
 
@@ -126,7 +127,8 @@ export async function POST(
     const quoteIds = quotes.map((q: any) => q.id);
 
     // --- Build the prompt context ---
-    const employerName = (rfp.clients as any)?.employer_name || 'the client';
+    // CHANGED S42: rfp.clients → rfp.groups (and the field is 'name' not 'employer_name')
+    const employerName = (rfp.groups as any)?.name || 'the client';
     const rfpName = rfp.name || 'this RFP';
     const baseline = rfp.current_annual_cost;
     const currentPlan = rfp.current_plan_design || {};
@@ -198,7 +200,6 @@ Examples of strong bullets:
     // --- Parse the JSON response ---
     let bullets: string[];
     try {
-      // Strip any accidental markdown fences (defensive)
       const cleaned = aiText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
       const parsed = JSON.parse(cleaned);
       if (!Array.isArray(parsed.bullets) || parsed.bullets.length === 0) {
@@ -206,7 +207,7 @@ Examples of strong bullets:
       }
       bullets = parsed.bullets
         .filter((b: any) => typeof b === 'string' && b.trim().length > 0)
-        .slice(0, 5); // hard cap at 5
+        .slice(0, 5);
       if (bullets.length === 0) throw new Error('All bullets were empty');
     } catch (parseErr: any) {
       console.error('Failed to parse AI response:', { aiText, parseErr });

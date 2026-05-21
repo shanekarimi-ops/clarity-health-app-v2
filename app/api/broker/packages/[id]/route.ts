@@ -14,9 +14,6 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// ============================================================================
-// Shared snapshot recompute
-// ============================================================================
 async function recomputePackageSnapshot(admin: SupabaseClient, packageId: string) {
   const { data: pkg, error: pkgError } = await admin
     .from('packages')
@@ -89,9 +86,6 @@ async function recomputePackageSnapshot(admin: SupabaseClient, packageId: string
   return result;
 }
 
-// ============================================================================
-// Shared auth + ownership (returns discriminated union for TS narrowing)
-// ============================================================================
 type AuthSuccess = {
   ok: true;
   admin: SupabaseClient;
@@ -166,13 +160,10 @@ async function authAndLoadPackage(
   return { ok: true, admin, broker, user, pkg };
 }
 
-// ============================================================================
-// Validate tier_breakdown input
-// ============================================================================
 const VALID_TIER_KEYS = ['employee_only', 'employee_spouse', 'employee_children', 'family'] as const;
 
 function validateTierBreakdown(tb: any): string | null {
-  if (tb === null) return null; // explicit null is allowed (clear the breakdown)
+  if (tb === null) return null;
   if (typeof tb !== 'object') return 'tier_breakdown must be an object or null';
 
   for (const key of Object.keys(tb)) {
@@ -196,9 +187,6 @@ function validateTierBreakdown(tb: any): string | null {
   return null;
 }
 
-// ============================================================================
-// GET — fetch a single package with all its lines and RFP context
-// ============================================================================
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -210,12 +198,12 @@ export async function GET(
     if (!auth.ok) return auth.response;
     const { admin } = auth;
 
-    // Reload package with full fields (the auth check only loaded the minimal subset)
+    // RFP join now exposes group_id instead of client_id
     const { data: pkg, error: pkgError } = await admin
       .from('packages')
       .select(`
         *,
-        rfp:rfps(id, name, effective_date, current_annual_cost, client_id)
+        rfp:rfps(id, name, effective_date, current_annual_cost, group_id)
       `)
       .eq('id', packageId)
       .maybeSingle();
@@ -227,14 +215,19 @@ export async function GET(
       );
     }
 
-    let clientRow: any = (pkg as any).client;
-    if (!clientRow && (pkg as any).rfp?.client_id) {
-      const { data: c } = await admin
-        .from('clients')
-        .select('id, employer_name')
-        .eq('id', (pkg as any).rfp.client_id)
+    // Look up the group via rfp.group_id, then surface it under the legacy
+    // `client` key so the UI doesn't need updating yet. The UI displays
+    // pkg.client.employer_name — we feed it the group name.
+    let clientRow: any = null;
+    if ((pkg as any).rfp?.group_id) {
+      const { data: g } = await admin
+        .from('groups')
+        .select('id, name')
+        .eq('id', (pkg as any).rfp.group_id)
         .maybeSingle();
-      clientRow = c;
+      if (g) {
+        clientRow = { id: g.id, employer_name: g.name };
+      }
     }
 
     const { data: lineRows, error: linesError } = await admin
@@ -315,26 +308,6 @@ export async function GET(
   }
 }
 
-// ============================================================================
-// PATCH — update package header fields (tier_breakdown, member_count, name,
-// description, notes), then recompute snapshot if math-affecting fields changed
-// ============================================================================
-// URL: /api/broker/packages/[id]
-// Body (all fields optional, only present fields are updated):
-//   {
-//     name?: string,
-//     description?: string | null,
-//     notes?: string | null,
-//     tier_breakdown?: { employee_only?, employee_spouse?, employee_children?, family? } | null,
-//     member_count_assumption?: number | null,
-//   }
-//
-// If tier_breakdown is provided, member_count_assumption is auto-derived from
-// the sum of tier values (a manually-passed member_count_assumption is ignored
-// when tier_breakdown is also passed, to keep the two fields consistent).
-//
-// Returns: 200 with { success, package, snapshot, snapshot_recomputed }
-// ============================================================================
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -353,7 +326,6 @@ export async function PATCH(
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
 
-    // ---- Validation ----
     const updates: Record<string, any> = {};
     let snapshotMayChange = false;
 
@@ -389,20 +361,15 @@ export async function PATCH(
       updates.tier_breakdown = body.tier_breakdown;
       snapshotMayChange = true;
 
-      // Derive member_count_assumption from the sum of tier values
       if (body.tier_breakdown && typeof body.tier_breakdown === 'object') {
         const sum = VALID_TIER_KEYS.reduce((acc, k) => {
           const v = body.tier_breakdown[k];
           return acc + (typeof v === 'number' ? v : 0);
         }, 0);
         updates.member_count_assumption = sum;
-      } else if (body.tier_breakdown === null) {
-        // Explicit clear — leave member_count_assumption alone unless caller also passed it
       }
     }
 
-    // member_count_assumption only honored if tier_breakdown wasn't passed
-    // (to keep the two in lockstep when both might appear in the same call).
     if ('member_count_assumption' in body && !('tier_breakdown' in body)) {
       if (body.member_count_assumption !== null) {
         if (
@@ -430,7 +397,6 @@ export async function PATCH(
 
     updates.updated_at = new Date().toISOString();
 
-    // ---- Apply update ----
     const { data: updated, error: updateError } = await admin
       .from('packages')
       .update(updates)
@@ -445,7 +411,6 @@ export async function PATCH(
       );
     }
 
-    // ---- Recompute snapshot if math-affecting fields changed ----
     let snapshot = null;
     let snapshot_error: string | null = null;
     if (snapshotMayChange) {
@@ -457,14 +422,13 @@ export async function PATCH(
       }
     }
 
-    // ---- Reload the package after recompute so the response has fresh snapshot fields ----
     const { data: freshPkg } = await admin
       .from('packages')
       .select('*')
       .eq('id', packageId)
       .maybeSingle();
 
-    // ---- Non-blocking activity log ----
+    // activity_log no longer carries client_id for group-shaped events
     try {
       const meta = user.user_metadata || {};
       const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;

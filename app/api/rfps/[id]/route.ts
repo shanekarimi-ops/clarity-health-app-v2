@@ -7,11 +7,13 @@ export const maxDuration = 60;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
+// Body field is still named clientId (so the UI doesn't need to change today),
+// but internally we treat it as group_id since rfps now FK to groups.
 type UpdateRfpBody = {
   agencyId: string;
   userId: string;
   userName?: string | null;
-  clientId: string;
+  clientId: string; // body field name preserved for backward compat with the UI; this is actually a group_id
   rfpName: string;
   effectiveDate: string | null;
   censusSize: number | null;
@@ -50,14 +52,15 @@ export async function GET(
     );
   }
 
+  // CHANGED S42: client_id → group_id, clients() join → groups() join
   const { data, error } = await admin
     .from('rfps')
     .select(
       `
-      id, agency_id, client_id, created_by_user_id, name, rfp_type,
+      id, agency_id, group_id, created_by_user_id, name, rfp_type,
       effective_date, status, current_plan_doc_url, current_plan_design,
       employee_lives, current_annual_cost, created_at, updated_at,
-      clients ( id, first_name, last_name, employer_name )
+      groups ( id, name, industry, location, member_count )
     `
     )
     .eq('id', rfpId)
@@ -124,7 +127,9 @@ export async function PUT(
     );
   }
 
-  // Load existing RFP so we know whether a SPD already exists and the agency matches
+  // clientId in the body is actually a group_id post-S42. Aliased for clarity.
+  const groupId = body.clientId;
+
   const { data: existing, error: existingErr } = await admin
     .from('rfps')
     .select('id, agency_id, current_plan_doc_url')
@@ -152,7 +157,6 @@ export async function PUT(
   }
 
   try {
-    // ---- Step 1: Build plan_design JSON and update the rfps row ----
     const planDesign = {
       planYear: body.planYear,
       planOptions: body.planOptions || [],
@@ -163,10 +167,11 @@ export async function PUT(
       extractedData: body.extractedData,
     };
 
+    // CHANGED S42: client_id → group_id
     const { error: updateErr } = await admin
       .from('rfps')
       .update({
-        client_id: body.clientId,
+        group_id: groupId,
         name: body.rfpName.trim(),
         effective_date: body.effectiveDate || null,
         employee_lives: body.censusSize,
@@ -184,8 +189,7 @@ export async function PUT(
       );
     }
 
-    // ---- Step 2: Optional SPD re-upload ----
-    // Only re-upload if the broker chose a new file (spdBase64 is non-null)
+    // ---- SPD re-upload (unchanged) ----
     let storagePath: string | null = existing.current_plan_doc_url;
 
     if (body.spdBase64 && body.spdFilename) {
@@ -205,7 +209,6 @@ export async function PUT(
           throw new Error(uploadErr.message);
         }
 
-        // If the path changed (new filename), update the column
         if (newPath !== existing.current_plan_doc_url) {
           const { error: pathErr } = await admin
             .from('rfps')
@@ -218,8 +221,6 @@ export async function PUT(
 
         storagePath = newPath;
       } catch (storageErr) {
-        // Don't roll back the metadata update — the RFP is still valid, just SPD upload failed.
-        // Surface the error to the user so they can retry.
         console.error('SPD re-upload failed on edit:', storageErr);
         const msg =
           storageErr instanceof Error ? storageErr.message : 'Storage upload failed.';
@@ -230,7 +231,7 @@ export async function PUT(
       }
     }
 
-    // ---- Step 3: Replace rfp_benefits rows (delete + reinsert) ----
+    // ---- rfp_benefits replacement (unchanged) ----
     const { error: deleteErr } = await admin
       .from('rfp_benefits')
       .delete()
@@ -277,29 +278,25 @@ export async function PUT(
       }
     }
 
-    // ---- Step 4: Activity log (best-effort) ----
+    // ---- Activity log: now reads from groups instead of clients ----
     try {
-      const { data: clientRow } = await admin
-        .from('clients')
-        .select('first_name, last_name, employer_name')
-        .eq('id', body.clientId)
+      const { data: groupRow } = await admin
+        .from('groups')
+        .select('name')
+        .eq('id', groupId)
         .maybeSingle();
 
-      const clientLabel =
-        clientRow?.employer_name ||
-        [clientRow?.first_name, clientRow?.last_name].filter(Boolean).join(' ') ||
-        'client';
+      const groupLabel = groupRow?.name || 'group';
 
       await admin.from('activity_log').insert({
         agency_id: body.agencyId,
-        client_id: body.clientId,
         actor_user_id: body.userId,
         actor_name: body.userName || null,
         event_type: 'rfp_updated',
-        event_summary: `Updated RFP "${body.rfpName.trim()}" for ${clientLabel}`,
+        event_summary: `Updated RFP "${body.rfpName.trim()}" for ${groupLabel}`,
         metadata: {
           rfp_id: rfpId,
-          client_id: body.clientId,
+          group_id: groupId,
           rfp_name: body.rfpName.trim(),
           benefit_lines: benefitRows.map((b) => b.benefit_type),
         },

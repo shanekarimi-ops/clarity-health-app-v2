@@ -7,11 +7,13 @@ export const maxDuration = 60;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
+// Body field is still named clientId so the UI doesn't need to change today;
+// internally we treat it as group_id since rfps now FK to groups (post-S42).
 type SaveRfpBody = {
   agencyId: string;
   userId: string;
   userName?: string | null;
-  clientId: string;
+  clientId: string; // actually a group_id post-S42
   rfpName: string;
   effectiveDate: string | null;
   censusSize: number | null;
@@ -60,6 +62,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // clientId from body is actually a group_id post-S42
+  const groupId = body.clientId;
+
   let rfpId: string | null = null;
 
   try {
@@ -73,11 +78,12 @@ export async function POST(request: NextRequest) {
       extractedData: body.extractedData,
     };
 
+    // CHANGED S42: client_id → group_id
     const { data: rfpRow, error: insertErr } = await admin
       .from('rfps')
       .insert({
         agency_id: body.agencyId,
-        client_id: body.clientId,
+        group_id: groupId,
         created_by_user_id: body.userId,
         name: body.rfpName.trim(),
         effective_date: body.effectiveDate || null,
@@ -147,11 +153,11 @@ export async function POST(request: NextRequest) {
     }> = [];
 
     if ((body.planOptions || []).length > 0) {
-        benefitRows.push({ rfp_id: rfpId!, benefit_type: 'medical', display_order: 0 });
-      }
-      if (body.dental?.carrier) {
-        benefitRows.push({ rfp_id: rfpId!, benefit_type: 'dental', display_order: 2 });
-      }
+      benefitRows.push({ rfp_id: rfpId!, benefit_type: 'medical', display_order: 0 });
+    }
+    if (body.dental?.carrier) {
+      benefitRows.push({ rfp_id: rfpId!, benefit_type: 'dental', display_order: 2 });
+    }
     if (body.vision?.carrier) {
       benefitRows.push({ rfp_id: rfpId!, benefit_type: 'vision', display_order: 3 });
     }
@@ -180,28 +186,25 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ---- Activity log: now reads from groups instead of clients ----
     try {
-      const { data: clientRow } = await admin
-        .from('clients')
-        .select('first_name, last_name, employer_name')
-        .eq('id', body.clientId)
+      const { data: groupRow } = await admin
+        .from('groups')
+        .select('name')
+        .eq('id', groupId)
         .maybeSingle();
 
-      const clientLabel =
-        clientRow?.employer_name ||
-        [clientRow?.first_name, clientRow?.last_name].filter(Boolean).join(' ') ||
-        'client';
+      const groupLabel = groupRow?.name || 'group';
 
       await admin.from('activity_log').insert({
         agency_id: body.agencyId,
-        client_id: body.clientId,
         actor_user_id: body.userId,
         actor_name: body.userName || null,
         event_type: 'rfp_created',
-        event_summary: `Created RFP "${body.rfpName.trim()}" for ${clientLabel}`,
+        event_summary: `Created RFP "${body.rfpName.trim()}" for ${groupLabel}`,
         metadata: {
           rfp_id: rfpId,
-          client_id: body.clientId,
+          group_id: groupId,
           rfp_name: body.rfpName.trim(),
           benefit_lines: benefitRows.map((b) => b.benefit_type),
         },

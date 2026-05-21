@@ -11,26 +11,8 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const VALID_STATUSES = ['draft', 'locked'] as const;
 const ALLOWED_TIERS = ['employee_only', 'employee_spouse', 'employee_children', 'family'] as const;
 
-// ============================================================================
-// POST — create a new draft package on an RFP
-// ============================================================================
-// Body shape:
-//   {
-//     rfp_id: string (required),
-//     name: string (optional, defaults to "Untitled package"),
-//     description?: string,
-//     notes?: string,
-//     is_current_plan?: boolean (default false),
-//     member_count_assumption?: number,
-//     tier_breakdown?: { employee_only?, employee_spouse?, employee_children?, family? }
-//   }
-// Returns: 201 with { success: true, package: <row> }
-// Note: is_recommended is NEVER settable via this endpoint — that goes through
-// a dedicated endpoint (built later) that handles the unflag-previous transaction.
-// ============================================================================
 export async function POST(req: NextRequest) {
   try {
-    // ---- Auth ----
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json(
@@ -51,7 +33,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Body ----
     const body = await req.json();
     const {
       rfp_id,
@@ -70,7 +51,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Validate optional fields ----
     if (is_current_plan !== undefined && typeof is_current_plan !== 'boolean') {
       return NextResponse.json(
         { error: 'is_current_plan must be a boolean', debug: { received: is_current_plan } },
@@ -110,10 +90,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ---- Service-role client for verified writes ----
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // ---- Verify broker → agency match against the RFP ----
     const { data: broker, error: brokerError } = await admin
       .from('brokers')
       .select('id, agency_id')
@@ -127,9 +105,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // RFP now references group_id instead of client_id
     const { data: rfp, error: rfpError } = await admin
       .from('rfps')
-      .select('id, agency_id, client_id, name')
+      .select('id, agency_id, group_id, name')
       .eq('id', rfp_id)
       .maybeSingle();
 
@@ -147,7 +126,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Build insert payload ----
     const finalName = (name && typeof name === 'string' && name.trim()) || 'Untitled package';
 
     const insertPayload: any = {
@@ -171,8 +149,6 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (insertError || !insert) {
-      // Distinguish the "already has a current plan" unique-violation case so the
-      // UI can show a useful message instead of a generic 500.
       if (insertError?.code === '23505' && insertError?.message?.includes('one_current_plan_per_rfp')) {
         return NextResponse.json(
           {
@@ -188,13 +164,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Non-blocking activity log ----
+    // activity_log no longer carries client_id for group-shaped events
     try {
       const meta = user.user_metadata || {};
       const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
       await admin.from('activity_log').insert({
         agency_id: broker.agency_id,
-        client_id: rfp.client_id,
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'package_created',
@@ -202,6 +177,7 @@ export async function POST(req: NextRequest) {
         metadata: {
           package_id: insert.id,
           rfp_id: rfp.id,
+          group_id: rfp.group_id,
           is_current_plan: insert.is_current_plan,
         },
       });
@@ -219,14 +195,6 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ============================================================================
-// GET — list packages for the broker's agency
-// ============================================================================
-// Query params:
-//   ?rfp_id=<uuid>  (optional) — filter to a single RFP
-// Returns: { packages: [<row with joined rfp + line_count>] }
-// Sorted by created_at desc, limit 200.
-// ============================================================================
 export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
@@ -262,7 +230,7 @@ export async function GET(req: NextRequest) {
       .from('packages')
       .select(`
         *,
-        rfp:rfps(id, name, effective_date, current_annual_cost),
+        rfp:rfps(id, name, effective_date, current_annual_cost, group_id),
         line_count:package_lines(count)
       `)
       .eq('agency_id', broker.agency_id)

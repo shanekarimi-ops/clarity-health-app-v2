@@ -12,12 +12,9 @@ const VALID_TEMPLATES = ['standard', 'executive', 'detailed'] as const;
 
 // ============================================================================
 // POST — create a new draft presentation
-// Accepts optional package_id; when set, sources included_quote_ids from
-// the package's lines and flags the row as package-sourced.
 // ============================================================================
 export async function POST(req: NextRequest) {
   try {
-    // ---- Auth ----
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json(
@@ -38,7 +35,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Body ----
     const body = await req.json();
     const { rfp_id, template = 'standard', title, included_quote_ids, package_id } = body || {};
 
@@ -55,10 +51,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Service-role client for verified writes ----
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // ---- Verify broker → agency match against the RFP ----
     const { data: broker, error: brokerError } = await admin
       .from('brokers')
       .select('id, agency_id')
@@ -72,9 +66,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // RFP now references group_id instead of client_id
     const { data: rfp, error: rfpError } = await admin
       .from('rfps')
-      .select('id, agency_id, client_id, name')
+      .select('id, agency_id, group_id, name')
       .eq('id', rfp_id)
       .maybeSingle();
 
@@ -92,19 +87,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Default the title if not supplied ----
     const finalTitle = (title && title.trim()) || rfp.name;
 
-    // ---- Resolve included_quote_ids ----
-    // Priority:
-    //  1. If package_id provided, derive from package's lines (verify package belongs to RFP)
-    //  2. Else if included_quote_ids provided, use as-is
-    //  3. Else default to all submitted/reviewed/shortlisted quotes for the RFP
     let quoteIds: string[] = [];
     let resolvedPackageId: string | null = null;
 
     if (package_id) {
-      // Verify the package belongs to this RFP and agency (via the RFP we already verified)
       const { data: pkg, error: pkgError } = await admin
         .from('packages')
         .select('id, rfp_id, agency_id')
@@ -130,7 +118,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Walk package_lines → quote_lines → unique quote_ids
       const { data: pkgLines, error: pkgLinesError } = await admin
         .from('package_lines')
         .select('quote_line_id')
@@ -181,7 +168,6 @@ export async function POST(req: NextRequest) {
       quoteIds = (quotes || []).map((q: any) => q.id);
     }
 
-    // ---- Insert draft ----
     const meta = user.user_metadata || {};
     const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
     const { data: insert, error: insertError } = await admin
@@ -189,7 +175,7 @@ export async function POST(req: NextRequest) {
       .insert({
         agency_id: broker.agency_id,
         rfp_id: rfp.id,
-        client_id: rfp.client_id,
+        group_id: rfp.group_id, // group_id now flows through from the RFP
         template,
         status: 'draft',
         title: finalTitle,
@@ -209,11 +195,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- Non-blocking activity log ----
+    // activity_log no longer carries client_id for group-shaped events
     try {
       await admin.from('activity_log').insert({
         agency_id: broker.agency_id,
-        client_id: rfp.client_id,
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'presentation_created',
@@ -221,6 +206,7 @@ export async function POST(req: NextRequest) {
         metadata: {
           presentation_id: insert.id,
           rfp_id: rfp.id,
+          group_id: rfp.group_id,
           template,
           quote_count: quoteIds.length,
           package_id: resolvedPackageId,
@@ -271,12 +257,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ presentations: [] }, { status: 200 });
     }
 
+    // group:groups join replaces client:clients join
     const { data: rows, error } = await admin
       .from('broker_presentations')
       .select(`
         *,
         rfp:rfps(id, name, effective_date),
-        client:clients(id, employer_name)
+        group:groups(id, name)
       `)
       .eq('agency_id', broker.agency_id)
       .order('created_at', { ascending: false })

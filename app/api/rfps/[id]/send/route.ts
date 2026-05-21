@@ -7,13 +7,7 @@ import { filterValidBenefitLines, BENEFIT_LINE_LABELS, BenefitLineValue } from '
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-// Token lifetime: 14 days
 const INVITE_TOKEN_EXPIRY_DAYS = 14;
-
-// Status vocabulary (from DB CHECK constraints — see S34 handoff for full list):
-//   rfps.status:           draft | distributed | collecting_quotes | comparing | won | lost | cancelled
-//   rfp_carriers.status:   pending | sent | opened | downloaded | in_progress | submitted | declined | won | lost
-//   rfp_engagement_log.event_type: rfp_sent | rfp_opened | rfp_downloaded | reminder_sent | proposal_uploaded | declined | reassigned | won_notification_sent | lost_notification_sent
 
 type SendRequestBody = {
   recipients: {
@@ -39,7 +33,6 @@ export async function POST(
   const rfpId = params.id;
 
   try {
-    // ===== Step 1: Authenticate the broker =====
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Missing or invalid authorization header' }, { status: 401 });
@@ -64,7 +57,6 @@ export async function POST(
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // ===== Step 2: Confirm user is a broker AND get their agency_id =====
     const { data: brokerRow, error: brokerErr } = await admin
       .from('brokers')
       .select('agency_id, agencies(name)')
@@ -77,10 +69,10 @@ export async function POST(
     const agencyId = brokerRow.agency_id;
     const agencyName = (brokerRow.agencies as any)?.name || 'an agency';
 
-    // ===== Step 3: Validate the RFP belongs to this broker's agency =====
+    // CHANGED S42: clients(...) join → groups(name) join
     const { data: rfpRow, error: rfpErr } = await admin
       .from('rfps')
-      .select('id, name, agency_id, status, effective_date, current_plan_design, clients(employer_name, first_name, last_name)')
+      .select('id, name, agency_id, status, effective_date, current_plan_design, groups(name)')
       .eq('id', rfpId)
       .maybeSingle();
 
@@ -91,15 +83,12 @@ export async function POST(
       return NextResponse.json({ error: 'RFP does not belong to your agency' }, { status: 403 });
     }
 
-    const clientObj = (rfpRow.clients as any) || {};
-    const clientLabel =
-      clientObj.employer_name ||
-      [clientObj.first_name, clientObj.last_name].filter(Boolean).join(' ') ||
-      'a client';
+    // CHANGED S42: clientLabel now comes from group.name
+    const groupObj = (rfpRow.groups as any) || {};
+    const clientLabel = groupObj.name || 'a client';
 
     const planYear = (rfpRow.current_plan_design as any)?.planYear || null;
 
-    // ===== Step 4: Validate body =====
     const body = (await req.json()) as SendRequestBody;
     if (!body?.recipients || !Array.isArray(body.recipients) || body.recipients.length === 0) {
       return NextResponse.json({ error: 'recipients array required' }, { status: 400 });
@@ -134,7 +123,6 @@ export async function POST(
       }
     }
 
-    // ===== Step 5: Verify every carrier is in the broker's agency_carriers =====
     const uniqueCarrierIds = Array.from(new Set(flat.map(f => f.carrier_id)));
     const { data: agencyCarriersRows, error: acErr } = await admin
       .from('agency_carriers')
@@ -154,7 +142,6 @@ export async function POST(
       );
     }
 
-    // ===== Step 6: Verify every carrier_user belongs to its claimed carrier =====
     const uniqueCarrierUserIds = Array.from(new Set(flat.map(f => f.carrier_user_id)));
     const { data: carrierUsersRows, error: cuErr } = await admin
       .from('carrier_users')
@@ -183,14 +170,12 @@ export async function POST(
       }
     }
 
-    // ===== Step 7: Process each recipient — upsert rfp_carriers, mint token, send email =====
     const expiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const results: SendResultRow[] = [];
 
     for (const f of flat) {
       const cu = carrierUsersById.get(f.carrier_user_id)!;
 
-      // 7a. Check for existing rfp_carriers row (resend case = Option C)
       const { data: existingRows, error: existingErr } = await admin
         .from('rfp_carriers')
         .select('id')
@@ -215,8 +200,6 @@ export async function POST(
       let rfpCarrierId = existingRows?.id || '';
 
       if (isResend) {
-        // Update the existing row: bump sent_at, set status='sent', refresh requested_benefits,
-        // and clear stale engagement timestamps so the new send has a fresh tracking baseline
         const { error: updErr } = await admin
           .from('rfp_carriers')
           .update({
@@ -243,7 +226,6 @@ export async function POST(
           continue;
         }
       } else {
-        // Insert fresh row
         const { data: insRow, error: insErr } = await admin
           .from('rfp_carriers')
           .insert({
@@ -270,7 +252,6 @@ export async function POST(
         rfpCarrierId = insRow.id;
       }
 
-      // 7b. Mint a fresh invite token for this rep (overwrites any previous one)
       const inviteToken = randomBytes(32).toString('hex');
       const { error: tokErr } = await admin
         .from('carrier_users')
@@ -292,7 +273,6 @@ export async function POST(
         continue;
       }
 
-      // 7c. Send the email via Resend
       const magicLink = buildCarrierMagicLink(inviteToken);
       const benefitLabels = f.requested_benefits.map(b => BENEFIT_LINE_LABELS[b]).join(', ');
       const recipientName = cu.full_name || cu.email.split('@')[0];
@@ -342,19 +322,16 @@ export async function POST(
         continue;
       }
 
-      // 7d. Store the Resend message ID on the rfp_carriers row for webhook matching
       if (resendMessageId) {
         const { error: msgIdErr } = await admin
           .from('rfp_carriers')
           .update({ resend_message_id: resendMessageId })
           .eq('id', rfpCarrierId);
         if (msgIdErr) {
-          // Non-fatal — webhook matching will fail for this row but the send itself succeeded
           console.error('rfp_carriers resend_message_id update failed:', msgIdErr);
         }
       }
 
-      // 7e. Log the send to rfp_engagement_log (event_type 'rfp_sent' per CHECK constraint)
       const { error: logErr } = await admin.from('rfp_engagement_log').insert({
         rfp_id: rfpId,
         rfp_carrier_id: rfpCarrierId,
@@ -379,7 +356,6 @@ export async function POST(
       });
     }
 
-    // ===== Step 8: Bump rfp.status to 'distributed' if any send succeeded and it's still 'draft' =====
     const anySucceeded = results.some(r => r.status === 'sent' || r.status === 'resent');
     if (anySucceeded && rfpRow.status === 'draft') {
       const { error: statusErr } = await admin
@@ -391,7 +367,6 @@ export async function POST(
       }
     }
 
-    // ===== Step 9: Return summary =====
     return NextResponse.json({
       success: true,
       sent: results.filter(r => r.status === 'sent').length,
@@ -407,10 +382,6 @@ export async function POST(
     );
   }
 }
-
-// =====================================================
-// Email body builders
-// =====================================================
 
 type EmailParams = {
   recipientName: string;

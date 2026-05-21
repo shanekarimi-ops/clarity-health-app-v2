@@ -16,11 +16,8 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
 
-// ============================================================================
-// Helper: extract validated custom_sections slots from the presentation row.
-// ============================================================================
 type CustomSectionsExtracted = {
   custom_takeaways?: string[];
   custom_recommendation?: string;
@@ -51,9 +48,14 @@ function extractCustomSections(raw: any): CustomSectionsExtracted {
   return out;
 }
 
-// ============================================================================
-// POST — render PDF + Excel for the selected template, upload, update row
-// ============================================================================
+// Best-effort: parse a 2-letter state code out of a group.location string
+// like "Phoenix, Az" or "Scottsdale, AZ". Returns null if nothing matches.
+function parseStateFromLocation(location: string | null): string | null {
+  if (!location) return null;
+  const match = location.match(/,\s*([A-Za-z]{2})\s*$/);
+  return match ? match[1].toUpperCase() : null;
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -61,7 +63,6 @@ export async function POST(
   const presentationId = params.id;
 
   try {
-    // ---- Auth ----
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json(
@@ -84,7 +85,6 @@ export async function POST(
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // ---- Verify broker → agency match against the presentation ----
     const { data: broker } = await admin
       .from('brokers')
       .select('agency_id')
@@ -98,7 +98,6 @@ export async function POST(
       );
     }
 
-    // ---- Load the presentation record ----
     const { data: presentation, error: presError } = await admin
       .from('broker_presentations')
       .select('*')
@@ -129,7 +128,6 @@ export async function POST(
 
     const customSections = extractCustomSections(presentation.custom_sections);
 
-    // ---- Assemble the full data graph ----
     // 1. Agency (branding)
     const { data: agency, error: agencyError } = await admin
       .from('agencies')
@@ -144,16 +142,23 @@ export async function POST(
       );
     }
 
-    // 2. Client
-    const { data: client, error: clientError } = await admin
-      .from('clients')
-      .select('id, employer_name, member_count, state')
-      .eq('id', presentation.client_id)
+    // 2. Group (replaces former client query)
+    if (!presentation.group_id) {
+      return NextResponse.json(
+        { error: 'Presentation has no associated group', debug: { presentation_id: presentationId } },
+        { status: 500 }
+      );
+    }
+
+    const { data: group, error: groupError } = await admin
+      .from('groups')
+      .select('id, name, member_count, location, industry')
+      .eq('id', presentation.group_id)
       .maybeSingle();
 
-    if (clientError || !client) {
+    if (groupError || !group) {
       return NextResponse.json(
-        { error: 'Client not found', debug: { client_id: presentation.client_id, error: clientError?.message } },
+        { error: 'Group not found', debug: { group_id: presentation.group_id, error: groupError?.message } },
         { status: 500 }
       );
     }
@@ -172,9 +177,7 @@ export async function POST(
       );
     }
 
-    // 3.5. If package-sourced, load the package's line filter (set of allowed quote_line_ids)
-    // We use this to filter quote_lines AFTER loading, so the PDF shows only the lines
-    // the broker selected in the package — not every line on the quotes those lines came from.
+    // 3.5. Package line filter (same as before)
     let allowedQuoteLineIds: Set<string> | null = null;
     if (presentation.package_id) {
       const { data: pkgLines, error: pkgLinesError } = await admin
@@ -198,7 +201,7 @@ export async function POST(
       }
     }
 
-    // 4. Quotes (filtered by included_quote_ids if any, else all submitted+ for the RFP)
+    // 4. Quotes
     const includedIds: string[] = Array.isArray(presentation.included_quote_ids)
       ? presentation.included_quote_ids
       : [];
@@ -226,7 +229,7 @@ export async function POST(
       );
     }
 
-    // 5. Quote lines (one query for all quotes, then filter to package selection if applicable)
+    // 5. Quote lines
     const quoteIds = (quotes || []).map((q: any) => q.id);
     let lines: any[] = [];
     if (quoteIds.length > 0) {
@@ -243,15 +246,12 @@ export async function POST(
       }
       lines = lineRows || [];
 
-      // If package-sourced, narrow lines to only those the broker selected in the package.
-      // This is what makes a package presentation show "UHC Medical only" instead of
-      // "every line UHC ever quoted" when the broker built a Medical-only package.
       if (allowedQuoteLineIds) {
         lines = lines.filter((l: any) => allowedQuoteLineIds!.has(l.id));
       }
     }
 
-    // 6. AI narrative (only for executive + detailed templates)
+    // 6. AI narrative
     let narrativeBullets: string[] | undefined = undefined;
     if (template === 'executive' || template === 'detailed') {
       const { data: narrative } = await admin
@@ -264,7 +264,8 @@ export async function POST(
       }
     }
 
-    // ---- Shape the data for the templates ----
+    // Build template data. Note: we keep the `client` key in the shape so the
+    // PDF/Excel templates don't need to change. It's now populated from the group.
     const baseTemplateData: StandardTemplateData = {
       agency: {
         name: agency.name,
@@ -273,9 +274,9 @@ export async function POST(
         accent_color: agency.accent_color,
       },
       client: {
-        employer_name: client.employer_name,
-        member_count: client.member_count,
-        state: client.state,
+        employer_name: group.name,
+        member_count: group.member_count,
+        state: parseStateFromLocation(group.location),
       },
       rfp: {
         id: rfp.id,
@@ -306,15 +307,12 @@ export async function POST(
               tier_rates: l.tier_rates,
             })),
         }))
-        // For package-sourced: drop any quote that ended up with zero lines after filtering
-        // (would happen if its only line wasn't in the package selection)
         .filter((q: any) => !allowedQuoteLineIds || q.lines.length > 0),
       generated_by_name: presentation.generated_by_name,
       generated_at: new Date().toISOString(),
       ...customSections,
     };
 
-    // ---- Render PDF + Excel for the chosen template ----
     let pdfBuffer: Buffer;
     let excelBuffer: Buffer;
 
@@ -345,7 +343,6 @@ export async function POST(
       );
     }
 
-    // ---- Upload both to Storage ----
     const timestamp = Date.now();
     const safeTitle = (presentation.title || 'presentation')
       .replace(/[^a-zA-Z0-9-_]/g, '_')
@@ -381,7 +378,6 @@ export async function POST(
       );
     }
 
-    // ---- Generate signed URLs ----
     const { data: pdfSigned, error: pdfSignError } = await admin.storage
       .from('presentations')
       .createSignedUrl(pdfPath, SIGNED_URL_TTL_SECONDS);
@@ -403,7 +399,6 @@ export async function POST(
       );
     }
 
-    // ---- Update the presentation row with the storage paths ----
     const { data: updated, error: updateError } = await admin
       .from('broker_presentations')
       .update({
@@ -422,13 +417,11 @@ export async function POST(
       );
     }
 
-    // ---- Non-blocking activity log ----
     try {
       const meta = user.user_metadata || {};
       const brokerName = [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim() || null;
       await admin.from('activity_log').insert({
         agency_id: presentation.agency_id,
-        client_id: presentation.client_id,
         actor_user_id: user.id,
         actor_name: brokerName,
         event_type: 'presentation_generated',
@@ -436,6 +429,7 @@ export async function POST(
         metadata: {
           presentation_id: presentationId,
           rfp_id: rfp.id,
+          group_id: presentation.group_id,
           template,
           quote_count: baseTemplateData.quotes.length,
           pdf_size_bytes: pdfBuffer.length,

@@ -23,7 +23,6 @@ export async function POST(
       return NextResponse.json({ error: 'Missing access token' }, { status: 401 });
     }
 
-    // Verify the user
     const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { headers: { Authorization: `Bearer ${accessToken}` } },
     });
@@ -35,7 +34,6 @@ export async function POST(
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // 1. Look up the broker's agency
     const { data: brokerRow } = await admin
       .from('brokers')
       .select('agency_id')
@@ -47,12 +45,13 @@ export async function POST(
     }
     const agencyId = brokerRow.agency_id;
 
-    // 2. Load the plan design + client info
+    // CHANGED S42: clients(...) join → groups(...) join. Groups doesn't have a zip
+    // column — using location for state parsing instead.
     const { data: planDesign, error: fetchErr } = await admin
       .from('plan_designs')
       .select(`
         id, agency_id, name, funding_model, design,
-        clients(id, employer_name, member_count, state, zip)
+        groups(id, name, member_count, location)
       `)
       .eq('id', designId)
       .maybeSingle();
@@ -64,7 +63,6 @@ export async function POST(
       return NextResponse.json({ error: 'Not authorized for this plan design' }, { status: 403 });
     }
 
-    // 3. Validate that we have enough design info to project
     const design = planDesign.design || {};
     const validation = validateDesignReadyForProjection(design, planDesign.funding_model);
     if (!validation.ready) {
@@ -75,17 +73,16 @@ export async function POST(
       }, { status: 400 });
     }
 
-    // 4. Build the prompt
-    const client: any = Array.isArray(planDesign.clients) ? planDesign.clients[0] : planDesign.clients;
+    // CHANGED S42: client → group. We adapt to the prompt builder's expectations.
+    const groupRow: any = Array.isArray(planDesign.groups) ? planDesign.groups[0] : planDesign.groups;
     const prompt = buildProjectionPrompt({
       design,
       fundingModel: planDesign.funding_model,
-      clientName: client?.employer_name || 'Unnamed group',
-      memberCount: client?.member_count || null,
-      state: client?.state || null,
+      clientName: groupRow?.name || 'Unnamed group',
+      memberCount: groupRow?.member_count || null,
+      state: parseStateFromLocation(groupRow?.location),
     });
 
-    // 5. Call Claude
     const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
     const completion = await anthropic.messages.create({
       model: 'claude-sonnet-4-5',
@@ -93,7 +90,6 @@ export async function POST(
       messages: [{ role: 'user', content: prompt }],
     });
 
-    // 6. Parse response
     const firstBlock = completion.content[0];
     if (!firstBlock || firstBlock.type !== 'text') {
       return NextResponse.json({ error: 'Empty AI response' }, { status: 500 });
@@ -112,7 +108,6 @@ export async function POST(
       }, { status: 500 });
     }
 
-    // 7. Persist the projection
     const generatedAt = new Date().toISOString();
     const { error: updateErr } = await admin
       .from('plan_designs')
@@ -141,17 +136,17 @@ export async function POST(
   }
 }
 
-// ============================================
-// Validation
-// ============================================
+// Best-effort: parse a 2-letter state code out of a group.location string.
+function parseStateFromLocation(location: string | null | undefined): string | null {
+  if (!location) return null;
+  const match = location.match(/,\s*([A-Za-z]{2})\s*$/);
+  return match ? match[1].toUpperCase() : null;
+}
+
 function validateDesignReadyForProjection(design: any, fundingModel: string): { ready: boolean; missing: string[] } {
   const missing: string[] = [];
-
-  // Group basics
   if (!design.group?.effectiveDate) missing.push('Group: Effective date');
   if (!design.group?.groupSize) missing.push('Group: Group size');
-
-  // Plan structure
   if (!design.plan?.deductibleInNetSingle) missing.push('Plan structure: In-network single deductible');
   if (!design.plan?.deductibleInNetFamily) missing.push('Plan structure: In-network family deductible');
   if (!design.plan?.oopMaxInNetSingle) missing.push('Plan structure: In-network single OOP max');
@@ -159,8 +154,6 @@ function validateDesignReadyForProjection(design: any, fundingModel: string): { 
   if (design.plan?.coinsuranceInNet === undefined || design.plan?.coinsuranceInNet === '') {
     missing.push('Plan structure: In-network coinsurance');
   }
-
-  // Self-funded only requirements
   if (fundingModel === 'self_funded') {
     if (!design.network?.networkType) missing.push('Network: Network type');
     if (!design.stoploss?.specificDeductible) missing.push('Stop-loss: Specific deductible');
@@ -168,13 +161,9 @@ function validateDesignReadyForProjection(design: any, fundingModel: string): { 
     if (!design.tpa?.tpaName) missing.push('TPA: TPA selection');
     if (!design.pbm?.pbmName) missing.push('PBM: PBM selection');
   }
-
   return { ready: missing.length === 0, missing };
 }
 
-// ============================================
-// Prompt builder
-// ============================================
 function buildProjectionPrompt(args: {
   design: any;
   fundingModel: string;
