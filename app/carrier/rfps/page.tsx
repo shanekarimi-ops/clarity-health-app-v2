@@ -40,6 +40,7 @@ function CarrierRfpInbox({ carrierUserId, carrierName }: { carrierUserId: string
     const loadRfps = async () => {
       setLoading(true);
 
+      // CHANGED S42: rfps.client_id → rfps.group_id, clients(employer_name) → groups(name)
       const { data, error: queryError } = await supabase
         .from('rfp_carriers')
         .select(`
@@ -56,9 +57,9 @@ function CarrierRfpInbox({ carrierUserId, carrierName }: { carrierUserId: string
             employee_lives,
             est_premium_volume,
             agency_id,
-            client_id,
+            group_id,
             agencies:agency_id ( name ),
-            clients:client_id ( employer_name )
+            groups:group_id ( name )
           )
         `)
         .eq('assigned_carrier_user_id', carrierUserId);
@@ -70,7 +71,6 @@ function CarrierRfpInbox({ carrierUserId, carrierName }: { carrierUserId: string
         return;
       }
 
-      // Flatten the joined data
       const flattened: CarrierRfpRow[] = (data ?? [])
         .map((row: any) => {
           const rfp = row.rfps;
@@ -87,13 +87,13 @@ function CarrierRfpInbox({ carrierUserId, carrierName }: { carrierUserId: string
             proposal_due_date: rfp.proposal_due_date,
             employee_lives: rfp.employee_lives,
             est_premium_volume: rfp.est_premium_volume,
-            client_name: rfp.clients?.employer_name ?? null,
+            // CHANGED S42: rfp.clients?.employer_name → rfp.groups?.name
+            client_name: rfp.groups?.name ?? null,
             agency_name: rfp.agencies?.name ?? 'Unknown agency',
           };
         })
         .filter((r): r is CarrierRfpRow => r !== null)
         .sort((a, b) => {
-          // Sort by proposal_due_date ASC, NULLS LAST
           if (a.proposal_due_date && !b.proposal_due_date) return -1;
           if (!a.proposal_due_date && b.proposal_due_date) return 1;
           if (!a.proposal_due_date && !b.proposal_due_date) return 0;
@@ -163,7 +163,6 @@ function RfpCard({ row, onClick }: { row: CarrierRfpRow; onClick: () => void }) 
       onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 6px 24px rgba(30, 58, 95, 0.12)'; (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)'; }}
       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 2px 8px rgba(30, 58, 95, 0.06)'; (e.currentTarget as HTMLElement).style.transform = 'translateY(0)'; }}
     >
-      {/* Top row: client name + status */}
       <div style={cardTopRowStyle}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={clientNameStyle}>{row.client_name || 'Unnamed client'}</div>
@@ -172,7 +171,6 @@ function RfpCard({ row, onClick }: { row: CarrierRfpRow; onClick: () => void }) 
         <CarrierStatusPill status={row.rc_status} />
       </div>
 
-      {/* Middle row: details grid */}
       <div style={detailsGridStyle}>
         <DetailItem label="From" value={row.agency_name} />
         <DetailItem label="Type" value={rfpTypeLabel} />
@@ -182,7 +180,6 @@ function RfpCard({ row, onClick }: { row: CarrierRfpRow; onClick: () => void }) 
         <DetailItem label="Sent" value={sentLabel} />
       </div>
 
-      {/* Benefit pills */}
       {row.requested_benefits.length > 0 && (
         <div style={benefitPillsStyle}>
           {row.requested_benefits.map((b) => (
@@ -236,8 +233,6 @@ function CarrierStatusPill({ status }: { status: string }) {
   );
 }
 
-// === HELPERS ===
-
 function formatDueDate(dateStr: string | null): { text: string; urgent: boolean } {
   if (!dateStr) return { text: '—', urgent: false };
   const due = new Date(dateStr);
@@ -268,8 +263,6 @@ function formatRelative(dateStr: string): string {
   if (days < 7) return `${days}d ago`;
   return formatDate(dateStr);
 }
-
-// === STYLES ===
 
 const pageContainerStyle: React.CSSProperties = {
   padding: '32px 40px',
