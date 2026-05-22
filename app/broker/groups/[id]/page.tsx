@@ -73,6 +73,26 @@ type CensusUploadRow = {
   created_at: string;
 };
 
+type RfpRow = {
+  id: string;
+  name: string;
+  rfp_type: string | null;
+  status: string;
+  effective_date: string | null;
+  employee_lives: number | null;
+  created_at: string;
+};
+
+const RFP_STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> = {
+  draft: { bg: '#f5f5f5', fg: '#666', label: 'Draft' },
+  distributed: { bg: '#e8f0e6', fg: '#5a7857', label: 'Distributed' },
+  collecting_quotes: { bg: '#eef2f7', fg: '#1e3a5f', label: 'Collecting Quotes' },
+  comparing: { bg: '#f4f1ea', fg: '#7a5e1a', label: 'Comparing' },
+  won: { bg: '#dff0d8', fg: '#3c763d', label: 'Won' },
+  lost: { bg: '#f2dede', fg: '#a94442', label: 'Lost' },
+  cancelled: { bg: '#f5f5f5', fg: '#888', label: 'Cancelled' },
+};
+
 export default function GroupDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -88,6 +108,7 @@ export default function GroupDetailPage() {
   const [clients, setClients] = useState<ClientLite[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [notes, setNotes] = useState<GroupNote[]>([]);
+  const [rfps, setRfps] = useState<RfpRow[]>([]);
   const [notFound, setNotFound] = useState(false);
 
   // Edit modal state
@@ -216,6 +237,13 @@ export default function GroupDetailPage() {
       .eq('agency_id', brokerRow.agency_id)
       .order('first_name', { ascending: true });
     setClients((clientsData as ClientLite[]) || []);
+
+    const { data: rfpData } = await supabase
+      .from('rfps')
+      .select('id, name, rfp_type, status, effective_date, employee_lives, created_at')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false });
+    setRfps((rfpData as RfpRow[]) || []);
 
     const { data: activityData } = await supabase
       .from('activity_log')
@@ -589,6 +617,22 @@ export default function GroupDetailPage() {
     });
   }
 
+  function formatRfpDate(d: string | null): string {
+    if (!d) return '—';
+    const parts = d.split('T')[0].split('-');
+    if (parts.length !== 3) return d;
+    const date = new Date(
+      parseInt(parts[0], 10),
+      parseInt(parts[1], 10) - 1,
+      parseInt(parts[2], 10),
+    );
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+
   function daysUntilRenewal(d: string | null): number | null {
     if (!d) return null;
     const parts = d.split('-');
@@ -727,6 +771,85 @@ export default function GroupDetailPage() {
               Delete
             </button>
           </div>
+        </div>
+
+        {/* RFPs band — full width, the workflow launchpad for this group */}
+        <div style={{ ...infoCard, marginBottom: 20 }}>
+          <div style={notesHeader}>
+            <h2 style={cardTitle}>RFPs ({rfps.length})</h2>
+            <button
+              style={primaryBtn}
+              onClick={() => router.push('/broker/rfps/new')}
+            >
+              + New RFP
+            </button>
+          </div>
+
+          {rfps.length === 0 ? (
+            <div style={placeholderBox}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
+              <strong style={{ color: '#1e3a5f' }}>No RFPs for this group yet</strong>
+              <p style={{ color: '#3a4d68', fontSize: 13, margin: '8px 0 0' }}>
+                Create an RFP to start collecting carrier quotes, building packages, and generating presentations for this group.
+              </p>
+            </div>
+          ) : (
+            <div style={tableScroll}>
+              <table style={memberTable}>
+                <thead>
+                  <tr>
+                    <th style={th}>RFP Name</th>
+                    <th style={th}>Type</th>
+                    <th style={th}>Effective</th>
+                    <th style={th}>Lives</th>
+                    <th style={th}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rfps.map((r) => {
+                    const st = RFP_STATUS_STYLES[r.status] || { bg: '#f5f5f5', fg: '#666', label: r.status };
+                    return (
+                      <tr
+                        key={r.id}
+                        onClick={() => router.push(`/broker/rfps/${r.id}`)}
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#faf7f2'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                      >
+                        <td style={td}>
+                          <span style={memberNameLink}>{r.name}</span>
+                        </td>
+                        <td style={td}>
+                          {r.rfp_type === 'renewal'
+                            ? 'Renewal'
+                            : r.rfp_type === 'new_business'
+                            ? 'New Business'
+                            : (r.rfp_type || '—')}
+                        </td>
+                        <td style={td}>{formatRfpDate(r.effective_date)}</td>
+                        <td style={td}>{r.employee_lives ?? '—'}</td>
+                        <td style={td}>
+                          <span style={{
+                            background: st.bg,
+                            color: st.fg,
+                            padding: '3px 10px',
+                            borderRadius: 12,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                            letterSpacing: 0.4,
+                            display: 'inline-block',
+                          }}>
+                            {st.label}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         <div style={twoColGrid}>
