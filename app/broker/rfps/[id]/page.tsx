@@ -6,6 +6,7 @@ import { supabase } from '../../../supabase';
 import BrokerSidebar from '../../../components/BrokerSidebar';
 import { getAccountType } from '../../../lib/account';
 import { BENEFIT_LINES, BENEFIT_LINE_LABELS, BenefitLineValue, filterValidBenefitLines } from '../../../lib/benefit-lines';
+import { RfpTabBar, RfpTabKey, QuotesTab, ComparisonTab, PresentationsTab, PackagesTab } from './RfpTabs';
 
 type Rfp = {
   id: string;
@@ -87,6 +88,9 @@ export default function RFPDetailPage() {
 
   const [showSendModal, setShowSendModal] = useState(false);
   const [prefillCarrier, setPrefillCarrier] = useState<PrefillCarrier | null>(null);
+
+  // NEW: which hub tab is active
+  const [activeTab, setActiveTab] = useState<RfpTabKey>('overview');
 
   useEffect(() => {
     bootstrap();
@@ -372,6 +376,12 @@ export default function RFPDetailPage() {
                 </a>
               </div>
 
+              {/* NEW: hub tab bar */}
+              <RfpTabBar active={activeTab} onChange={setActiveTab} />
+
+              {/* ===== OVERVIEW TAB ===== */}
+              {activeTab === 'overview' && (
+              <>
               <div
                 style={{
                   display: 'grid',
@@ -546,6 +556,20 @@ export default function RFPDetailPage() {
                 )}
                 <span>· ID: {rfp.id}</span>
               </div>
+              </>
+              )}
+
+              {/* ===== QUOTES TAB ===== */}
+              {activeTab === 'quotes' && <QuotesTab rfpId={rfp.id} />}
+
+              {/* ===== COMPARISON TAB ===== */}
+              {activeTab === 'comparison' && <ComparisonTab rfpId={rfp.id} />}
+
+              {/* ===== PRESENTATIONS TAB ===== */}
+              {activeTab === 'presentations' && <PresentationsTab rfpId={rfp.id} />}
+
+              {/* ===== PACKAGES TAB ===== */}
+              {activeTab === 'packages' && <PackagesTab rfpId={rfp.id} />}
             </>
           )}
         </div>
