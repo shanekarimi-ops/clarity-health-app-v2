@@ -141,7 +141,7 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
           renewal_plan_doc_url,
           current_plan_design,
           agencies:agency_id ( name ),
-          clients:client_id ( employer_name, state )
+          groups:group_id ( name )
         )
       `)
       .eq('assigned_carrier_user_id', carrierUserId)
@@ -179,8 +179,8 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
       current_plan_doc_url: rfp.current_plan_doc_url,
       renewal_plan_doc_url: rfp.renewal_plan_doc_url,
       current_plan_design: rfp.current_plan_design,
-      client_name: rfp.clients?.employer_name ?? null,
-      client_state: rfp.clients?.state ?? null,
+      client_name: rfp.groups?.name ?? null,
+      client_state: null,
       agency_name: rfp.agencies?.name ?? 'Unknown agency',
     });
 
@@ -309,7 +309,7 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
       <div style={headerCardStyle}>
         <div style={headerTopRowStyle}>
           <div style={{ flex: 1 }}>
-            <div style={clientNameStyle}>{detail.client_name || 'Unnamed client'}</div>
+            <div style={clientNameStyle}>{detail.client_name || 'Unnamed group'}</div>
             <h1 style={rfpNameStyle}>{detail.rfp_name}</h1>
             <div style={agencyLineStyle}>From {detail.agency_name}</div>
           </div>
