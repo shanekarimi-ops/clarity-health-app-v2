@@ -6,6 +6,7 @@ type BrokerSidebarProps = {
   active:
     // Workflow
     | 'dashboard'
+    | 'groups'
     | 'rfps'
     | 'quotes'
     | 'presentations'
@@ -22,7 +23,6 @@ type BrokerSidebarProps = {
     | 'settings'
     | 'billing'
     // Legacy (still rendered by existing pages but hidden from sidebar)
-    | 'groups'
     | 'plan-design';
   firstName: string;
   lastName: string;
@@ -60,6 +60,12 @@ export default function BrokerSidebar({
       <Link href="/broker/dashboard" style={linkReset}>
         <div className={`dash-nav-item ${active === 'dashboard' ? 'active' : ''}`}>
           <div className="dash-nav-icon">📊</div> Dashboard
+        </div>
+      </Link>
+
+      <Link href="/broker/groups" style={linkReset}>
+        <div className={`dash-nav-item ${active === 'groups' ? 'active' : ''}`}>
+          <div className="dash-nav-icon">🏬</div> Groups
         </div>
       </Link>
 
