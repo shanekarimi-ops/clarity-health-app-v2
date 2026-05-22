@@ -85,7 +85,7 @@ export default function QuotesPage() {
       }
 
       // Fetch all quotes for the agency.
-      // RLS already scopes to the agency, but we still join through rfps to get rfp_name + client.
+      // RLS already scopes to the agency, but we still join through rfps to get rfp_name + group.
       const { data: quoteRows, error: quotesErr } = await supabase
         .from('quotes')
         .select(`
@@ -100,7 +100,7 @@ export default function QuotesPage() {
           reviewed_at,
           created_at,
           carriers ( name, logo_url, brand_color ),
-          rfps ( name, client_id, clients ( employer_name ) )
+          rfps ( name, group_id, groups ( name ) )
         `)
         .order('submitted_at', { ascending: false, nullsFirst: false });
 
@@ -125,7 +125,7 @@ export default function QuotesPage() {
         carrier_logo_url: q.carriers?.logo_url || null,
         carrier_brand_color: q.carriers?.brand_color || null,
         rfp_name: q.rfps?.name || 'Untitled RFP',
-        client_employer_name: q.rfps?.clients?.employer_name || '—',
+        client_employer_name: q.rfps?.groups?.name || '—',
       }));
 
       setQuotes(flat);
