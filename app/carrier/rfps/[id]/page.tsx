@@ -141,7 +141,7 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
           renewal_plan_doc_url,
           current_plan_design,
           agencies:agency_id ( name ),
-          groups:group_id ( name )
+          groups:group_id ( name, location )
         )
       `)
       .eq('assigned_carrier_user_id', carrierUserId)
@@ -180,7 +180,7 @@ function RfpDetailInner({ carrierUserId, carrierName }: { carrierUserId: string;
       renewal_plan_doc_url: rfp.renewal_plan_doc_url,
       current_plan_design: rfp.current_plan_design,
       client_name: rfp.groups?.name ?? null,
-      client_state: null,
+      client_state: rfp.groups?.location ?? null,
       agency_name: rfp.agencies?.name ?? 'Unknown agency',
     });
 
